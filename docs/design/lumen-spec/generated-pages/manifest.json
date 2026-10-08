@@ -1,0 +1,170 @@
+[
+  {
+    "label": "Mobile Home",
+    "file": "mobile-home.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Playlist",
+    "file": "mobile-playlist.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Now Playing",
+    "file": "mobile-now-playing.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Queue",
+    "file": "mobile-queue.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Search",
+    "file": "mobile-search.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Search Results",
+    "file": "mobile-search-results.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Library",
+    "file": "mobile-library.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Playlists by origin",
+    "file": "mobile-playlists-by-origin.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Desktop Album Page",
+    "file": "desktop-album-page.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Home",
+    "file": "desktop-home.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Search",
+    "file": "desktop-search.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Library",
+    "file": "desktop-library.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Search Results",
+    "file": "desktop-search-results.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Queue Panel",
+    "file": "desktop-queue-panel.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Mini Player",
+    "file": "desktop-mini-player.png",
+    "width": 380,
+    "height": 136
+  },
+  {
+    "label": "iOS Now Playing",
+    "file": "ios-now-playing.png",
+    "width": 300,
+    "height": 618
+  },
+  {
+    "label": "Android Now Playing",
+    "file": "android-now-playing.png",
+    "width": 300,
+    "height": 618
+  },
+  {
+    "label": "Mobile Context Sheet",
+    "file": "mobile-context-sheet.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Artist Page",
+    "file": "mobile-artist-page.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Feed",
+    "file": "mobile-feed.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Desktop Artist Page",
+    "file": "desktop-artist-page.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Feed",
+    "file": "desktop-feed.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Settings",
+    "file": "desktop-settings.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Settings Provider Page",
+    "file": "desktop-settings-provider-page.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Desktop Plugin Marketplace",
+    "file": "desktop-plugin-marketplace.png",
+    "width": 1000,
+    "height": 600
+  },
+  {
+    "label": "Mobile Connect Provider",
+    "file": "mobile-connect-provider.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Feed Locked",
+    "file": "mobile-feed-locked.png",
+    "width": 300,
+    "height": 638
+  },
+  {
+    "label": "Mobile Provider Profile",
+    "file": "mobile-provider-profile.png",
+    "width": 300,
+    "height": 638
+  }
+]

@@ -38,3 +38,13 @@ before relying on it, and update it when you learn something new.
   device runs go through Firebase Test Lab (`spikes/c-wasm-ios/README.md`).
 - cmake and ninja for any native build ship inside Visual Studio and are not on
   PATH. Resolve them with `vswhere` (see `../Ristle/CLAUDE.local.md`).
+- **`workflow_dispatch` only works for workflow files already on `main`.** New
+  Apple jobs go into `spike-c-ios.yml` behind its `spike` input
+  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=d`).
+- **The host has 16 GB RAM and the emulator takes about 4.6 GB.** With Gradle
+  daemons and other sessions running, the host pages and the emulator stalls
+  for minutes, which voids any timing. Run `./gradlew --stop` and check
+  `\Memory\Available MBytes` before timing on the emulator. Use the AGP 9.2 line
+  with Gradle ≥ 9.4.1 and the Android Studio JBR (Java 21) as `JAVA_HOME`,
+  not the global Java 25.
+

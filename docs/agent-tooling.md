@@ -18,6 +18,16 @@
   measurement harness in `HANDOFF.md` (spike A), never from screenshots or an
   agent's impression.
 
+## Cloud test devices
+
+- `gcloud` is installed through scoop on the user's Windows machine and signed in
+  as the user's Google account, with project `ristle-spike` as the default.
+  The flag is `--no-record-video`; `--record-video=false` is rejected.
+- If the gcloud login expires, run `gcloud auth login` in the background and
+  have a UI agent click through the consent page in Chrome. Never type
+  passwords.
+- See the cost guardrails in `HANDOFF.md` before any Test Lab run.
+
 ## Known quirks (from Ristle legacy, may be outdated)
 
 - With cua-driver, UIA Select and PostMessage on react-native-windows returned

@@ -100,6 +100,18 @@ in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
    runner.
 4. Record the binding size and build-time overhead in both apps.
 
+## Cost guardrails
+
+- **Firebase project `ristle-spike` stays on the Spark plan.** Never upgrade it,
+  link a billing account or start a trial. Spark allows 5 physical-device runs
+  per day, and each device in a matrix counts as one run. Test Lab shuts down on
+  2027-09-30.
+- **GitHub Actions on this private repo:** macOS minutes count 10×. Apple jobs
+  are `workflow_dispatch` only until the repository is public. Keep runs few and
+  reuse the cache.
+- Anything else that could bill (VPS, paid services) needs the user's approval
+  first.
+
 ## Running the work
 
 - This repository's coordinating thread launches the design task and each spike

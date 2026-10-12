@@ -8,6 +8,10 @@ on:
         description: Also build the signed-ad-hoc device test zip for Firebase Test Lab
         type: boolean
         default: true
+      run_simulator:
+        description: Run the XCTest in the iOS Simulator first
+        type: boolean
+        default: true
 
 jobs:
   ios:
@@ -40,6 +44,7 @@ jobs:
           brew install xcodegen
           xcodegen generate
       - name: Test in iOS Simulator
+        if: ${{ inputs.run_simulator }}
         working-directory: spikes/c-wasm-ios/ios
         run: |
           SIM=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
@@ -61,7 +66,7 @@ jobs:
           codesign --force --sign - --timestamp=none "$APP"
           codesign --verify --deep --verbose=2 "$APP"
           ls *.xctestrun
-          zip -qr ../../../ristle-spike-ios.zip Debug-iphoneos *.xctestrun
+          zip -qr ../../../../ristle-spike-ios.zip Debug-iphoneos *.xctestrun
       - uses: actions/upload-artifact@v4
         if: ${{ inputs.device_build }}
         with:

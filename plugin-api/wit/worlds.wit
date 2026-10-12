@@ -39,6 +39,7 @@ world full-provider {
     export likes;
     export like-lookup;
     export playlist-editing;
-    export actions;
+    export reposts;
+    export feed;
     export byte-source;
 }

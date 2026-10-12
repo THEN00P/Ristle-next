@@ -26,7 +26,7 @@ impl Request {
 }
 fn json<T: DeserializeOwned>(r: Response) -> Result<T, Error>;
 // 2xx → T; 404/410 → Unavailable; 5xx → Transient; other → Internal(status + body excerpt)
-impl From<Item> for Entry { /* note: None */ }
+impl From<Item> for Entry { /* added: None, added_by: None */ }
 ```
 
 Every export receives `conn: &Connection`. All HTTP goes through
@@ -47,7 +47,8 @@ world plugin {
     export ristle:plugin/accounts@0.1.0;
     export ristle:plugin/likes@0.1.0;
     export ristle:plugin/playlist-editing@0.1.0;
-    export ristle:plugin/actions@0.1.0;
+    export ristle:plugin/reposts@0.1.0;
+    export ristle:plugin/feed@0.1.0;
 }
 ```
 
@@ -60,6 +61,7 @@ world plugin {
     export ristle:plugin/likes@0.1.0;
     export ristle:plugin/like-lookup@0.1.0;
     export ristle:plugin/playlist-editing@0.1.0;
+    export ristle:plugin/feed@0.1.0;
 }
 ```
 
@@ -92,6 +94,10 @@ redirects = ["loopback:8989/login", "scheme"]
 tracks = 50
 liked-states = 40
 playlist-add = 100
+[party]
+# Spotify's developer terms restrict what may be shown to people who are not
+# signed in to Spotify. Guests see only these fields.
+share = ["title", "artists", "duration"]
 ```
 
 ## What Plugins no longer do
@@ -424,27 +430,39 @@ Availability keeps legacy's rule: "playable" means exactly what `resolve` can
 open (unencrypted AAC-HLS), so label Tracks that offer only DRM HLS are listed
 as unavailable rather than failing at play time.
 
+## Pages are data
+
+An earlier draft returned every page as a list of generic sections (rows,
+shelves, grids) that the Plugin arranged. That is a layout language in
+disguise: every Plugin would arrange an artist page differently, and Ristle
+could not place "Popular" or "Releases" consistently across Providers.
+
+0.1 returns typed data instead. `open` answers with one of `album-page`,
+`playlist-page`, `profile-page` (for artists and users) or `view-page`, and
+the host has one layout per kind. A Plugin fills in the parts its Provider
+has and leaves the rest `none`; the host shows what is present, always in the
+same place. Generic sections remain only inside Provider Views, the escape
+hatch for surfaces that exist on one Provider (charts, a curated hub). Their
+`layout` is a variant so that new kinds can be added in later versions.
+
 ## Albums
 
-**Spotify** albums are albums. `open(Target::Album(id))` returns the album as
-the subject and one track section:
+**Spotify** albums are albums:
 
 ```rust
 fn open_album(conn: &Connection, id: &str) -> Result<Page, Error> {
     let a: AlbumDetail = json(conn.fetch(&get(format!("https://api.spotify.com/v1/albums/{id}")))?)?;
     let album = album(&a);
-    let tracks = a.tracks.items.iter().map(|t| Item::Track(simplified_track(t, &album)).into()).collect();
-    Ok(Page {
-        subject: Subject::Album(album),
-        sections: vec![Section {
-            title: None, layout: Layout::Rows, entries: tracks,
-            more: a.tracks.next.map(|next| More {
+    Ok(Page::Album(AlbumPage {
+        tracks: Part {
+            entries: a.tracks.items.iter().map(|t| Item::Track(simplified_track(t, &album)).into()).collect(),
+            more: a.tracks.next.is_some().then(|| More {
                 collection: Collection { id: format!("album:{id}"), addressing: Addressing::Offset,
                     total: Some(Count::Exact(a.tracks.total)), revision: None, endless: false },
                 next: None }),
-        }],
-        play: None,
-    })
+        },
+        album,
+    }))
 }
 ```
 
@@ -456,65 +474,87 @@ The `album_type` maps to `release-type` as in legacy (`album`, `single`,
 ("sets") with a `set_type`. The Plugin returns them as `Item::Album` where the
 set type says so, with the `set_type` mapped onto `release-type`, and as
 `Item::Playlist` otherwise. `open(Target::Album(id))` uses the same
-`/playlists/{id}` code as a playlist (see below), with `Subject::Album`.
+`/playlists/{id}` code as a playlist (see below) and returns `Page::Album`.
 
-## Artists and profiles
+## Artists and users
 
-An artist page is a subject plus sections. Legacy's `top_tracks`, `albums`,
-`releases_link` and `profile_modules` fields map onto ordinary sections, so
-the host renders them with the same code as everything else.
+Spotify has two kinds of account, and the API keeps them apart:
 
-**SoundCloud** users are artists:
+| | Spotify artist | Spotify user |
+|---|---|---|
+| Publishes | Tracks, albums, singles, compilations | Nothing |
+| Owns | Nothing | Playlists |
+| Page | Popular Tracks, releases, "appears on" | Public playlists |
+| Follow | `PUT /me/following?type=artist` | `PUT /me/following?type=user` |
+| Appears as | `track.artists`, `album.artists` | `playlist.owner`, a playlist's "added by" |
+
+A musician who also curates playlists has both, with different ids, and
+Spotify does not link them. Ristle shows them as two profiles too.
+
+This is why links to accounts are a `person` variant (`artist` or `user`)
+rather than a bare name and id: a playlist owner opens a user page, a Track's
+artist opens an artist page, and a follow goes to the right endpoint.
+`item-ref` and `target` have the same two cases.
+
+SoundCloud has one kind of account that can both upload and own playlists,
+so the SoundCloud Plugin reports every account as an artist. Both kinds of
+page use the same `profile-page` record, so nothing is lost: a SoundCloud
+profile simply fills more parts.
+
+**SoundCloud** profile:
 
 ```rust
 fn open_artist(conn: &Connection, id: &str) -> Result<Page, Error> {
-    let [user, tracks, albums] = fetch3(conn, [
+    let [user, tracks, albums, playlists] = fetch4(conn, [
         get(format!("{V2}/users/{id}")).ttl(300),
         get(format!("{V2}/users/{id}/tracks?limit=20&linked_partitioning=1")).ttl(300),
         get(format!("{V2}/users/{id}/albums?limit=12&linked_partitioning=1")).ttl(300),
+        get(format!("{V2}/users/{id}/playlists_without_albums?limit=12&linked_partitioning=1")).ttl(300),
     ])?;
     let user: V2User = json(user)?;
-    let tracks: Collection<V2Track> = json(tracks)?;
-    let albums: Collection<V2Playlist> = json(albums)?;
-    let link = |view: &str, title: &str, count: Option<u64>| Item::Link(Link {
-        to: ViewRef { view: view.into(), params: id.into() }, title: title.into(),
-        subtitle: count.map(|n| format!("{n}")), artwork: vec![] }).into();
-    Ok(Page {
-        subject: Subject::Artist(profile(&user)),
-        sections: vec![
-            Section { title: Some("Tracks".into()), layout: Layout::Rows,
-                      entries: tracks.items.iter().map(|t| Item::Track(track(t)).into()).collect(),
-                      more: tracks.next_href.map(|n| More { collection: cursor_collection(format!("artist-tracks:{id}")), next: Some(n) }) },
-            Section { title: Some("Releases".into()), layout: Layout::Shelf,
-                      entries: albums.items.iter().map(|p| Item::Album(album(p)).into()).collect(),
-                      more: None },
-            Section { title: None, layout: Layout::Rows, more: None, entries: vec![
-                link("discography", "Discography", None),
-                link("profile-playlists", "Playlists on their profile", user.playlist_count),
-                link("profile-likes", "Tracks they've liked", user.likes_count),
-                link("profile-reposts", "Reposts", None),
-            ] },
-        ],
-        play: Some(cursor_collection(format!("artist-discography:{id}"))),
-    })
+    Ok(Page::Artist(ProfilePage {
+        profile: profile(&user),
+        top_tracks: None,
+        tracks: Some(part(json(tracks)?, format!("tracks:{id}"), |t| Item::Track(track(t)))),
+        releases: Some(part(json(albums)?, format!("releases:{id}"), |p| Item::Album(album(p)))),
+        playlists: Some(part(json(playlists)?, format!("playlists:{id}"), |p| Item::Playlist(playlist(p)))),
+        // Opened lazily: only the collection is named here.
+        likes: Some(Part { entries: vec![], more: Some(cursor_more(format!("likes:{id}"))) }),
+        reposts: Some(Part { entries: vec![], more: Some(cursor_more(format!("reposts:{id}"))) }),
+        appears_on: None,
+        related: None,
+        discography: Some(cursor_collection(format!("discography:{id}"))),
+        extras: vec![],
+    }))
 }
 ```
 
-`play` names the collection Play and Shuffle use, which replaces legacy's
-`top_tracks_sequence` and the page-level `playable_sequence`. Its listing is
+`part` is the Plugin's own five-line helper that maps a SoundCloud
+`linked_partitioning` page onto a `Part` with `more` from `next_href`.
+
+`discography` is what Play and Shuffle use, which replaces legacy's
+`top_tracks_sequence` and page-level `playable_sequence`. Its listing is
 legacy's `artist-discography` sequence: release Tracks first, then the uploads
 that were never part of a set. The phase lives in the opaque `next` token,
-exactly as legacy's `DiscographySequenceCursor` did, and with
-`detail: Ids` it returns `Item::TrackId` entries so that the host can
-enumerate a large discography without fetching full Tracks.
+exactly as legacy's `DiscographySequenceCursor` did, and with `detail: Ids`
+it returns `Item::TrackId` entries so that the host can enumerate a large
+discography without fetching full Tracks.
 
-The drill-down views (`discography`, `profile-likes`, ...) are `open` with
-`Target::View` and return a `Subject::View` heading plus one section each.
+Legacy's `artist-releases`, `profile-playlists`, `profile-likes` and
+`profile-reposts` Provider Views are gone: they are now the `releases`,
+`playlists`, `likes` and `reposts` parts, and the host shows them the same way
+for SoundCloud, Audius or any other Provider that has them.
 
-**Spotify** artists have the same shape: popular Tracks (`/top-tracks`, no
-`more`), a releases shelf (`include_groups=album,single`), and a Discography
-link. Spotify users (playlist owners) are `Target::User`, whose page holds
-their public playlists.
+**Spotify** artist: `top_tracks` from `/artists/{id}/top-tracks` (no
+`more`), `releases` from `/artists/{id}/albums?include_groups=album,single,compilation`
+(offset-addressed, the host groups by `release-type`), `appears_on` from
+`include_groups=appears_on`, and `discography` as legacy's discography
+sequence. `related` stays `none`: Spotify closed related artists to new
+applications in 2024.
+
+**Spotify** user: `open(Target::User(id))` returns `Page::User` with
+`playlists` from `/users/{id}/playlists` and every other part `none`. The
+profile's `followers` comes from `/users/{id}`.
 
 ## Playlists
 
@@ -560,7 +600,8 @@ fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listin
     Ok(Listing {
         entries: page.items.into_iter().map(|i| match i.track {
             Some(t) if req.detail == Detail::Ids => Item::TrackId(t.id).into(),
-            Some(t) => Entry { item: Item::Track(track(&t)), note: added(&i) },
+            Some(t) => Entry { item: Item::Track(track(&t)), added: instant(&i.added_at),
+                               added_by: i.added_by.map(user) },
             None => Item::Unavailable(Some("No longer on Spotify".into())).into(),
         }).collect(),
         next: None,
@@ -636,8 +677,7 @@ fn my_library(conn: &Connection) -> Result<Library, Error> {
             shelf(LibraryKind::FollowedArtists, "Following", "following"),
             shelf(LibraryKind::Uploads, "Your tracks", "uploads"),
         ],
-        views: vec![Link { to: ViewRef { view: "feed".into(), params: String::new() },
-                           title: "Feed".into(), subtitle: None, artwork: vec![] }],
+        views: vec![],         // the feed is its own export, not a view
     })
 }
 ```
@@ -659,8 +699,7 @@ fn list_likes(conn: &Connection, req: ListRequest) -> Result<Listing, Error> {
         entries: page.items.iter().map(|l| match l {
             Like::Id(id) => Item::TrackId(id.to_string()).into(),
             Like::Full { track: t, created_at } => Entry { item: Item::Track(track(t)),
-                note: Some(Note { verb: Some(Verb::Liked), at: instant(created_at),
-                                  actor: None, caption: None, actions: vec![] }) },
+                added: instant(created_at), added_by: None },
         }).collect(),
         next: page.next_href,       // a repeated cursor is the host's problem now
         total: None, revision: None,
@@ -690,7 +729,7 @@ fn list_liked(conn: &Connection, req: ListRequest) -> Result<Listing, Error> {
         "https://api.spotify.com/v1/me/tracks?offset={offset}&limit={}", req.limit.min(50))))?)?;
     Ok(Listing {
         entries: page.items.iter().map(|s| Entry { item: Item::Track(track(&s.track)),
-            note: Some(liked_at(&s.added_at)) }).collect(),
+            added: instant(&s.added_at), added_by: None }).collect(),
         next: None,
         total: Some(Count::Exact(page.total)),
         // Spotify has no snapshot for Liked Songs. The total is a weak signal.
@@ -699,27 +738,42 @@ fn list_liked(conn: &Connection, req: ListRequest) -> Result<Listing, Error> {
 }
 ```
 
-The host does the rest, which is where the safety belongs:
+The host does the rest, which is where the safety belongs. Its rule is that
+a change to the collection never reshuffles: the order the user can see stays
+as it is, and changes are applied to what has not been decided yet.
 
-1. To shuffle 5,000 Liked Songs, it reads offset 0 once, learns the total,
-   and shuffles the positions 0..5000 without fetching them.
-2. Before playing position 3,117, it fetches the page at offset 3,100 (one
-   request covers the 17 neighbors it will need next), plays the Track it
-   actually got, and keeps the Track id. A position is never played without
-   first being read.
-3. If the page's `revision` differs from the one the shuffle was built on,
-   or a re-read page disagrees with Track ids it already knows for the same
-   slots, every position from the old revision is void. The host rebuilds the
-   remaining order from what it has already played, instead of mapping old
-   positions onto new neighbors.
-4. A like or unlike made in Ristle voids the revision immediately.
+1. **Shuffle without fetching.** To shuffle 5,000 Liked Songs, the host reads
+   offset 0 once, learns the total, and shuffles the positions 0..5000. The
+   shuffled order is a list of slots. A slot is either *resolved* (the host
+   has read it and knows its Track id) or still a *position*.
+2. **Resolve before showing or playing.** Before a slot reaches Up Next or
+   plays, the host reads the page around it (offset 3,100 covers position
+   3,117 and the neighbors it will need soon) and keeps the Track id. Up Next
+   only ever shows resolved slots, so what the user sees is a real Track and
+   stays that Track.
+3. **A like or unlike made in Ristle is applied, not voided.** Spotify adds a
+   new like at position 0, so every unresolved position moves down by one and
+   the new Track is inserted at a random point among the slots still to come.
+   An unlike removes that Track from the slots still to come; if its position
+   is known, the positions behind it move up by one. Nothing already resolved
+   moves, and nothing reshuffles.
+4. **A change made elsewhere is found and re-based lazily.** The host notices
+   it when a page's `revision` (the total, here) differs or a re-read page
+   disagrees with Track ids it already knows. It does not throw the order
+   away. When it next needs an unresolved position, it reads that page under
+   the new revision and uses the Track ids it already knows on that page to
+   work out how far positions moved. Tracks already played in this pass are
+   skipped if they turn up again, and new likes discovered at the top join
+   the remaining order at random points, as in step 3.
 
 Legacy's saved-tracks page cache in the Plugin is gone; the host keeps fetched
 pages for the life of the shuffle.
 
 What 0.1 cannot fix: an unlike and a like made elsewhere between two reads
-keep the total equal and shift positions. Step 3's overlap check catches it
-only on pages the host has seen before. That is a limit of Spotify's API, and
+keep the total equal and shift positions. Step 4 detects that only on pages
+the host has seen before. The cost is bounded: an unresolved slot may land on
+a different Track than it would have, which the user never saw, and the
+played-in-this-pass check prevents repeats. That is a limit of Spotify's API, and
 it is now handled in one place instead of in each Plugin.
 
 ## Likes
@@ -767,47 +821,103 @@ Rate limits: after a 429 the host holds back requests to `api.spotify.com`
 and shows that Spotify is rate-limiting, instead of legacy's three-second
 toast and a one-minute back-off hard-coded in the app.
 
-## Feeds and Provider Views
+## The feed
 
-The SoundCloud feed is a Provider View whose page is one `rows` section over
-an endless collection. Each event is an entry with a note:
+Ristle has one feed, not one per Provider. A user following artists on
+SoundCloud, Spotify and Audius sees one timeline of what they published and
+reposted. That only works if every Provider describes posts the same way, so
+the feed is typed data (`feed.post`), not a Provider View.
+
+What feeds have in common, and what the record holds:
+
+| Field | SoundCloud | Spotify | Audius |
+|---|---|---|---|
+| `item` (Track, album, playlist) | yes | album or single | yes |
+| `author` (who published it) | yes | the artist | yes |
+| `at` | yes | release day | yes |
+| `reposted-by` (an account, linkable) | yes | no | yes |
+| `text` (post or repost caption) | yes | no | yes |
+| `counts` (likes, reposts, comments, plays) | yes | no | yes |
+
+Liking a post is the standard like control (`likes`). Reposting is
+`reposts.set-reposted`, typed like liking rather than a Plugin-defined action.
+Comments are not in 0.1; `counts.comments` shows how many there are.
+
+**Merging.** The host asks each Provider Connection that exports `feed` for its
+first page and merges by `at`, newest first. It reads a Provider's next page
+only when that Provider's oldest post so far is newer than everyone else's, so
+a busy SoundCloud feed does not make Ristle page through Spotify needlessly.
+Reposts of the same item by several accounts are grouped ("Reposted by A and
+B"). Post ids keep refreshed posts in place.
+
+**Refreshing** happens only when the user asks: pull down on mobile, the
+refresh button on desktop. Nothing reloads by itself and moves rows under the
+user's finger.
+
+**SoundCloud** maps its `/stream` endpoint directly:
 
 ```rust
-fn feed_entry(e: &V2FeedItem) -> Option<Entry> {
-    let (item, urn) = match (&e.track, &e.playlist) {
-        (Some(t), _) => (Item::Track(track(t)), t.urn.clone()),
-        (_, Some(p)) => (Item::Playlist(playlist(p, false)), format!("soundcloud:playlists:{}", p.id)),
+fn posts(conn: &Connection, cursor: Option<String>, limit: u32) -> Result<FeedPage, Error> {
+    let url = match cursor {
+        Some(next) => checked_v2_url(&next)?,
+        None => format!("{V2}/stream?limit={}&linked_partitioning=1", limit.min(100)),
+    };
+    let page: Collection<V2FeedItem> = json(sc(conn, get(url))?)?;
+    Ok(FeedPage { posts: page.items.iter().filter_map(post).collect(), next: page.next_href })
+}
+
+fn post(e: &V2FeedItem) -> Option<Post> {
+    let (item, author) = match (&e.track, &e.playlist) {
+        (Some(t), _) => (Item::Track(track(t)), artist_ref(&t.user)),
+        (_, Some(p)) => (Item::Playlist(playlist(p)), artist_ref(p.user.as_ref()?)),
         _ => return None,
     };
-    Some(Entry { item, note: Some(Note {
-        actor: e.user.as_ref().map(profile),
-        verb: Some(if e.kind.contains("repost") { Verb::Reposted } else { Verb::Posted }),
-        at: instant(&e.created_at),
-        caption: None,
-        actions: vec![Action { id: format!("repost:{urn}"), label: "Repost".into(), confirm: false }],
-    }) })
+    let repost = e.kind.contains("repost");
+    Some(Post {
+        id: e.uuid.clone()?,
+        at: instant(&e.created_at)?,
+        item,
+        author,
+        reposted_by: repost.then(|| e.user.as_ref().map(artist_ref)).flatten(),
+        text: e.caption.clone(),
+        counts: Some(Counts { likes: e.likes_count(), reposts: e.reposts_count(),
+                              comments: e.comment_count(), plays: e.playback_count() }),
+    })
 }
 ```
 
-Legacy attached both "Like" and "Repost" as plugin actions. "Like" is now the
-host's standard like control, so only Repost remains, and `actions.invoke`
-handles it:
+Legacy attached "Like" and "Repost" to every feed row as Plugin actions. Both
+are now standard controls, so the Plugin returns no actions at all.
 
 ```rust
-fn invoke(conn: &Connection, action: String) -> Result<Option<String>, Error> {
-    let urn = action.strip_prefix("repost:").ok_or_else(|| Error::Unsupported(action.clone()))?;
-    expect_2xx(sc(conn, with_empty_body(Method::Put, format!("{V2}/me/reposts/{}", checked_urn(urn)?)))?)?;
-    Ok(Some("Reposted".into()))
+fn set_reposted(conn: &Connection, item: ItemRef, reposted: bool) -> Result<(), Error> {
+    let path = match item {
+        ItemRef::Track(id) => format!("{V2}/me/reposts/tracks/{id}"),
+        ItemRef::Playlist(id) => format!("{V2}/me/reposts/playlists/{id}"),
+        _ => return Err(Error::Unsupported("Only Tracks and playlists can be reposted".into())),
+    };
+    expect_2xx(sc(conn, with_empty_body(if reposted { Method::Put } else { Method::Delete }, path))?)
 }
 ```
 
-Legacy's `refresh_token` on the feed page and the 30-second feed cache become
-`.ttl(30)` on the `/stream` request; "pull to refresh" asks the host to
-re-list from `start`, and the host's stale-while-revalidate does the rest.
+**Spotify** has no feed endpoint. Its Plugin builds one from new releases by
+followed artists: list followed artists (`/me/following?type=artist`, 50 per
+page), ask each for its latest releases (`/artists/{id}/albums?include_groups=album,single&limit=5`),
+and return the albums as posts with `at` set to the release day. With 200
+followed artists that is about 200 requests, which Spotify's rate limits will
+not tolerate on every refresh. The Plugin therefore marks the per-artist
+requests `.ttl(86_400)` and reads them through `fetch_all`. A user-requested
+refresh revalidates them, but conditional requests that come back unchanged
+are cheap, and a rate-limited refresh still shows the cached releases
+(`stale-seconds`). Whether Spotify's feed is worth this is decision 4 below.
 
-Legacy protocol 1.9 also had chart, station, article and external-link
-sections. Neither Plugin used them, and they are not in 0.1 (see the
-decisions).
+## Provider Views
+
+What remains a Provider View is what only one Provider has: a charts page, a
+curated hub, a station list. Their pages are a title plus `section`s
+(`rows`, `shelf` or `grid` over a `part`), linked from `library.views` or from
+`profile-page.extras`. Neither legacy Plugin needs one any more: SoundCloud's
+feed and profile drill-downs and Spotify's discography all became typed data.
 
 ## Streams
 
@@ -894,6 +1004,30 @@ offset, decrypts, drops the first 167 bytes and demuxes Ogg Vorbis with
 Symphonia. Seeking is the host's normal Ogg seek. The Plugin spends no CPU on
 audio, which matters on iOS, where Plugins run about 24× slower than native.
 
+**What the access point is, and what statelessness costs.** Spotify's own
+clients keep one long-lived TCP connection to an "access point"
+(`ap-*.spotify.com`, port 4070 or 443) with Spotify's own encryption. It
+predates their HTTPS APIs, and some things are still only available there,
+among them the keys that decrypt audio files. librespot, and therefore
+ncspot and Ristle legacy, open it once per session.
+
+Under 0.1 the connection lives in the memory of one Plugin instance, because
+sockets cannot be stored. When the host discards that instance, the next
+audio key needs a new connection. That costs:
+
+- **Time, not a sign-in.** Reconnecting is a TCP and crypto handshake plus a
+  login with the stored playback token, about 0.3–1 s. The user is not asked
+  for anything, and no credential is lost.
+- **No cache.** Audio keys are in `storage`, not in the instance, so they
+  survive. Only Tracks never played before need the access point at all, and
+  the key for the next Track is fetched while the current one plays.
+- **Some extra logins.** Each reconnection is a login from Spotify's point of
+  view. The host limits this by keeping an instance alive while it is in use
+  (during playback, and for a few minutes after the last call) instead of
+  discarding instances eagerly. Web API calls do not go through the access
+  point, so they are unaffected; their rate limits are the playback client's
+  existing problem, handled by the host's back-off.
+
 Two parts of this are unverified and decide whether the Spotify Plugin works
 at all (see the decisions):
 
@@ -951,13 +1085,37 @@ because `tracks` is required for hydration; `my-library` and `open` may return
 almost nothing.
 
 Where the WIT is still wordy: generated records have no defaults, so a
-`Track` or `Note` literal lists every field. The SDK should derive `Default`
+`Track` or `ProfilePage` literal lists every field. The SDK should derive `Default`
 where the bindings allow it and offer constructors such as
-`Note::liked(at)`. That is SDK work, not a WIT change.
+`Entry::added(item, at)`. That is SDK work, not a WIT change.
+
+## Refreshing and background calls
+
+Ristle refreshes only when the user asks. Content that moves by itself causes
+misclicks and spends rate limits.
+
+- **Feed, pages, library:** pull down on mobile, a refresh button on desktop.
+  Opening a page shows what is cached; it fetches only when nothing is cached
+  or the cache has expired, and never swaps content after showing it.
+- **Likes and playlists:** the same. Refreshing the library re-lists its
+  shelves and compares revisions, so unchanged playlists cost one request.
+  Changes made in Ristle are applied locally right away and need no refresh.
+- **During a refresh** the host revalidates the cached HTTP responses the
+  Plugin reads, so Plugins have no refresh flag. A rate-limited refresh keeps
+  showing the cached data (`cache-override.stale-seconds`) with a notice.
+
+Background calls are calls the user made from outside the app's screens: a
+like from the lock screen or a notification, Android Auto browsing the
+library and starting a playlist, a Party guest's search or request reaching
+the host. They are ordinary Plugin calls, made while the app is in the
+background, and the Plugin cannot tell the difference. They belong to the
+phases that build those surfaces (Android in phase 3, Party in phase 5), not
+to a separate scheduler. There are no timed or periodic Plugin calls.
 
 ## What the walkthrough changed
 
-Each of these came from a mapping that read badly in an earlier draft:
+Each of these came from a mapping that read badly in an earlier draft, or
+from review:
 
 1. **Sequences merged into collections.** Both legacy Plugins implement every
    playlist, album and artist list twice (`*_page` and
@@ -970,77 +1128,70 @@ Each of these came from a mapping that read badly in an earlier draft:
    headers and query parameters from the token. `credential.attach` states
    them once, and refreshing replaces them.
 4. **Capabilities are exports.** Stub functions returning `unsupported`
-   cluttered both Plugins (SoundCloud has no playlist writes in legacy, no
-   batch liked state). Optional interfaces removed the stubs and the
+   cluttered both Plugins. Optional interfaces removed the stubs and the
    capability flags.
 5. **No `connect` export.** Legacy's `ConfigureConnection` validated
-   credentials and fetched the account label on every start. The host now
-   holds the account from sign-in and only calls `refresh-credential` when
-   needed.
-6. **Like is not an action.** The feed attached a Plugin "Like" action next to
-   the host's like control. Only Provider-specific actions (Repost) remain.
-7. **Liked state can be host-derived,** which removed SoundCloud's most
+   credentials and fetched the account label on every start. The host holds
+   the account from sign-in and only calls `refresh-credential` when needed.
+6. **Liked state can be host-derived,** which removed SoundCloud's most
    intricate in-Plugin cache.
+7. **Pages are typed data** (review). Generic sections were a layout language
+   in disguise. Album, playlist and profile pages are now records the host
+   lays out the same way for every Provider; sections remain only in
+   Provider Views.
+8. **The feed is first class** (review). One merged feed across Providers,
+   from typed posts with a linkable author and reposter, instead of a
+   SoundCloud-only Provider View.
+9. **Reposts are typed and Plugin actions are gone** (review). Like and
+   repost were the only row actions either Plugin had.
+10. **Accounts are `artist` or `user`** (review). Spotify keeps them apart, so
+    links to accounts are a `person` variant.
+11. **Drift never reshuffles** (review). Changes to an offset collection are
+    applied to what has not been decided yet, never to what the user sees.
+12. **No background revalidation** (review). Stale-while-revalidate became
+    stale-if-error; fetching again is the user's decision.
 
-## Decisions and open questions for the user
+## Decisions
 
-Decisions taken in this draft that the user should confirm or overturn:
+Settled in review (2026-10-12):
 
-1. **Raw TCP (`socket`).** Only Spotify needs it, for audio keys from the
-   access point. Without it Spotify cannot play at all under ADR 0004. It is
-   manifest-declared per host and port and shown separately on the consent
-   screen. Accept it, or accept that Spotify playback is out of scope?
-2. **Web capture is declarative.** Legacy's `WEB_CAPTURE_FRAMEWORK.md`
-   deliberately chose an interactive loop over a rules engine. This draft
-   reverses that: the Plugin declares values, sources and page scripts, and
-   the host decides completion. SoundCloud fits, and page scripts with
-   `ristle.capture` are the escape hatch for values hidden in the DOM or in
-   responses a script can fetch. What is lost is step logic that depends on
-   values seen so far. Keep declarative, or add an optional
-   `observe-capture` export later if a Provider needs it?
-3. **Plugins are stateless between calls.** Any instance may serve any call;
-   memory is a cache. This makes concurrency and recovery simple and is why
-   the host keeps authorization state, credentials and liked-state indexes. A
-   Plugin that needs a warm connection (Spotify's access point) reconnects
-   after its instance is discarded. Confirm.
-4. **My Library Search is host-side.** No Plugin searches its own library.
-   Providers with a server-side library search (none of the two) cannot use
-   it in 0.1.
-5. **Provider Views are rows, shelves and grids** of standard items, with
-   notes and actions per row (open question 1 in `requirements.md`). No
-   hero, chart, station or article sections. Add them when a Plugin needs
-   one?
-6. **Partial write failure** (open question 2): writes are not atomic. The host
-   chunks by manifest limits and reports per chunk; a Plugin reports refused
-   items in `outcome.rejected`. Enough?
-7. **No background tasks** (open question 3) in 0.1. Feeds refresh through the
-   host's revalidation when opened. Notifications for new feed items would
-   need a scheduled export with a budget; deferred.
-8. **Media hosts may be wildcards** such as `*.scdn.co`. The host fetches
-   stream URLs on the Plugin's behalf, so this is an exfiltration channel if
-   it is too broad. Spotify's CDN list includes `audio-ak-spotify-com.akamaized.net`,
-   which is exact; is `*.akamaized.net` ever acceptable?
-9. **Device-code sign-in is kept** although neither Plugin uses it, because
+- **Raw TCP (`socket`)** is accepted. Only Spotify needs it.
+- **Web capture stays declarative.** Revisit when SoundCloud testing starts
+  and more Plugins need web capture.
+- **Plugins are stateless between calls,** and My Library Search is
+  host-side.
+- **Provider Views keep rows, shelves and grids** for now, with `layout` as a
+  variant so new kinds can be added.
+- **Partial writes are not atomic.** The host chunks by manifest limits and
+  reports per chunk; Plugins report refused items in `outcome.rejected`.
+- **No timed background work.** Refreshes are user-triggered; background
+  calls are user actions from the lock screen, Android Auto or a Party.
+- **Media-host wildcards** are acceptable.
+- **Versioning:** `0.x` until the first third-party Plugin ships, then `1.0`.
+  New fields mean a new package version; the host implements every `1.x`
+  world side by side and keeps the previous major for 12 months.
+- **Party metadata:** `track`, `album`, `profile` and `playlist` fields may
+  be relayed to guests, never anything from `credential`, `stream-source` or
+  `storage`. A Plugin can narrow this in its manifest (`[party] share`),
+  which Spotify needs because its developer terms are stricter.
+- **A Spotify spike** confirms the access point and spclient paths before the
+  WIT is final. Its brief is in `HANDOFF.md`.
+
+Still open:
+
+1. **Spotify's feed.** It has to be built from followed artists' releases,
+   about one request per followed artist on a refresh, against the
+   rate-limited playback client. Ship it with long caching, or leave
+   Spotify out of the feed until it proves affordable?
+2. **Which fields Spotify allows to be shared.** The `share` list above is a
+   placeholder; it needs a reading of Spotify's current developer terms.
+3. **Comments** are counted in posts but cannot be read or written. Needed
+   for 1.0?
+4. **`gain-db`** carries a Provider's intended level (Spotify publishes one).
+   Legacy did not normalize. Keep or drop?
+5. **Queue Projection and settings pages** are not in 0.1. Both were reserved
+   but unused in legacy. Can they wait?
+6. **SoundCloud playlist writes** were never enabled in legacy. Add them in
+   the port (needs a measured web-session `PUT`), or keep parity?
+7. **Device-code sign-in** is kept although neither Plugin uses it, because
    TV-style Providers need it and it costs one case.
-10. **`gain-db` is in the Stream Source** for Providers that publish an
-    intended level (Spotify). Ristle legacy did not normalize. Keep or drop?
-
-Open questions:
-
-11. **Versioning and deprecation** (open question 4). WIT records cannot gain
-    fields compatibly, so any new `track` field is a new package version. The
-    proposal: stay at `0.x` until the first third-party Plugin ships, then
-    `1.0`. Additions go into new interfaces or a new minor version; the host
-    implements every `1.x` world side by side and keeps the previous major for
-    12 months after a new one. Is 12 months right?
-12. **Party metadata** (open question 5). Proposal: every field of `track`,
-    `album`, `profile` and `playlist` may be relayed to guests; nothing from
-    `credential`, `stream-source` or `storage` ever is. Is any Track field
-    too private, for example a private SoundCloud upload's `url`?
-13. **Spotify feasibility.** The access point and spclient-over-HTTPS paths
-    above are unverified. A short spike should confirm them before the WIT is
-    final, because they decide whether `socket` stays.
-14. **Queue Projection and settings pages** are not in 0.1. Both were reserved
-    but unused in legacy. Confirm they can wait.
-15. **SoundCloud playlist writes** were never enabled in legacy. Should the
-    port add them (needs a measured web-session `PUT`), or keep parity?

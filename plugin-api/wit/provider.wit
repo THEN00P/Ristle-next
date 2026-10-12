@@ -7,14 +7,21 @@ package ristle:plugin@0.1.0;
 /// - Calls to one instance run one at a time. The host may run several
 ///   instances of a Plugin and may discard an instance between any two calls,
 ///   so memory is a cache only. Anything that must survive goes into the
-///   Credential Record, `storage`, or the tokens the Plugin returns.
+///   Credential Record, `storage`, or the tokens the Plugin returns. The host
+///   keeps an instance alive while it is in use (during playback, and for a
+///   few minutes after its last call), so warm connections are rarely lost.
 /// - Every call names a Provider Connection. For a public item the host
 ///   passes the connection it came from, or any connected one.
 /// - The host batches. It never asks for more ids in one `tracks` call, or
 ///   more items in one `likes.liked-states` call, than the manifest's
 ///   `limits` allow, and it chunks large playlist adds the same way.
-/// - The host caches page and listing results and revalidates them in the
-///   background. Plugins do not keep their own result caches.
+/// - The host caches page and listing results. It fetches again only when the
+///   user asks (pull to refresh, a refresh button), when nothing is cached,
+///   or when the cache has expired as the user navigates. It never replaces
+///   content the user is looking at by itself. Plugins keep no result caches.
+/// - Calls also come while the app is in the background, on behalf of the
+///   user: a like from the lock screen, Android Auto browsing the library, a
+///   Party guest's search. They are ordinary calls.
 /// - Never sleep, retry or poll inside a call. Return an `error` and let the
 ///   host decide.
 interface catalog {
@@ -64,11 +71,11 @@ interface catalog {
     /// navigation. Called after sign-in and when the user refreshes.
     my-library: func(conn: borrow<connection>) -> result<library, error>;
 
-    /// An album, artist, user, playlist or Provider View, as a header and
-    /// sections.
+    /// An album, artist, user, playlist or Provider View, as data the host lays
+    /// out.
     open: func(conn: borrow<connection>, target: target) -> result<page, error>;
 
-    /// One page of a collection from `my-library`, `open` or a section.
+    /// One page of a collection from `my-library` or a page.
     %list: func(conn: borrow<connection>, collection: string, request: list-request) -> result<listing, error>;
 
     /// Full Tracks for ids, in the same order. A Track that no longer exists
@@ -370,13 +377,58 @@ interface playlist-editing {
     delete: func(conn: borrow<connection>, playlist: string) -> result<_, error>;
 }
 
-/// Plugin-defined row actions (`types.action`).
-interface actions {
-    use types.{error};
+/// Reposting Tracks and playlists to the user's followers (SoundCloud,
+/// Audius).
+interface reposts {
+    use types.{error, item-ref};
     use connection.{connection};
 
-    /// Returns a short confirmation to show, if any.
-    invoke: func(conn: borrow<connection>, action: string) -> result<option<string>, error>;
+    set-reposted: func(conn: borrow<connection>, item: item-ref, reposted: bool) -> result<_, error>;
+}
+
+/// The user's feed: what the accounts they follow published or reposted.
+///
+/// Ristle has one feed. The host merges the feeds of every Provider
+/// Connection into it by `post.at`, so posts must come newest first. It reads
+/// the next page of a Provider only when that Provider's oldest post so far
+/// is newer than the others', and it groups reposts of the same item. The
+/// feed is refreshed only when the user asks.
+interface feed {
+    use types.{error, instant, item, person};
+    use connection.{connection};
+
+    record counts {
+        likes: option<u64>,
+        reposts: option<u64>,
+        comments: option<u64>,
+        plays: option<u64>,
+    }
+
+    record post {
+        /// Stable for the same post, so the host keeps a refreshed feed in
+        /// place instead of redrawing it.
+        id: string,
+        /// When it was published, or reposted for a repost. A release known
+        /// only by day is midnight UTC of that day.
+        at: instant,
+        /// A Track, album or playlist. Never `track-id`.
+        item: item,
+        /// Who published the item.
+        author: person,
+        /// Who put it in the feed by reposting it.
+        reposted-by: option<person>,
+        /// The post's text, or the caption of a repost.
+        text: option<string>,
+        counts: option<counts>,
+    }
+
+    record feed-page {
+        posts: list<post>,
+        next: option<string>,
+    }
+
+    /// One page, newest first. `cursor` is a `next` from the previous page.
+    posts: func(conn: borrow<connection>, cursor: option<string>, limit: u32) -> result<feed-page, error>;
 }
 
 /// Plugin Byte Sources. Export this only if `resolve` returns

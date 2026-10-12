@@ -16,6 +16,9 @@ package ristle:plugin@0.1.0;
 ///   It does not retry.
 /// - Caching. The host honors `Cache-Control` unless `cache` says otherwise.
 ///   Cache keys always include the Plugin and the Provider Connection.
+///   During a call the user asked to refresh, the host revalidates every
+///   cached response it would otherwise reuse (conditional requests where the
+///   server supports them), so a Plugin never needs a "refresh" flag.
 interface http {
     use types.{header};
 
@@ -31,8 +34,9 @@ interface http {
     record cache-override {
         /// Treat the response as fresh for this long, whatever its headers say.
         ttl-seconds: u32,
-        /// Then keep serving it for this long while the host fetches a fresh
-        /// copy in the background (stale-while-revalidate).
+        /// After that, keep serving it for this long when the Provider is
+        /// unreachable or rate-limiting (stale-if-error). The host never
+        /// refetches in the background.
         stale-seconds: u32,
         /// Replaces the URL as the cache key, for URLs that carry volatile
         /// parameters such as a client id.

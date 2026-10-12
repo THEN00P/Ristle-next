@@ -97,8 +97,12 @@ _Avoid_: Author, developer account
 An explicit user grant allowing a Plugin to access credentials or another protected resource stored by Ristle. The compact consent screen names those Ristle-managed resources without repeating permissions already shown by the Provider's authorization flow.
 _Avoid_: Shared access, implicit access
 
+**Feed**:
+One timeline of what the accounts a user follows published or reposted, merged by date across every Provider Connection that has one. Posts keep their Provider, author and reposter. It refreshes only when the user asks.
+_Avoid_: Provider feed, stream
+
 **Provider View**:
-A Plugin-defined browse surface beyond the standard library kinds, such as a SoundCloud feed, new releases, or a user profile. The Plugin supplies rows and drill-down links; Ristle renders them with its standard list UI.
+A browse surface only one Provider has, such as charts or a curated hub. The Plugin supplies sections of standard items and drill-down links; Ristle renders them with its standard list UI. Albums, artists, users, playlists, the library and the Feed are not Provider Views: they are typed pages laid out the same way for every Provider.
 _Avoid_: Custom page, plugin UI
 
 **Stream Source**:

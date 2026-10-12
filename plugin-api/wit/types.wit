@@ -134,15 +134,29 @@ interface types {
         url: option<string>,
     }
 
+    /// A link to an account, typed so the host opens the right page.
+    ///
+    /// Artists publish music: Tracks, albums, releases. Users own playlists
+    /// and follow others. On Spotify they are separate entities with separate
+    /// ids, even for a musician who also has a user account. On SoundCloud
+    /// every account can upload, so SoundCloud reports every account as an
+    /// artist.
+    variant person {
+        artist(named),
+        user(named),
+    }
+
     /// An artist or a user. Which one it is follows from where it appears
-    /// (`item.artist` or `item.user`). SoundCloud uploaders are artists.
+    /// (`item.artist`, `item.user`, `page.artist`, `page.user`).
     record profile {
         id: string,
         name: string,
         artwork: list<image>,
-        /// One short line such as a city or a follower count, already
-        /// formatted in the user's locale.
-        caption: option<string>,
+        /// Biography or profile text.
+        about: option<string>,
+        followers: option<u64>,
+        /// City or country, as the Provider shows it.
+        location: option<string>,
         url: option<string>,
     }
 
@@ -150,7 +164,7 @@ interface types {
         id: string,
         title: string,
         description: option<string>,
-        owner: option<named>,
+        owner: option<person>,
         artwork: list<image>,
         track-count: option<u32>,
         created: option<media-date>,
@@ -169,8 +183,11 @@ interface types {
         parent: option<string>,
     }
 
-    /// A Provider View, named by the Plugin. `params` is opaque to the host
-    /// and comes back unchanged, for example a user id.
+    /// A Provider View: a surface only this Provider has, such as charts or
+    /// a curated hub. Named by the Plugin; `params` is opaque to the host and
+    /// comes back unchanged. Albums, artists, users, playlists, the library
+    /// and the feed are not views: they have typed pages that the host lays
+    /// out the same way for every Provider.
     record view-ref {
         view: string,
         params: string,
@@ -195,7 +212,7 @@ interface types {
         link(link),
         /// A Track known only by id. Only valid in collection listings: the
         /// host fetches it later through `catalog.tracks`, in batches. Search
-        /// results and pages never contain it.
+        /// results, pages and feeds never contain it.
         track-id(string),
         /// A position the Provider still holds but cannot describe or play,
         /// such as a deleted Track inside a playlist. It keeps later positions
@@ -212,7 +229,7 @@ interface types {
         view(view-ref),
     }
 
-    /// Something a user can like, save or follow.
+    /// Something a user can like, save, follow or repost.
     variant item-ref {
         track(string),
         album(string),
@@ -222,39 +239,16 @@ interface types {
     }
 
     // ---------------------------------------------------------------------
-    // Lists, collections and pages
-
-    /// A Plugin-defined action on one row, such as SoundCloud's Repost. Liking
-    /// is not an action: the host offers it through the `likes` interface.
-    record action {
-        id: string,
-        label: string,
-        /// Ask the user before invoking.
-        confirm: bool,
-    }
-
-    enum verb {
-        posted,
-        reposted,
-        liked,
-        added,
-        recommended,
-    }
-
-    /// Why a row is in a list and when it got there: "Reposted by X, 2 h ago",
-    /// "Liked on 3 May". Feeds are ordinary lists with notes.
-    record note {
-        actor: option<profile>,
-        verb: option<verb>,
-        at: option<instant>,
-        caption: option<string>,
-        actions: list<action>,
-    }
+    // Lists and collections
 
     /// One row of a list.
     record entry {
         item: item,
-        note: option<note>,
+        /// When it was added to this list: the like date in a likes list, the
+        /// add date in a playlist.
+        added: option<instant>,
+        /// Who added it, in a collaborative playlist.
+        added-by: option<person>,
     }
 
     /// How the host may address the entries of a collection.
@@ -263,11 +257,12 @@ interface types {
         /// host has to fetch later carry stable Track ids (`item.track-id`).
         cursor,
         /// Any offset can be requested directly (`cursor.offset`). A position
-        /// names a slot, not an item: when the collection changes, every
-        /// position moves. The host never treats an unhydrated position as a
-        /// Track. It fetches the slot and checks the `revision`. A changed
-        /// revision voids every position taken under the old one, and the
-        /// host re-reads instead of mapping a position onto a neighbor.
+        /// names a slot, not an item, and moves when the collection changes.
+        /// The host never plays a position it has not read in the current
+        /// revision: it reads the slot first and keeps the Track id it found.
+        /// When the collection changes, the host re-bases what it still has to
+        /// play onto the new positions. It never reshuffles, and never
+        /// reorders what the user already sees.
         offset,
     }
 
@@ -286,8 +281,8 @@ interface types {
         /// etag or Spotify's `snapshot_id`. Lets the host revalidate cheaply.
         /// Leave it out when the Provider offers nothing reliable.
         revision: option<string>,
-        /// Never ends (a feed, a generated radio). The host plays it in order
-        /// and never shuffles it as a whole.
+        /// Never ends (a generated radio). The host plays it in order and
+        /// never shuffles it as a whole.
         endless: bool,
     }
 
@@ -325,18 +320,10 @@ interface types {
         revision: option<string>,
     }
 
-    enum layout {
-        rows,
-        shelf,
-        grid,
-    }
-
-    /// One block of a page. The first entries come inline; `more` continues
-    /// them.
-    record section {
-        title: option<string>,
-        layout: layout,
+    /// The first entries of a list, and how to continue it.
+    record part {
         entries: list<entry>,
+        /// `none` when `entries` is the whole list.
         more: option<more>,
     }
 
@@ -346,27 +333,78 @@ interface types {
         next: option<string>,
     }
 
-    record heading {
+    // ---------------------------------------------------------------------
+    // Pages
+    //
+    // Pages are data. The host owns one layout per page kind and shows the
+    // parts a Provider fills in, in the same place for every Provider. A part
+    // the Provider does not have is `none` and is not shown.
+
+    record album-page {
+        album: album,
+        tracks: part,
+    }
+
+    record playlist-page {
+        playlist: playlist,
+        tracks: part,
+    }
+
+    /// An artist's or a user's page. Spotify artists fill `top-tracks`,
+    /// `releases` and `appears-on`; Spotify users fill `playlists`.
+    /// SoundCloud accounts fill `tracks`, `releases`, `playlists`, `likes`
+    /// and `reposts`.
+    record profile-page {
+        profile: profile,
+        /// Popular Tracks, most popular first.
+        top-tracks: option<part>,
+        /// Albums, EPs, singles and compilations. The host groups them by
+        /// `release-type`.
+        releases: option<part>,
+        /// Every Track they published, newest first.
+        tracks: option<part>,
+        /// Their public playlists.
+        playlists: option<part>,
+        /// Releases by others that feature them.
+        appears-on: option<part>,
+        /// Tracks they liked, if public.
+        likes: option<part>,
+        /// What they reposted.
+        reposts: option<part>,
+        related: option<part>,
+        /// Everything they released, in order, for Play and Shuffle.
+        discography: option<collection>,
+        /// Surfaces only this Provider has, as links to Provider Views.
+        extras: list<link>,
+    }
+
+    enum layout {
+        rows,
+        shelf,
+        grid,
+    }
+
+    /// One block of a Provider View. New layouts arrive as new cases in later
+    /// versions, and the host adapts Plugins built against older ones.
+    record section {
+        title: option<string>,
+        layout: layout,
+        content: part,
+    }
+
+    record view-page {
         title: string,
         subtitle: option<string>,
         artwork: list<image>,
-    }
-
-    /// What a page is about.
-    variant subject {
-        album(album),
-        artist(profile),
-        user(profile),
-        playlist(playlist),
-        view(heading),
-    }
-
-    record page {
-        subject: subject,
         sections: list<section>,
-        /// What Play and Shuffle use. When `none`, the host uses the first
-        /// `rows` section that holds Tracks.
-        play: option<collection>,
+    }
+
+    variant page {
+        album(album-page),
+        artist(profile-page),
+        user(profile-page),
+        playlist(playlist-page),
+        view(view-page),
     }
 
     enum library-kind {
@@ -387,7 +425,7 @@ interface types {
 
     record library {
         shelves: list<shelf>,
-        /// Provider Views shown in navigation, such as a feed.
+        /// Provider Views shown in navigation, such as charts.
         views: list<link>,
     }
 

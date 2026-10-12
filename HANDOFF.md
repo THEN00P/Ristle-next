@@ -1,7 +1,7 @@
 # Handoff
 
 Current phase: **1, design and spikes.** Decisions are recorded in ADRs
-0001–0011. Next come the Plugin API design and four spikes (A–D).
+0001–0011. Next come the Plugin API design and five spikes (A–E).
 
 Spikes are the only disposable work in this repository. Each lives in
 `spikes/<letter>-<name>/` and is deleted once its findings are written into the
@@ -14,9 +14,9 @@ disposable either: it is the behavioral reference.
 | Phase | Content | Exit |
 |---|---|---|
 | 0. Decisions | ADRs, `CONTEXT.md`, UI rules, Plugin API requirements, licences | Done |
-| 1. Design and spikes | WIT draft, and spikes A–D below | Go/no-go per spike, ADRs updated |
+| 1. Design and spikes | WIT draft, and spikes A–E below | Go/no-go per spike, ADRs updated |
 | 2. Core | Rust workspace: domain, queue, sequences, storage, Plugin host, audio. Port Ristle legacy's C++ tests | CI green, every legacy test ported or explicitly retired |
-| 3. Android | Complete app: browse, search, play, background, sign-in | Daily-drivable on a phone |
+| 3. Android | Complete app: browse, search, play, sign-in, user-triggered refresh, and background calls (lock-screen and notification likes, Android Auto browsing) | Daily-drivable on a phone, including from the lock screen and Android Auto |
 | 4. Desktop | Qt Quick app for Windows and macOS | Daily-drivable, passes the frame-timing method |
 | 5. Server and Party | `ristle-server`, accounts, Guest Tokens, Relay, TURN broker, Party UI | Party with 3 devices across networks |
 | 6. iOS | UIKit/SwiftUI app, AltStore build | Installs through AltStore |
@@ -35,11 +35,10 @@ final until spike C has passed on a real iPhone.
 
 **Status 2026-10-12:** draft `ristle:plugin@0.1.0` is in `plugin-api/wit/`
 (validated with `wasm-tools component wit` and `wit-bindgen rust`). The
-walkthrough, with the decisions and open questions for the user at its end, is
-`docs/plugin-api/walkthrough.md`; packaging is `docs/plugin-api/packaging.md`.
-Waiting for the user's review. Before it is final, a short Spotify spike should
-confirm the access-point key and spclient paths, which decide whether the
-`socket` import stays.
+walkthrough is `docs/plugin-api/walkthrough.md` and packaging is
+`docs/plugin-api/packaging.md`. The user's first review is folded in; the
+settled decisions and the remaining open questions are at the end of the
+walkthrough. The WIT is final once spike E confirms the Spotify playback path.
 
 ## Spike A: Qt Quick desktop
 
@@ -107,6 +106,25 @@ in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
 3. Swift: the same from a minimal iOS app, run in the Simulator on a macOS CI
    runner.
 4. Record the binding size and build-time overhead in both apps.
+
+## Spike E: Spotify playback without librespot's player
+
+Goal: confirm the Spotify Stream Source in `docs/plugin-api/walkthrough.md`
+(Streams). It decides whether the `socket` import stays in the WIT.
+
+1. With the playback client's OAuth token, fetch Track metadata and
+   `storage-resolve` from spclient over plain HTTPS, including the client
+   token from `clienttoken.spotify.com`.
+2. Open an access point connection (TCP, Spotify's handshake and Shannon
+   framing), log in with the same token, and request one audio key.
+3. Download the CDN file, decrypt it with AES-128-CTR from offset 0, drop 167
+   bytes, and decode the Ogg Vorbis with Symphonia. Seek once with a Range
+   request and a computed counter.
+4. Run step 2's handshake as a component under Pulley and time it.
+
+The playback client is rate-limited hard. On 429 or an access point refusal,
+wait for the returned `Retry-After` or back-off and try again; a refusal is
+not a failure of the spike. Native Rust is fine for steps 1–3.
 
 ## Cost guardrails
 

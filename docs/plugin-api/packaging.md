@@ -48,10 +48,12 @@ components (about 200 lines over `ed25519-dalek` and `sha2`) and the content
 type is proposed upstream. Either way the bytes on disk follow the published
 format.
 
-The Publisher is identified by its public key. The consent screen shows the
-manifest's `publisher` name next to a short fingerprint of the key. Ristle
-does not certify names: two Publishers may both call themselves "Ristle".
-Continuity of the key is what Ristle checks.
+The Publisher is identified by its public key, and continuity of that key is
+what Ristle checks. Users never see keys or fingerprints: the screens speak of
+who made a Plugin, using the manifest's `publisher` name. Ristle does not
+certify names, so the name is only shown, never trusted. The key fingerprint
+appears only under "Technical details" in a Plugin's settings, for
+developers.
 
 ## Manifest
 
@@ -82,6 +84,11 @@ redirects = ["loopback:8990/login", "scheme", "remote"]
 tracks = 50
 liked-states = 40
 playlist-add = 100
+
+[party]
+# Fields a Party Host may relay to guests. Omitted means every field of
+# track, album, profile and playlist. Never credentials or stream sources.
+share = ["title", "artists", "album", "artwork", "duration"]
 ```
 
 What is *not* in the manifest:
@@ -165,20 +172,36 @@ the change inside the signature itself.
 ## Takeovers
 
 A package with an installed `id` that is not signed by the installed key is a
-takeover. It is possible, but never silent:
+takeover: someone other than the original maker is offering a replacement. It
+is possible, but never silent, and the screen has to make sense to someone who
+has never heard of signing.
 
-- The host shows a full-screen warning naming both Publishers and both key
-  fingerprints, and says that the new Publisher will receive the stored
-  sign-ins for this Plugin. The user can accept, cancel, or accept and sign
-  out of every Provider Connection first.
-- **With a handover**, the warning is softer. A handover is a
-  `ristle-handover` section that the *old* key signed over
-  `id ‖ new public key ‖ issued-at`. It shows that the previous Publisher
-  agreed, for example when a project changes maintainers who cannot share a
-  key. It does not remove the warning, because a stolen old key can also sign
-  handovers.
-- After acceptance the new key is the Publisher key, and the takeover is
-  recorded in the Plugin's history in settings.
+The screen says, in this spirit:
+
+> **This isn't an update from the original maker.**
+> "SoundCloud" on this device was made by *Example Developer*. This file says
+> it comes from *Other Person*, and Ristle cannot confirm that Example
+> Developer agreed to hand it over.
+> If you continue, Other Person's version replaces it and can use your
+> SoundCloud sign-in. Only continue if you trust Other Person.
+>
+> [Keep the current version] [Replace and sign out] [Replace]
+
+- The default button keeps what is installed.
+- "Replace and sign out" removes every stored sign-in for the Plugin first, so
+  the new maker starts without the user's accounts.
+- The names come from the manifests and are shown as text, never as proof.
+  Keys and fingerprints are not shown.
+
+**With a handover** the wording changes, but the screen stays: "Example
+Developer has handed SoundCloud over to Other Person." A handover is a
+`ristle-handover` section that the *old* key signed over
+`id ‖ new public key ‖ issued-at`, for example when a project changes
+maintainers who cannot share a key. It does not remove the question, because
+a stolen old key can also sign handovers.
+
+After acceptance the new key is the Publisher key, and "Replaced by Other
+Person on 12 Oct" appears in the Plugin's history in settings.
 
 Installing a package whose `id` matches nothing installed, but which was
 installed earlier and removed, is a new install: the host forgets removed

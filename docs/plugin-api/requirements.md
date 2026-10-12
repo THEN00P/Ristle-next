@@ -28,7 +28,7 @@ The API must provide data for:
 | Albums, Artists | Artist pages with releases and profile modules |
 | Profiles | Users and creators (SoundCloud-style) |
 | Playlists | Public and private, owned and followed, plus write operations |
-| Feeds | Plugin-defined Provider Views with rows and drill-down links |
+| Feeds | One Feed merged across Providers from typed posts. Provider Views only for Provider-specific surfaces |
 | Likes | Read liked state (batched), like and unlike, liked collections |
 | Streams | `resolve(track) → StreamSource`, see ADR 0004 |
 

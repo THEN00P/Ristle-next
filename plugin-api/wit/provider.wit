@@ -431,6 +431,201 @@ interface feed {
     posts: func(conn: borrow<connection>, cursor: option<string>, limit: u32) -> result<feed-page, error>;
 }
 
+/// Comments on Tracks and playlists, read-only.
+interface comments {
+    use types.{error, instant, item-ref, person};
+    use connection.{connection};
+
+    record comment {
+        id: string,
+        author: person,
+        text: string,
+        at: instant,
+        /// The point in the Track the comment is attached to (SoundCloud's
+        /// timed comments).
+        track-position-ms: option<u32>,
+        /// The comment this one answers, when the Provider threads them.
+        reply-to: option<string>,
+        likes: option<u64>,
+    }
+
+    record comment-page {
+        comments: list<comment>,
+        next: option<string>,
+    }
+
+    /// Newest first, unless the Provider only offers another order.
+    %comments: func(conn: borrow<connection>, item: item-ref, cursor: option<string>, limit: u32) -> result<comment-page, error>;
+}
+
+/// Settings the Plugin offers, shown by Ristle on the Plugin's settings page
+/// with its standard controls. Settings that apply to every Provider, such
+/// as stream quality, belong to Ristle and are passed in calls instead.
+interface settings {
+    use types.{error, setting-value};
+    use connection.{connection};
+
+    enum scope {
+        /// One value for the whole Plugin.
+        plugin,
+        /// One value per Provider Connection.
+        connection,
+    }
+
+    record choice-option {
+        value: string,
+        label: string,
+    }
+
+    record choice {
+        options: list<choice-option>,
+        initial: string,
+    }
+
+    record text-field {
+        secret: bool,
+        placeholder: option<string>,
+        initial: string,
+    }
+
+    record number-field {
+        min: f64,
+        max: f64,
+        step: f64,
+        unit: option<string>,
+        initial: f64,
+    }
+
+    record button {
+        /// Ask the user with this text before pressing.
+        confirm: option<string>,
+    }
+
+    variant control {
+        toggle(bool),
+        choice(choice),
+        text(text-field),
+        number(number-field),
+        button(button),
+    }
+
+    record setting {
+        key: string,
+        title: string,
+        description: option<string>,
+        scope: scope,
+        control: control,
+    }
+
+    record group {
+        title: option<string>,
+        settings: list<setting>,
+    }
+
+    /// The settings to show. May depend on the account, for example options
+    /// that only a paid plan has. Called when the settings page opens.
+    describe: func(conn: borrow<connection>) -> result<list<group>, error>;
+
+    /// The user changed a setting or pressed a button. The host stores the
+    /// value only if this succeeds; an `error` is shown next to the setting.
+    /// Returns a short confirmation to show, if any.
+    apply: func(conn: borrow<connection>, key: string, value: setting-value) -> result<option<string>, error>;
+}
+
+/// Queue Projection: showing Ristle's Canonical Queue inside a Provider's own
+/// apps and taking the edits made there. For example, Ristle appears as a
+/// Spotify Connect device, so the Spotify app shows what Ristle plays and can
+/// pause, skip or queue Tracks.
+///
+/// The Plugin never changes the Canonical Queue. It reports what the user
+/// asked for remotely as mutations; the core applies them like any other
+/// Queue Mutation, and the next `update` shows the result.
+interface queue-projection {
+    use types.{error, instant};
+    use connection.{connection};
+    use live.{frame};
+
+    enum repeat {
+        off,
+        all,
+        one,
+    }
+
+    record projected-entry {
+        /// The host's id for this occurrence. Stable while it stays queued.
+        id: string,
+        /// This Provider's Track id when the entry is one of its Tracks.
+        /// Otherwise the Plugin shows a Projection Marker in its place, or
+        /// leaves the entry out if the Provider cannot show markers.
+        track: option<string>,
+        title: string,
+        artists: list<string>,
+        /// The Provider the entry comes from, for marker text such as
+        /// "Playing in Ristle: SoundCloud".
+        provider: string,
+    }
+
+    record queue-state {
+        /// Grows with every change. Mutations name the revision they saw.
+        revision: u64,
+        /// A window around the current entry: a few played entries, the
+        /// current one, and up to 50 upcoming.
+        entries: list<projected-entry>,
+        /// Index of the current entry in `entries`.
+        current: option<u32>,
+        position-ms: u32,
+        /// When `position-ms` was sampled.
+        sampled-at: instant,
+        playing: bool,
+        shuffle: bool,
+        repeat: repeat,
+    }
+
+    record moving {
+        entry: string,
+        /// Move before this entry. `none` moves to the end.
+        before: option<string>,
+    }
+
+    variant mutation {
+        play,
+        pause,
+        seek(u32),
+        next,
+        previous,
+        /// Play this entry now.
+        jump(string),
+        /// Add this Provider's Tracks as a Queued Request.
+        enqueue(list<string>),
+        remove(string),
+        move(moving),
+        shuffle(bool),
+        repeat(repeat),
+        /// The user moved playback to another device. Ristle pauses.
+        released,
+    }
+
+    record mutations {
+        /// The `queue-state.revision` the remote edit was based on.
+        revision: u64,
+        changes: list<mutation>,
+    }
+
+    /// The user turned the projection on for this connection. Announce Ristle
+    /// to the Provider and open live channels here.
+    start: func(conn: borrow<connection>, state: queue-state) -> result<_, error>;
+
+    /// The queue or transport changed. Calls are coalesced; only the latest
+    /// state matters.
+    update: func(conn: borrow<connection>, state: queue-state) -> result<_, error>;
+
+    /// A frame arrived on one of the Plugin's live channels.
+    receive: func(conn: borrow<connection>, channel: string, frame: frame) -> result<mutations, error>;
+
+    /// The user turned the projection off, signed out, or Ristle is closing.
+    stop: func(conn: borrow<connection>) -> result<_, error>;
+}
+
 /// Plugin Byte Sources. Export this only if `resolve` returns
 /// `location.bytes`.
 interface byte-source {

@@ -10,6 +10,7 @@ world imports {
     import crypto;
     import system;
     import socket;
+    import live;
 }
 
 /// The smallest Provider Plugin: search, browse and play, no accounts.
@@ -41,5 +42,8 @@ world full-provider {
     export playlist-editing;
     export reposts;
     export feed;
+    export comments;
+    export settings;
+    export queue-projection;
     export byte-source;
 }

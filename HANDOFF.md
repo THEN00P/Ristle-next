@@ -109,8 +109,9 @@ in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
 
 ## Spike E: Spotify playback without librespot's player
 
-Goal: confirm the Spotify Stream Source in `docs/plugin-api/walkthrough.md`
-(Streams). It decides whether the `socket` import stays in the WIT.
+Goal: confirm the Spotify Stream Source and the Spotify Connect Queue
+Projection in `docs/plugin-api/walkthrough.md`. It decides whether the
+`socket` and `live` imports stay in the WIT as drafted.
 
 1. With the playback client's OAuth token, fetch Track metadata and
    `storage-resolve` from spclient over plain HTTPS, including the client
@@ -121,10 +122,13 @@ Goal: confirm the Spotify Stream Source in `docs/plugin-api/walkthrough.md`
    bytes, and decode the Ogg Vorbis with Symphonia. Seek once with a Range
    request and a computed counter.
 4. Run step 2's handshake as a component under Pulley and time it.
+5. Spotify Connect for the Queue Projection: open the dealer WebSocket, get the
+   connection id, announce a device through spclient's connect-state, and
+   receive pause, skip, seek and add-to-queue commands from the Spotify app.
 
 The playback client is rate-limited hard. On 429 or an access point refusal,
 wait for the returned `Retry-After` or back-off and try again; a refusal is
-not a failure of the spike. Native Rust is fine for steps 1–3.
+not a failure of the spike. Native Rust is fine for steps 1–3 and 5.
 
 ## Cost guardrails
 

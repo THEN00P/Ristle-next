@@ -77,7 +77,7 @@ interface http {
 /// account is connected, it is an anonymous connection with an empty id and no
 /// credential.
 interface connection {
-    use types.{error, credential, account};
+    use types.{error, credential, account, setting-value};
     use http.{request, response};
 
     resource connection {
@@ -105,6 +105,11 @@ interface connection {
         /// Sends independent requests concurrently and returns the results in
         /// the same order.
         fetch-all: func(requests: list<request>) -> list<result<response, error>>;
+
+        /// The user's value for a setting from `settings.describe`, or its
+        /// initial value. Plugin-wide and per-connection settings are both
+        /// read here.
+        setting: func(key: string) -> option<setting-value>;
     }
 }
 
@@ -176,6 +181,45 @@ interface system {
     /// Bounded per Plugin. Excess messages are dropped and counted. Never log
     /// tokens or cookies.
     log: func(level: level, message: string);
+}
+
+/// Long-lived WebSocket connections that the host keeps open for a Plugin
+/// during a Queue Projection, such as Spotify's Connect messaging. The host
+/// owns the connection, so it outlives Plugin instances: incoming frames
+/// arrive through `queue-projection.receive`, which any instance can handle.
+/// Only `wss://` URLs to hosts declared in the manifest's `hosts`.
+interface live {
+    use types.{error, header};
+
+    record keepalive {
+        every-ms: u32,
+        message: string,
+    }
+
+    record channel-request {
+        url: string,
+        headers: list<header>,
+        /// An application-level ping the host sends by itself, so the Plugin
+        /// is not called just to keep the connection alive.
+        keepalive: option<keepalive>,
+    }
+
+    variant frame {
+        text(string),
+        binary(list<u8>),
+        /// The host (re)connected the channel.
+        opened,
+        /// The channel closed. While the projection runs, the host reconnects
+        /// with back-off and reports `opened` again.
+        closed(string),
+    }
+
+    /// Returns the channel id, which stays the same across reconnections.
+    open: func(request: channel-request) -> result<string, error>;
+
+    send: func(channel: string, frame: frame) -> result<_, error>;
+
+    close: func(channel: string);
 }
 
 /// Raw TCP, optionally with TLS, for Providers whose protocol is not HTTP,

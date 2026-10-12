@@ -65,6 +65,7 @@ publisher = "Example Developer"
 description = "Search, browse and play SoundCloud."
 homepage = "https://github.com/example/ristle-soundcloud"
 license = "MIT"
+updates = "https://example.com/ristle/soundcloud.json"   # optional update feed
 
 [provider]
 id = "soundcloud"                      # several Plugins may serve one Provider
@@ -207,10 +208,62 @@ Installing a package whose `id` matches nothing installed, but which was
 installed earlier and removed, is a new install: the host forgets removed
 Publishers.
 
-## Not decided here
+## Update feeds
 
-- **Where updates come from.** There is no update feed yet. Users install a
-  file. A feed URL in the manifest, and how the host polls it, belong to the
-  distribution design.
-- **Revocation** of a compromised Publisher key. Without a feed there is
-  nowhere to publish revocations.
+A manifest may name an HTTPS update feed. Without one, the Plugin is updated
+by installing a newer file by hand.
+
+```json
+{
+  "id": "dev.example.soundcloud",
+  "releases": [
+    {
+      "version": "1.5.0",
+      "url": "https://example.com/ristle/soundcloud-1.5.0.wasm",
+      "sha256": "9f2c…",
+      "api": "0.1",
+      "notes": "Fixes sign-in after SoundCloud's October change."
+    }
+  ],
+  "revoked": []
+}
+```
+
+- **When it is read.** When the user opens the Plugins page or taps "Check
+  for updates", and once at app start at most every 24 hours. A check only
+  sets a badge on the Plugins page. Nothing is downloaded or installed in the
+  background.
+- **Installing** is one tap ("Update all", or per Plugin). The host downloads
+  the file, checks `sha256`, and then treats it exactly like a file the user
+  picked: signature, Publisher key, version and permission diff. An update
+  that needs new permissions shows the diff; one that would be a takeover
+  shows the takeover screen. The feed adds no trust of its own, so a
+  compromised feed can at worst offer a package the user then refuses.
+- **`api`** is the `ristle:plugin` version the release needs. The host offers
+  the newest release it can run and says when a newer one needs a newer
+  Ristle.
+
+## Revocation
+
+A Publisher whose key leaked publishes a revocation in its feed:
+
+```json
+"revoked": [{ "key": "<public key>", "at": "2026-11-02T10:00:00Z", "signature": "<signed by that key>" }]
+```
+
+The revocation is signed by the revoked key itself. Anyone holding the key
+can revoke it, which is harmless: revoking only ever removes trust.
+
+When a check finds the installed Publisher key revoked, the host stops
+accepting packages signed by it, including through handovers it signed after
+`at`, and shows on the Plugin, in plain words: "The maker of SoundCloud
+reports that their signing was compromised. Updates are paused until you
+install a version they publish again." The installed version keeps running,
+because it was installed before the leak was reported. The next package from
+the Publisher's new key is a takeover with a handover dated before `at`, or a
+plain takeover.
+
+## Not covered here
+
+- A shared catalog of Plugins (a store or index). Feeds are per Plugin; a
+  catalog is a separate product decision.

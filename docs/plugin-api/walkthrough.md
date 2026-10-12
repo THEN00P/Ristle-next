@@ -49,6 +49,8 @@ world plugin {
     export ristle:plugin/playlist-editing@0.1.0;
     export ristle:plugin/reposts@0.1.0;
     export ristle:plugin/feed@0.1.0;
+    export ristle:plugin/comments@0.1.0;
+    export ristle:plugin/settings@0.1.0;
 }
 ```
 
@@ -61,12 +63,15 @@ world plugin {
     export ristle:plugin/likes@0.1.0;
     export ristle:plugin/like-lookup@0.1.0;
     export ristle:plugin/playlist-editing@0.1.0;
-    export ristle:plugin/feed@0.1.0;
+    export ristle:plugin/settings@0.1.0;
+    export ristle:plugin/queue-projection@0.1.0;
 }
 ```
 
 SoundCloud does not export `like-lookup`: the host answers liked state from
-its liked-tracks shelf (see [Likes](#likes)). Neither exports `byte-source`.
+its liked-tracks shelf (see [Likes](#likes)). Spotify has no feed, comments
+or reposts, and SoundCloud no queue API, so neither exports those. Neither
+exports `byte-source`.
 
 The static facts (id, hosts, redirects, batch limits) live in the manifest,
 described in `packaging.md`. The parts that matter here:
@@ -95,9 +100,8 @@ tracks = 50
 liked-states = 40
 playlist-add = 100
 [party]
-# Spotify's developer terms restrict what may be shown to people who are not
-# signed in to Spotify. Guests see only these fields.
-share = ["title", "artists", "duration"]
+# See "Party and Provider terms" below.
+share = ["title", "artists", "artwork", "url"]
 ```
 
 ## What Plugins no longer do
@@ -652,9 +656,11 @@ a request that otherwise succeeded.
 SoundCloud's API replaces a playlist's whole Track list in one `PUT`, so its
 `edit` reads the current list, applies the change, and writes it back. If
 `last_modified` no longer matches `revision`, it returns `error.conflict`.
-Legacy declared `playlist_write: false` for SoundCloud; with this mapping it
-could support writes, but the web-session `PUT` has not been observed yet and
-must be measured like the favorites requests were.
+Legacy declared `playlist_write: false` for SoundCloud and never built
+writes. The port supports them, as Spotify's does. The web-session request
+shapes (`PUT /playlists/{id}`, `POST /playlists` and `DELETE /playlists/{id}`
+on api-v2) still have to be observed in the browser and recorded, as the
+favorites requests were in `soundcloud-favorites-web-observations.md`.
 
 `create` and `delete` are single requests on both services. Unfollowing
 someone else's playlist is `set-liked(ItemRef::Playlist(id), false)`.
@@ -823,25 +829,25 @@ toast and a one-minute back-off hard-coded in the app.
 
 ## The feed
 
-Ristle has one feed, not one per Provider. A user following artists on
-SoundCloud, Spotify and Audius sees one timeline of what they published and
+Ristle has one feed, not one per Provider. A user following accounts on
+SoundCloud and Audius sees one timeline of what they published and
 reposted. That only works if every Provider describes posts the same way, so
 the feed is typed data (`feed.post`), not a Provider View.
 
 What feeds have in common, and what the record holds:
 
-| Field | SoundCloud | Spotify | Audius |
-|---|---|---|---|
-| `item` (Track, album, playlist) | yes | album or single | yes |
-| `author` (who published it) | yes | the artist | yes |
-| `at` | yes | release day | yes |
-| `reposted-by` (an account, linkable) | yes | no | yes |
-| `text` (post or repost caption) | yes | no | yes |
-| `counts` (likes, reposts, comments, plays) | yes | no | yes |
+| Field | SoundCloud | Audius |
+|---|---|---|
+| `item` (Track, album, playlist) | yes | yes |
+| `author` (who published it) | yes | yes |
+| `at` | yes | yes |
+| `reposted-by` (an account, linkable) | yes | yes |
+| `text` (post or repost caption) | yes | yes |
+| `counts` (likes, reposts, comments, plays) | yes | yes |
 
 Liking a post is the standard like control (`likes`). Reposting is
 `reposts.set-reposted`, typed like liking rather than a Plugin-defined action.
-Comments are not in 0.1; `counts.comments` shows how many there are.
+Comments are read through `comments` (see [Comments](#comments)).
 
 **Merging.** The host asks each Provider Connection that exports `feed` for its
 first page and merges by `at`, newest first. It reads a Provider's next page
@@ -900,16 +906,7 @@ fn set_reposted(conn: &Connection, item: ItemRef, reposted: bool) -> Result<(), 
 }
 ```
 
-**Spotify** has no feed endpoint. Its Plugin builds one from new releases by
-followed artists: list followed artists (`/me/following?type=artist`, 50 per
-page), ask each for its latest releases (`/artists/{id}/albums?include_groups=album,single&limit=5`),
-and return the albums as posts with `at` set to the release day. With 200
-followed artists that is about 200 requests, which Spotify's rate limits will
-not tolerate on every refresh. The Plugin therefore marks the per-artist
-requests `.ttl(86_400)` and reads them through `fetch_all`. A user-requested
-refresh revalidates them, but conditional requests that come back unchanged
-are cheap, and a rate-limited refresh still shows the cached releases
-(`stale-seconds`). Whether Spotify's feed is worth this is decision 4 below.
+**Spotify** has no feed and does not export `feed`.
 
 ## Provider Views
 
@@ -918,6 +915,173 @@ curated hub, a station list. Their pages are a title plus `section`s
 (`rows`, `shelf` or `grid` over a `part`), linked from `library.views` or from
 `profile-page.extras`. Neither legacy Plugin needs one any more: SoundCloud's
 feed and profile drill-downs and Spotify's discography all became typed data.
+
+## Comments
+
+Comments are read-only in 0.1: Ristle shows them, it does not post them.
+SoundCloud is the Provider that has them, and its comments are *timed*: each
+is pinned to a point in the Track, which the host can show along the seek bar.
+
+```rust
+fn comments(conn: &Connection, item: ItemRef, cursor: Option<String>, limit: u32) -> Result<CommentPage, Error> {
+    let ItemRef::Track(id) = item else { return Err(Error::Unsupported("Only Tracks have comments".into())) };
+    let url = match cursor {
+        Some(next) => checked_v2_url(&next)?,
+        None => format!("{V2}/tracks/{id}/comments?threaded=1&limit={}&linked_partitioning=1", limit.min(200)),
+    };
+    let page: Collection<V2Comment> = json(sc(conn, get(url).ttl(60))?)?;
+    Ok(CommentPage {
+        comments: page.items.iter().map(|c| Comment {
+            id: c.id.to_string(),
+            author: artist_ref(&c.user),
+            text: c.body.clone(),
+            at: instant(&c.created_at).unwrap_or_default(),
+            track_position_ms: c.timestamp,
+            reply_to: c.parent_id.map(|p| p.to_string()),
+            likes: c.likes_count,
+        }).collect(),
+        next: page.next_href,
+    })
+}
+```
+
+Spotify has no comments and does not export `comments`. Posting comments
+later is a new `comment-posting` interface; reading them does not change.
+
+## Settings
+
+Settings that apply to every Provider, such as stream quality on mobile data,
+belong to Ristle and reach Plugins as call parameters. A Plugin declares only
+its own settings, and Ristle shows them on the Plugin's settings page with
+its standard controls. Values are stored by the host and read with
+`conn.setting(key)`, so they survive instances like everything else.
+
+```rust
+// SoundCloud
+fn describe(_: &Connection) -> Result<Vec<Group>, Error> {
+    Ok(vec![Group { title: None, settings: vec![
+        Setting { key: "feed-reposts".into(), title: "Show reposts in the Feed".into(),
+                  description: None, scope: Scope::Connection, control: Control::Toggle(true) },
+        Setting { key: "hide-previews".into(), title: "Hide 30-second previews".into(),
+                  description: Some("Tracks SoundCloud only lets you hear in part".into()),
+                  scope: Scope::Plugin, control: Control::Toggle(true) },
+    ] }])
+}
+
+fn apply(_: &Connection, _key: String, _value: SettingValue) -> Result<Option<String>, Error> {
+    Ok(None)                      // nothing to validate; the host stores the value
+}
+```
+
+`posts` then skips reposts when `conn.setting("feed-reposts")` is
+`Some(SettingValue::Toggle(false))`. `apply` matters for settings that must be
+checked or acted on: a server URL a self-hosted Provider has to reach, or a
+button such as "Clear saved audio keys". Turning a Queue Projection on is not a
+Plugin setting: for every Plugin that exports `queue-projection`, Ristle shows
+its own per-connection switch ("Show Ristle in Spotify").
+
+## Queue Projection
+
+A Queue Projection shows Ristle's Canonical Queue inside a Provider's own
+apps and turns edits made there into Queue Mutations (CONTEXT.md). The case
+that matters is **Spotify Connect**: Ristle appears in the Spotify app's
+device list, the phone shows what Ristle is playing and what comes next, and
+pause, skip, seek and "Add to queue" on the phone act on Ristle. Entries that
+are not Spotify Tracks are shown as Projection Markers, clearly named Spotify
+Tracks that hold their place, or are left out.
+
+The Plugin never edits the Canonical Queue. It translates in both directions:
+
+```text
+core ──update(queue-state)──▶ Plugin ──PUT connect-state──▶ Spotify ──▶ phone
+phone ──▶ Spotify ──dealer WebSocket──▶ host ──receive(frame)──▶ Plugin ──mutations──▶ core
+```
+
+```rust
+fn start(conn: &Connection, state: QueueState) -> Result<(), Error> {
+    let token = playback_token(conn)?;
+    live::open(&ChannelRequest {
+        url: format!("wss://dealer.spotify.com/?access_token={}", token.access_token),
+        headers: vec![],
+        keepalive: Some(Keepalive { every_ms: 30_000, message: r#"{"type":"ping"}"#.into() }),
+    })?;
+    // The device is announced once the dealer reports its connection id (`receive`).
+    storage::set(&format!("{}:projection", conn.id()), &encode(&state), None)?;
+    Ok(())
+}
+
+fn receive(conn: &Connection, _channel: String, frame: Frame) -> Result<Mutations, Error> {
+    match dealer_message(frame)? {
+        Dealer::ConnectionId(id) => { announce_device(conn, &id)?; Ok(no_changes()) }
+        Dealer::Command { revision, command } => Ok(Mutations { revision, changes: match command {
+            Command::Pause => vec![Mutation::Pause],
+            Command::SkipNext => vec![Mutation::Next],
+            Command::SeekTo(ms) => vec![Mutation::Seek(ms)],
+            Command::AddToQueue(uri) => vec![Mutation::Enqueue(vec![track_id(&uri)?])],
+            Command::Transfer => vec![Mutation::Released],
+            // …
+        } }),
+        _ => Ok(no_changes()),
+    }
+}
+
+fn update(conn: &Connection, state: QueueState) -> Result<(), Error> {
+    // Map each entry to a Spotify Track or a marker, then PUT the player state.
+    put_connect_state(conn, &projected(&state))
+}
+```
+
+The live channel is a host import (`live`) rather than a socket in the
+Plugin, because a phone can send a command at any moment, also while no
+Plugin call is running. The host keeps the WebSocket open, sends the
+keep-alive, reconnects, and hands each frame to whichever instance it calls.
+
+The `mutations.revision` is the queue revision the phone was looking at. If
+the queue has moved on since, the core applies a mutation only where it still
+makes sense (a pause always does; removing an entry that is already gone does
+not), which is the same rule Party Commands follow.
+
+SoundCloud has no API for its app's queue and exports no projection. The
+exact Connect messages above follow librespot's implementation and are part
+of spike E.
+
+## Party and Provider terms
+
+Party State relays Track metadata to guests. By default every field of
+`track`, `album`, `profile` and `playlist` may be relayed; nothing from a
+Credential Record, a Stream Source or `storage` ever is. A Plugin narrows
+this with `[party] share` in its manifest.
+
+Spotify's Developer Terms and Developer Policy (read 2026-10-12) are stricter
+than a field list can capture:
+
+- Spotify Content may only be displayed back to the user of the application,
+  and must not be transferred to third parties (Terms IV.2.5, V.4). A Party
+  guest is a third party.
+- An application must not play content from one source to several
+  simultaneous listeners (Policy III.4), and must not be integrated with
+  streams or content from another service (Policy III.5).
+- Wherever Spotify content is displayed it must be attributed to Spotify and
+  link back to the item on Spotify (Policy II.4.1, II.4.2).
+- Spotify Content must not be stored indefinitely or compiled into databases;
+  caching is allowed only as needed for performance (Terms IV.3.1, IV.3.2).
+
+A mixed-Provider queue that a Party plays through one speaker conflicts with
+III.4 and III.5 whatever fields are shared, and so does the Spotify Plugin's
+use of the playback client, which is why it lives outside the app repository
+(ADR 0010). What the API can do is let the Spotify Plugin follow the parts
+that are about display: share only what guests need to recognize a Track,
+with attribution and the link back.
+
+```toml
+[party]
+share = ["title", "artists", "artwork", "url"]   # url is the link back to Spotify
+```
+
+The host shows the Provider and the link wherever a Track is displayed
+(Ristle's UI rules already show the Provider once per context), and its
+cache of Provider data is bounded and refreshed by user action, never kept
+indefinitely.
 
 ## Streams
 
@@ -933,7 +1097,7 @@ fn resolve(conn: &Connection, id: String, quality: Quality) -> Result<StreamSour
             Ok(s) => return Ok(StreamSource {
                 location: Location::Hls(Hls { url: s.url, headers: vec![] }),
                 mime: Some(tc.format.mime_type.clone()),
-                duration_ms: t.duration, gain_db: None,
+                duration_ms: t.duration,
                 expires_at: Some(system::now() + 5 * 60_000),
             }),
             Err(Error::Transient(m)) => return Err(Error::Transient(m)),  // never "unavailable"
@@ -984,7 +1148,6 @@ fn resolve(conn: &Connection, id: String, quality: Quality) -> Result<StreamSour
         }),
         mime: Some("audio/ogg; codecs=vorbis".into()),
         duration_ms: Some(meta.duration_ms),
-        gain_db: None,
         expires_at: cdn.expires_at(),
     })
 }
@@ -1040,10 +1203,9 @@ at all (see the decisions):
   do so over plain HTTPS without its session is what the Spotify port has to
   confirm first.
 
-`gain-db` could carry Spotify's normalization gain, which sits in the
-167-byte header. Reading it costs one extra Range request and a 167-byte
-decrypt. Legacy did not normalize (legacy ADR 0008), so 0.1 leaves it out of
-the Spotify mapping.
+Spotify's normalization gain is not used, as in legacy, which disabled
+librespot's normalization. Ristle plays every Provider at the level its file
+has (legacy ADR 0008).
 
 ### When a Byte Source is needed
 
@@ -1150,6 +1312,10 @@ from review:
     applied to what has not been decided yet, never to what the user sees.
 12. **No background revalidation** (review). Stale-while-revalidate became
     stale-if-error; fetching again is the user's decision.
+13. **Settings, read-only comments and Queue Projection** (second review),
+    built now because they are known to be needed. Queue Projection added
+    the `live` import: the host keeps a Provider's WebSocket open so remote
+    commands reach the Plugin without a running call.
 
 ## Decisions
 
@@ -1172,26 +1338,30 @@ Settled in review (2026-10-12):
   world side by side and keeps the previous major for 12 months.
 - **Party metadata:** `track`, `album`, `profile` and `playlist` fields may
   be relayed to guests, never anything from `credential`, `stream-source` or
-  `storage`. A Plugin can narrow this in its manifest (`[party] share`),
-  which Spotify needs because its developer terms are stricter.
+  `storage`. A Plugin narrows this in its manifest (`[party] share`); the
+  Spotify Plugin shares title, artists, artwork and the link back. See
+  [Party and Provider terms](#party-and-provider-terms) for what Spotify's
+  terms say beyond fields.
 - **A Spotify spike** confirms the access point and spclient paths before the
   WIT is final. Its brief is in `HANDOFF.md`.
 
+Settled in the second review:
+
+- **No Spotify feed.** Spotify has no feed; the Plugin does not build one.
+- **Comments are read-only** in 0.1 (`comments`).
+- **No playback gain** (`gain-db` removed), as in legacy.
+- **Settings and Queue Projection are in 0.1**, not deferred: `settings`
+  for Plugin-specific settings, `queue-projection` with host-kept `live`
+  channels for Spotify Connect.
+- **Playlist editing on both Plugins.** SoundCloud's web-session requests
+  still have to be observed and recorded.
+- **Device-code sign-in stays.**
+
+Principle from that review: build what is known to be needed into the first
+version instead of retrofitting it.
+
 Still open:
 
-1. **Spotify's feed.** It has to be built from followed artists' releases,
-   about one request per followed artist on a refresh, against the
-   rate-limited playback client. Ship it with long caching, or leave
-   Spotify out of the feed until it proves affordable?
-2. **Which fields Spotify allows to be shared.** The `share` list above is a
-   placeholder; it needs a reading of Spotify's current developer terms.
-3. **Comments** are counted in posts but cannot be read or written. Needed
-   for 1.0?
-4. **`gain-db`** carries a Provider's intended level (Spotify publishes one).
-   Legacy did not normalize. Keep or drop?
-5. **Queue Projection and settings pages** are not in 0.1. Both were reserved
-   but unused in legacy. Can they wait?
-6. **SoundCloud playlist writes** were never enabled in legacy. Add them in
-   the port (needs a measured web-session `PUT`), or keep parity?
-7. **Device-code sign-in** is kept although neither Plugin uses it, because
-   TV-style Providers need it and it costs one case.
+1. **The Spotify Connect messages** in [Queue Projection](#queue-projection)
+   follow librespot and are unverified. Spike E covers them along with the
+   access point.

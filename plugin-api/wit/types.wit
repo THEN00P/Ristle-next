@@ -490,11 +490,22 @@ interface types {
         /// The host probes the bytes otherwise.
         mime: option<string>,
         duration-ms: option<u32>,
-        /// The Provider's intended playback gain for this Track, in dB.
-        gain-db: option<f32>,
         /// The location stops working after this. The host resolves again
         /// shortly before it, and after a 401, 403 or 410 mid-Track.
         expires-at: option<instant>,
+    }
+
+    // ---------------------------------------------------------------------
+    // Settings
+
+    /// The value of one Plugin setting (see the `settings` export).
+    variant setting-value {
+        toggle(bool),
+        choice(string),
+        text(string),
+        number(f64),
+        /// A button was pressed. Never stored.
+        pressed,
     }
 
     // ---------------------------------------------------------------------

@@ -37,5 +37,7 @@ supervision rules behind one hand-versioned protocol.
 - One runtime to secure, profile and document.
 - Interpreted WASM on iOS is too slow for heavy work. That is why decoding stays
   in the host (ADR 0004). Plugin work in general must be I/O-bound glue.
-- Whether wasmtime and Pulley build and run on iOS has not been verified. Spike C
-  checks it, with `wasmi` as the fallback interpreter.
+- Verified 2026-10-12: a component runs under wasmtime and Pulley on a real
+  iPhone 8 (Firebase Test Lab), about 24× slower than native. iOS needs
+  `memory_reservation(0)` and no guard region, otherwise instantiation fails
+  with ENOMEM. See `docs/research/apple-without-hardware.md`.

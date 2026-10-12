@@ -72,6 +72,10 @@ is), and Android background playback through Media3.
 
 ## Spike C: WASM Plugin host
 
+**Status 2026-10-12:** item 5 (real iPhone) and the iOS half of 1 and 3 have
+passed. Results are in `docs/research/apple-without-hardware.md` and the code is
+in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
+
 1. Build wasmtime with Cranelift for Windows and Android, and with Pulley and the
    component model for `aarch64-apple-ios` and `aarch64-apple-ios-sim`.
 2. Compile Ristle legacy's SoundCloud Plugin as a component against a minimal WIT

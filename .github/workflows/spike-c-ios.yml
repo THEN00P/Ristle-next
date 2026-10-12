@@ -1,0 +1,70 @@
+name: spike-c-ios
+
+# Manual only: macOS minutes are expensive on a private repository.
+on:
+  workflow_dispatch:
+    inputs:
+      device_build:
+        description: Also build the signed-ad-hoc device test zip for Firebase Test Lab
+        type: boolean
+        default: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: spikes/c-wasm-ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            spikes/c-wasm-ios/target
+          key: spike-c-${{ hashFiles('spikes/c-wasm-ios/**/Cargo.toml', 'spikes/c-wasm-ios/rust-toolchain.toml') }}
+      - name: Build guest component
+        run: cargo build -p spike-guest --target wasm32-unknown-unknown --release
+      - name: Run host on macOS (native, Cranelift, Pulley)
+        run: cargo run -p spike-host --release
+      - name: Build host for iOS simulator and device
+        run: |
+          cargo build -p spike-host --lib --release --target aarch64-apple-ios-sim
+          cargo build -p spike-host --lib --release --target aarch64-apple-ios
+      - name: Generate Xcode project
+        working-directory: spikes/c-wasm-ios/ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Test in iOS Simulator
+        working-directory: spikes/c-wasm-ios/ios
+        run: |
+          SIM=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
+          echo "Simulator: $SIM"
+          xcodebuild test -project RistleSpike.xcodeproj -scheme RistleSpikeApp \
+            -destination "platform=iOS Simulator,name=$SIM" -derivedDataPath ../build/sim 2>&1 | tee ../build-sim.log | tail -40
+          grep RISTLE_SPIKE_RESULT ../build-sim.log | head -1
+      - name: Build device test zip (ad-hoc signed)
+        if: ${{ inputs.device_build }}
+        working-directory: spikes/c-wasm-ios/ios
+        run: |
+          xcodebuild build-for-testing -project RistleSpike.xcodeproj -scheme RistleSpikeApp \
+            -sdk iphoneos -destination generic/platform=iOS -derivedDataPath ../build/device | tail -20
+          cd ../build/device/Build/Products
+          APP=Debug-iphoneos/RistleSpikeApp.app
+          # Inside-out ad-hoc signing; Test Lab re-signs with its own profile.
+          find "$APP" -name '*.dylib' -o -name '*.framework' | while read f; do codesign --force --sign - --timestamp=none "$f"; done
+          codesign --force --sign - --timestamp=none "$APP/PlugIns/RistleSpikeTests.xctest"
+          codesign --force --sign - --timestamp=none "$APP"
+          codesign --verify --deep --verbose=2 "$APP"
+          ls *.xctestrun
+          zip -qr ../../../ristle-spike-ios.zip Debug-iphoneos *.xctestrun
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.device_build }}
+        with:
+          name: ristle-spike-ios
+          path: spikes/c-wasm-ios/ristle-spike-ios.zip
+          retention-days: 3

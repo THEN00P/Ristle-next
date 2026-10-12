@@ -1,0 +1,20 @@
+[package]
+name = "spike-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ristle_spike_host"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "spike-host"
+path = "src/main.rs"
+
+[dependencies]
+spike-guest = { path = "../guest" }
+wasmtime = { version = "49", default-features = false, features = ["std", "runtime", "cranelift", "pulley", "component-model"] }
+
+[build-dependencies]
+wit-component = "0.261"

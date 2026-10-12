@@ -1,0 +1,25 @@
+package ristle:spike;
+
+interface host {
+  /// Returns one page of synthetic Provider JSON (stands in for host HTTP).
+  fetch-page: func(page: u32) -> list<u8>;
+}
+
+interface provider {
+  record track {
+    id: string,
+    title: string,
+    artist: string,
+    duration-ms: u32,
+    artwork: option<string>,
+  }
+  /// Parse `pages` pages of Provider JSON and return the matching tracks.
+  search: func(query: string, pages: u32) -> list<track>;
+  /// AES-128-CTR over `data` (a Plugin Byte Source doing decryption).
+  decrypt: func(key: list<u8>, iv: list<u8>, data: list<u8>) -> list<u8>;
+}
+
+world plugin {
+  import host;
+  export provider;
+}

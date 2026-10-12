@@ -8,3 +8,7 @@ local.properties
 DerivedData/
 .DS_Store
 spikes/*/target/
+spikes/*/build/
+spikes/*/ios/*.xcodeproj/
+spikes/*/*.zip
+spikes/*/*.log

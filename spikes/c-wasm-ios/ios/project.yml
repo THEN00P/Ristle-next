@@ -1,0 +1,45 @@
+name: RistleSpike
+options:
+  bundleIdPrefix: dev.ristle.spike
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+targets:
+  RistleSpikeApp:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spike.app
+  RistleSpikeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: RistleSpikeApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spike.tests
+        SWIFT_OBJC_BRIDGING_HEADER: Tests/RistleSpike-Bridging-Header.h
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": $(PROJECT_DIR)/../target/aarch64-apple-ios/release
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(PROJECT_DIR)/../target/aarch64-apple-ios-sim/release
+        OTHER_LDFLAGS: -lristle_spike_host
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/RistleSpikeApp.app/RistleSpikeApp
+        BUNDLE_LOADER: $(TEST_HOST)
+schemes:
+  RistleSpikeApp:
+    build:
+      targets:
+        RistleSpikeApp: all
+        RistleSpikeTests: [test]
+    test:
+      targets: [RistleSpikeTests]

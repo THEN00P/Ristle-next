@@ -1062,9 +1062,9 @@ services. ADR 0012 records how Ristle reads them and what it does, in short:
   queue that holds Spotify Tracks next to other Providers' Tracks does not mix
   them as long as the audio never overlaps and every Track is shown as its
   Provider's. The Spotify manifest sets `[playback] overlap = false`, so the
-  host never crossfades into or out of a Spotify Track, and Ristle's UI rules
-  already show the Provider, here with Spotify's attribution and the link
-  back (`track.url`).
+  host never crossfades into or out of a Spotify Track. The attribution is
+  the Provider icon or text badge Ristle's UI rules already put on every
+  Track; nothing extra is added.
 - **Third parties.** The Spotify manifest sets `[party] share = []`, so the
   Party Host relays only the Track reference. A guest whose Ristle has a
   Spotify Provider Connection resolves the metadata with their own account;

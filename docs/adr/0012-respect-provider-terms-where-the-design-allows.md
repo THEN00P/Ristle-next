@@ -35,8 +35,9 @@ Ristle's reading of the Spotify rules, which the measures below implement:
   another. A queue that holds Spotify Tracks next to other Providers' Tracks
   does not mix them when the audio never overlaps and the Provider of every
   Track is clearly shown. So: no crossfade or other overlap into or out of a
-  Spotify Track, and Spotify Tracks are always shown as Spotify's, with the
-  link back.
+  Spotify Track, and Spotify Tracks carry the Provider's icon or a text badge,
+  as every Provider's Tracks do. That badge is the attribution; no extra
+  attribution line or link is added.
 - **Third parties (IV.2.5)** are kept from Spotify metadata in a Ristle Party
   by relaying only the Track reference. A guest whose own Ristle has a Spotify
   Provider Connection resolves the metadata with their own account. Any other

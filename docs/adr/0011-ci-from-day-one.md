@@ -21,6 +21,14 @@ GitHub Actions runs on every push and PR:
   conformance tests against it.
 - Server: integration tests against a PostgreSQL service container.
 
+### Spikes
+
+Spikes under `spikes/` are exempt. They are disposable, are deleted once their
+findings are written up, and never ship. Their workflows are `workflow_dispatch`
+only, and a spike's evidence is its recorded measurements, not a green check.
+Anything promoted from a spike into `core/`, `apps/`, `plugin-api/` or `server/`
+gets CI in the same change.
+
 ## Consequences
 
 - A component is not done until its CI job exists.

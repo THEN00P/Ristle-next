@@ -1,0 +1,32 @@
+[package]
+name = "plugin-host-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "plugin_host_spike"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "spike-run"
+path = "src/main.rs"
+
+[dependencies]
+spike-host = { path = "../../c-wasm-ios/host" }
+sc-plugin = { path = "../sc-plugin" }
+ristle-pkg = { path = "../pkg" }
+wasmtime = { version = "49", default-features = false, features = ["std", "runtime", "cranelift", "pulley", "component-model"] }
+ed25519-dalek = "2"
+ureq = "3"
+wasmsign2 = "0.2"
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[build-dependencies]
+wit-component = "0.261"

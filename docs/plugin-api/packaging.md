@@ -1,0 +1,193 @@
+# Plugin Packages
+
+A Plugin Package is one `.wasm` file: a WebAssembly component built against
+`ristle:plugin` (`plugin-api/wit/`). There is no archive. The manifest, the
+icon and the Publisher signature travel in custom sections of the component.
+
+Status: draft. Embedding and verifying the signature in a component is item 4
+of spike C and has not been run yet.
+
+## Layout
+
+Custom sections at the top level of the component, in this order:
+
+| Section | Content | Limit |
+|---|---|---|
+| `signature` | Publisher signature in the WebAssembly signatures format (`wasmsign2`). Must be first | 4 KiB |
+| `ristle-manifest` | The manifest, UTF-8 TOML | 64 KiB |
+| `ristle-icon` | Square PNG (256 × 256 or larger) or SVG | 64 KiB |
+| `ristle-handover` | Optional. A handover signed by the previous Publisher key | 1 KiB |
+
+The rest of the file is the component itself. A whole package is at most
+20 MiB.
+
+Custom sections have no effect on execution, so wasmtime loads the component
+unchanged. The host reads the sections with a plain section parser before it
+compiles anything.
+
+## Signature
+
+The signature follows the WebAssembly tool-conventions signature format that
+`wasmsign2` implements:
+
+- The `signature` custom section is the first section.
+- Ed25519 keys; the module bytes after the signature section are hashed with
+  SHA-256 and signed as one part (no `signature_delimiter`, no partial
+  verification). The manifest, icon and handover sections are therefore
+  covered.
+- The section may carry several signatures. Ristle accepts a package when the
+  installed Publisher key is among them, which is also how a key rotation
+  without takeover works (see below).
+
+**Components.** The format names only core modules (content type `0x01`). A
+component has the same preamble length and the same section framing, so the
+hashing applies unchanged, but `wasmsign2` may reject the component's version
+and layer bytes. Spike C item 4 decides between two outcomes: `wasmsign2`
+works on components as is, or Ristle's packer implements the same format for
+components (about 200 lines over `ed25519-dalek` and `sha2`) and the content
+type is proposed upstream. Either way the bytes on disk follow the published
+format.
+
+The Publisher is identified by its public key. The consent screen shows the
+manifest's `publisher` name next to a short fingerprint of the key. Ristle
+does not certify names: two Publishers may both call themselves "Ristle".
+Continuity of the key is what Ristle checks.
+
+## Manifest
+
+```toml
+id = "dev.example.soundcloud"         # reverse DNS, stable forever
+name = "SoundCloud"
+version = "1.4.0"                      # semver, must grow with every update
+publisher = "Example Developer"
+description = "Search, browse and play SoundCloud."
+homepage = "https://github.com/example/ristle-soundcloud"
+license = "MIT"
+
+[provider]
+id = "soundcloud"                      # several Plugins may serve one Provider
+name = "SoundCloud"
+
+[permissions]
+hosts = ["api-v2.soundcloud.com", "api.soundcloud.com", "secure.soundcloud.com"]
+media-hosts = ["*.sndcdn.com"]         # stream URLs the host fetches for the Plugin
+sockets = []                           # "host:port", for the socket import
+web-capture = true
+storage-mib = 5
+
+[auth]
+redirects = ["loopback:8990/login", "scheme", "remote"]
+
+[limits]                               # the host never exceeds these per call
+tracks = 50
+liked-states = 40
+playlist-add = 100
+```
+
+What is *not* in the manifest:
+
+- **Capabilities.** They are the interfaces the component exports
+  (`accounts`, `likes`, `playlist-editing`...). The host reads them from the
+  component's type at install time.
+- **The API version.** It is in the import and export names
+  (`ristle:plugin/catalog@0.1.0`). The host refuses a package whose version it
+  does not implement and says which Ristle version is needed.
+- **Callback configuration per connection** and anything about credentials.
+  Those are runtime data (CONTEXT.md, Credential Record).
+
+`auth.redirects` lists the OAuth redirects the Publisher registered with the
+Provider. `loopback:<port>/<path>` is `http://127.0.0.1:<port>/<path>` on
+desktop. `scheme` is Ristle's own custom scheme on mobile. `remote` is
+Ristle's hosted HTTPS redirect page, which forwards to the app. The host picks
+the first one the platform can serve and passes it as the `redirect-target`.
+
+`ristle-plugin pack` validates the manifest against a schema, checks that the
+component exports `catalog`, that `limits` are present for the exports that
+need them, and that every host in the code's string table appears in
+`permissions.hosts` (a lint, not a guarantee). It then writes the sections and
+signs.
+
+## Permissions and consent
+
+The consent screen at install lists, in plain words:
+
+- "Connects to" the `hosts` and `media-hosts`.
+- "Opens direct connections to" the `sockets`, separately and with a stronger
+  wording, because they are not HTTPS.
+- "Can see pages and traffic inside its own sign-in window" if `web-capture`
+  is set.
+- "Stores your sign-in" if the component exports `accounts`.
+
+It does not repeat what the Provider's own authorization page shows (scopes),
+following legacy ADR 0009.
+
+The host enforces each grant at the import: an undeclared host fails with
+`error.internal` and is logged, a `socket` connect outside `sockets` fails,
+and `web-capture` challenges are refused without the grant.
+
+## Installing
+
+1. Read the sections. Reject a package without `signature` as first section,
+   without a manifest, or over the size limits.
+2. Verify the signature over the rest of the file.
+3. Parse the manifest. Check `id` and `version`.
+4. Load the component with wasmtime and check its imports and exports
+   against the `ristle:plugin` versions the host implements.
+5. Decide new install, update or takeover (below) and show the matching
+   screen.
+6. Store the package, then compile it once (Cranelift, or Pulley bytecode on
+   iOS) and keep the compiled artifact, so later starts skip compilation.
+
+## Updates
+
+An update is a package with the same `id`, signed by the installed Publisher
+key, with a higher `version`.
+
+- **No new permissions:** installed without asking. Removed permissions and
+  narrower limits never ask.
+- **New permissions:** the user sees only the difference ("now also connects
+  to `api.example.com`", "now opens direct connections to ...") and must
+  accept it. Until then the old version keeps running.
+- **New optional exports** that need no permission (for example
+  `playlist-editing`) do not ask.
+- **Lower version:** refused, unless the user installs it by hand, with a
+  warning. A downgrade still needs the same key.
+
+Credential Records, storage and Provider Connections carry over unchanged.
+
+### Key rotation
+
+A Publisher who changes keys signs the new package with both the old and
+the new key. The host accepts it through the old key and records the new key
+as the Publisher key. No warning is needed, because the old key vouched for
+the change inside the signature itself.
+
+## Takeovers
+
+A package with an installed `id` that is not signed by the installed key is a
+takeover. It is possible, but never silent:
+
+- The host shows a full-screen warning naming both Publishers and both key
+  fingerprints, and says that the new Publisher will receive the stored
+  sign-ins for this Plugin. The user can accept, cancel, or accept and sign
+  out of every Provider Connection first.
+- **With a handover**, the warning is softer. A handover is a
+  `ristle-handover` section that the *old* key signed over
+  `id ‖ new public key ‖ issued-at`. It shows that the previous Publisher
+  agreed, for example when a project changes maintainers who cannot share a
+  key. It does not remove the warning, because a stolen old key can also sign
+  handovers.
+- After acceptance the new key is the Publisher key, and the takeover is
+  recorded in the Plugin's history in settings.
+
+Installing a package whose `id` matches nothing installed, but which was
+installed earlier and removed, is a new install: the host forgets removed
+Publishers.
+
+## Not decided here
+
+- **Where updates come from.** There is no update feed yet. Users install a
+  file. A feed URL in the manifest, and how the host polls it, belong to the
+  distribution design.
+- **Revocation** of a compromised Publisher key. Without a feed there is
+  nowhere to publish revocations.

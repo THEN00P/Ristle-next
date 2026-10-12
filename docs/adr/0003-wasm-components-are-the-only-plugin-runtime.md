@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (2026-10-08). The interface itself is drafted in `docs/plugin-api/`.
+Accepted (2026-10-08). The interface is drafted in `plugin-api/wit/`, with its
+rationale in `docs/plugin-api/`.
 
 ## Context
 

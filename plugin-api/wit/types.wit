@@ -1,0 +1,504 @@
+package ristle:plugin@0.1.0;
+
+/// Values shared by every interface: errors, media items, pages and
+/// collections, Stream Sources and the Credential Record.
+///
+/// Conventions that hold everywhere:
+///
+/// - Ids are the Provider's own ids, as strings. Ristle never parses them.
+/// - Optional facts are `option`. Absent means "not known", never "zero".
+/// - Lists come back in the Provider's order. Ristle does not re-sort them.
+interface types {
+    /// Milliseconds since the Unix epoch, UTC.
+    type instant = u64;
+
+    /// A request or response header. Names are case-insensitive, and order
+    /// and duplicates are preserved.
+    type header = tuple<string, string>;
+
+    /// Why a call failed. The host acts on the case and only shows the text.
+    ///
+    /// The case matters for playback: an `unavailable` Track is skipped, while
+    /// a `transient` failure stops on the Track so that Play retries it. Never
+    /// report a network failure as `unavailable`.
+    variant error {
+        /// Credentials are missing, expired or rejected. The host refreshes the
+        /// Credential Record once (`accounts.refresh-credential`) and retries
+        /// the call. If that fails too, it asks the user to sign in again and
+        /// keeps the Provider Connection and everything stored for it.
+        unauthorized(string),
+        /// This item cannot be served: removed, region-locked, or offered only
+        /// in a form Ristle cannot play (DRM). Retrying will not help.
+        unavailable(string),
+        /// The Provider asked to slow down. Milliseconds to wait, when known.
+        /// The host backs off and tells the user. Plugins never wait or retry.
+        rate-limited(option<u32>),
+        /// No network, a timeout, or a server error. The same call may succeed
+        /// later.
+        transient(string),
+        /// A write lost a race: the target changed after the revision the host
+        /// passed. The host reloads and asks the user again.
+        conflict(string),
+        /// The Plugin does not offer this for this item or Provider Connection.
+        unsupported(string),
+        /// Anything else, including a bug in the Plugin.
+        internal(string),
+    }
+
+    // ---------------------------------------------------------------------
+    // Media items
+
+    /// One rendition of an image. Give several sizes when the Provider has
+    /// them; the host picks.
+    record image {
+        url: string,
+        width: option<u32>,
+        height: option<u32>,
+    }
+
+    /// A Media Date: the original precision is kept, so a release known only
+    /// by year stays a year.
+    record media-date {
+        year: u16,
+        month: option<u8>,
+        day: option<u8>,
+    }
+
+    /// A reference to an artist, user or album by name, with the Provider's id
+    /// when there is one.
+    record named {
+        id: option<string>,
+        name: string,
+    }
+
+    /// A Metadata Attribute: an optional fact Ristle may show but never
+    /// requires. Well-known keys are `genre`, `bpm`, `musical-key`, `mood`,
+    /// `label` and `copyright`. Anything else is prefixed with the Provider id,
+    /// for example `soundcloud:plays`.
+    record attribute {
+        key: string,
+        value: attribute-value,
+    }
+
+    variant attribute-value {
+        text(string),
+        number(f64),
+        yes-no(bool),
+    }
+
+    flags track-traits {
+        explicit,
+        /// A Live Track: unknown or advancing end, no end-of-Track preparation.
+        live,
+        /// Seeking is impossible. On-demand Tracks are seekable by default.
+        unseekable,
+    }
+
+    /// The exact Provider item the user picked. Another copy of the same song
+    /// is a different Track and is never substituted.
+    record track {
+        id: string,
+        title: string,
+        artists: list<named>,
+        album: option<named>,
+        duration-ms: option<u32>,
+        artwork: list<image>,
+        traits: track-traits,
+        released: option<media-date>,
+        uploaded: option<media-date>,
+        /// Why the Track cannot play. `none` means it can. A Disabled Track is
+        /// still listed, with its title and artwork.
+        unavailable: option<string>,
+        /// Authoritative recording id, used to group equivalent search results.
+        isrc: option<string>,
+        /// The Track's public web page, for sharing.
+        url: option<string>,
+        attributes: list<attribute>,
+    }
+
+    enum release-type {
+        album,
+        single,
+        ep,
+        compilation,
+    }
+
+    record album {
+        id: string,
+        title: string,
+        artists: list<named>,
+        artwork: list<image>,
+        released: option<media-date>,
+        release-type: option<release-type>,
+        track-count: option<u32>,
+        url: option<string>,
+    }
+
+    /// An artist or a user. Which one it is follows from where it appears
+    /// (`item.artist` or `item.user`). SoundCloud uploaders are artists.
+    record profile {
+        id: string,
+        name: string,
+        artwork: list<image>,
+        /// One short line such as a city or a follower count, already
+        /// formatted in the user's locale.
+        caption: option<string>,
+        url: option<string>,
+    }
+
+    record playlist {
+        id: string,
+        title: string,
+        description: option<string>,
+        owner: option<named>,
+        artwork: list<image>,
+        track-count: option<u32>,
+        created: option<media-date>,
+        updated: option<media-date>,
+        /// The connected account may change this playlist's Tracks and details.
+        editable: bool,
+        /// The Provider folder that holds this playlist in the owner's library.
+        folder: option<string>,
+        url: option<string>,
+    }
+
+    /// A Provider-owned playlist folder. Not playable. Nested through `parent`.
+    record folder {
+        id: string,
+        title: string,
+        parent: option<string>,
+    }
+
+    /// A Provider View, named by the Plugin. `params` is opaque to the host
+    /// and comes back unchanged, for example a user id.
+    record view-ref {
+        view: string,
+        params: string,
+    }
+
+    /// A row that opens a Provider View.
+    record link {
+        to: view-ref,
+        title: string,
+        subtitle: option<string>,
+        artwork: list<image>,
+    }
+
+    /// Anything a list can show.
+    variant item {
+        track(track),
+        album(album),
+        artist(profile),
+        user(profile),
+        playlist(playlist),
+        folder(folder),
+        link(link),
+        /// A Track known only by id. Only valid in collection listings: the
+        /// host fetches it later through `catalog.tracks`, in batches. Search
+        /// results and pages never contain it.
+        track-id(string),
+        /// A position the Provider still holds but cannot describe or play,
+        /// such as a deleted Track inside a playlist. It keeps later positions
+        /// correct. The text says why, when known.
+        unavailable(option<string>),
+    }
+
+    /// Something a user can open as a page.
+    variant target {
+        album(string),
+        artist(string),
+        user(string),
+        playlist(string),
+        view(view-ref),
+    }
+
+    /// Something a user can like, save or follow.
+    variant item-ref {
+        track(string),
+        album(string),
+        artist(string),
+        user(string),
+        playlist(string),
+    }
+
+    // ---------------------------------------------------------------------
+    // Lists, collections and pages
+
+    /// A Plugin-defined action on one row, such as SoundCloud's Repost. Liking
+    /// is not an action: the host offers it through the `likes` interface.
+    record action {
+        id: string,
+        label: string,
+        /// Ask the user before invoking.
+        confirm: bool,
+    }
+
+    enum verb {
+        posted,
+        reposted,
+        liked,
+        added,
+        recommended,
+    }
+
+    /// Why a row is in a list and when it got there: "Reposted by X, 2 h ago",
+    /// "Liked on 3 May". Feeds are ordinary lists with notes.
+    record note {
+        actor: option<profile>,
+        verb: option<verb>,
+        at: option<instant>,
+        caption: option<string>,
+        actions: list<action>,
+    }
+
+    /// One row of a list.
+    record entry {
+        item: item,
+        note: option<note>,
+    }
+
+    /// How the host may address the entries of a collection.
+    enum addressing {
+        /// Pages follow each other through the `next` token. Entries that the
+        /// host has to fetch later carry stable Track ids (`item.track-id`).
+        cursor,
+        /// Any offset can be requested directly (`cursor.offset`). A position
+        /// names a slot, not an item: when the collection changes, every
+        /// position moves. The host never treats an unhydrated position as a
+        /// Track. It fetches the slot and checks the `revision`. A changed
+        /// revision voids every position taken under the old one, and the
+        /// host re-reads instead of mapping a position onto a neighbor.
+        offset,
+    }
+
+    variant count {
+        exact(u64),
+        estimate(u64),
+    }
+
+    /// A list the host can page through, enumerate for shuffle, and refresh.
+    record collection {
+        /// Plugin-defined, stable for the same list, such as `playlist:42`.
+        id: string,
+        addressing: addressing,
+        total: option<count>,
+        /// Changes whenever the list's content or order changes, such as an
+        /// etag or Spotify's `snapshot_id`. Lets the host revalidate cheaply.
+        /// Leave it out when the Provider offers nothing reliable.
+        revision: option<string>,
+        /// Never ends (a feed, a generated radio). The host plays it in order
+        /// and never shuffles it as a whole.
+        endless: bool,
+    }
+
+    variant cursor {
+        /// The first page.
+        start,
+        /// A `next` token from the previous listing.
+        next(string),
+        /// Only for `addressing.offset` collections.
+        offset(u64),
+    }
+
+    enum detail {
+        /// Full items: the user is looking at this list.
+        items,
+        /// Cheap enumeration for shuffle, liked state or playlist adds: return
+        /// `item.track-id` entries if the Provider has a cheaper endpoint for
+        /// them. Full items are always acceptable too. Cursors from one mode
+        /// are never passed to the other.
+        ids,
+    }
+
+    record list-request {
+        cursor: cursor,
+        /// The host's wish. Return fewer if the Provider's page is smaller.
+        limit: u32,
+        detail: detail,
+    }
+
+    record listing {
+        entries: list<entry>,
+        /// `none` at the end. Ignored for `offset` collections.
+        next: option<string>,
+        total: option<count>,
+        revision: option<string>,
+    }
+
+    enum layout {
+        rows,
+        shelf,
+        grid,
+    }
+
+    /// One block of a page. The first entries come inline; `more` continues
+    /// them.
+    record section {
+        title: option<string>,
+        layout: layout,
+        entries: list<entry>,
+        more: option<more>,
+    }
+
+    record more {
+        collection: collection,
+        /// Where the inline entries stopped. `none` for `offset` collections.
+        next: option<string>,
+    }
+
+    record heading {
+        title: string,
+        subtitle: option<string>,
+        artwork: list<image>,
+    }
+
+    /// What a page is about.
+    variant subject {
+        album(album),
+        artist(profile),
+        user(profile),
+        playlist(playlist),
+        view(heading),
+    }
+
+    record page {
+        subject: subject,
+        sections: list<section>,
+        /// What Play and Shuffle use. When `none`, the host uses the first
+        /// `rows` section that holds Tracks.
+        play: option<collection>,
+    }
+
+    enum library-kind {
+        liked-tracks,
+        saved-albums,
+        followed-artists,
+        followed-users,
+        playlists,
+        uploads,
+    }
+
+    /// One standard part of the user's library on this Provider.
+    record shelf {
+        kind: library-kind,
+        title: string,
+        collection: collection,
+    }
+
+    record library {
+        shelves: list<shelf>,
+        /// Provider Views shown in navigation, such as a feed.
+        views: list<link>,
+    }
+
+    // ---------------------------------------------------------------------
+    // Stream Sources (ADR 0004)
+
+    enum aes-mode {
+        /// Counter mode. The counter starts at `iv` for byte 0 of the resource.
+        ctr,
+        /// CBC without padding.
+        cbc,
+        /// CBC with PKCS#7 padding.
+        cbc-pkcs7,
+        /// ECB without padding. Only offered by `crypto`, never for streams.
+        ecb,
+    }
+
+    /// Host-side decryption of a progressive resource. Prefer it to a Byte
+    /// Source: the Plugin then spends no CPU on audio at all. Only `ctr`, `cbc`
+    /// and `cbc-pkcs7` are accepted for streams.
+    record decryption {
+        mode: aes-mode,
+        key: list<u8>,
+        iv: list<u8>,
+        /// Plaintext bytes before the container starts, which the host drops.
+        /// Spotify files carry a 167-byte header.
+        skip: u32,
+    }
+
+    record progressive {
+        url: string,
+        headers: list<header>,
+        decrypt: option<decryption>,
+    }
+
+    record hls {
+        url: string,
+        /// Sent with the playlist, segment and key requests.
+        headers: list<header>,
+    }
+
+    /// A Plugin Byte Source: the Plugin supplies bytes on request through
+    /// `byte-source.read`.
+    record plugin-bytes {
+        /// Plugin-defined. Must carry everything needed to serve reads, because
+        /// any instance of the Plugin may receive them.
+        handle: string,
+        length: option<u64>,
+    }
+
+    variant location {
+        progressive(progressive),
+        hls(hls),
+        bytes(plugin-bytes),
+    }
+
+    /// Where a Track's encoded audio comes from. The host fetches, decrypts,
+    /// demuxes and decodes it. Plugins never deliver PCM.
+    record stream-source {
+        location: location,
+        /// MIME type with codecs when known, such as `audio/ogg; codecs=vorbis`.
+        /// The host probes the bytes otherwise.
+        mime: option<string>,
+        duration-ms: option<u32>,
+        /// The Provider's intended playback gain for this Track, in dB.
+        gain-db: option<f32>,
+        /// The location stops working after this. The host resolves again
+        /// shortly before it, and after a 401, 403 or 410 mid-Track.
+        expires-at: option<instant>,
+    }
+
+    // ---------------------------------------------------------------------
+    // Accounts
+
+    record account {
+        /// The Provider's account id. A re-authorization that returns a
+        /// different id is a different account, and the host asks the user.
+        id: string,
+        name: string,
+        avatar: list<image>,
+    }
+
+    /// Where the host adds the credential to requests made through
+    /// `connection.fetch`. The Plugin never adds tokens by hand for these
+    /// hosts, and refreshing replaces the values.
+    record attach {
+        /// Exact hosts, or `*.example.com` for subdomains.
+        hosts: list<string>,
+        headers: list<header>,
+        /// Query parameters, appended unless the URL already has one with the
+        /// same name.
+        query: list<tuple<string, string>>,
+    }
+
+    /// The Credential Record of one Provider Connection. Ristle stores it
+    /// encrypted in the platform credential store and gives it only to the
+    /// Plugin that created it.
+    record credential {
+        /// Plugin-defined and versioned, such as `oauth/1` or `web-session/2`.
+        /// Lets a newer Plugin read records written by an older one.
+        scheme: string,
+        access-token: option<string>,
+        refresh-token: option<string>,
+        /// The host calls `accounts.refresh-credential` shortly before this.
+        expires-at: option<instant>,
+        scopes: list<string>,
+        username: option<string>,
+        password: option<string>,
+        /// Anything else the Plugin needs, such as a second token. Opaque to
+        /// the host.
+        custom: option<string>,
+        attach: list<attach>,
+    }
+}

@@ -1,0 +1,392 @@
+package ristle:plugin@0.1.0;
+
+/// The one interface every Provider Plugin exports.
+///
+/// How the host calls a Plugin:
+///
+/// - Calls to one instance run one at a time. The host may run several
+///   instances of a Plugin and may discard an instance between any two calls,
+///   so memory is a cache only. Anything that must survive goes into the
+///   Credential Record, `storage`, or the tokens the Plugin returns.
+/// - Every call names a Provider Connection. For a public item the host
+///   passes the connection it came from, or any connected one.
+/// - The host batches. It never asks for more ids in one `tracks` call, or
+///   more items in one `likes.liked-states` call, than the manifest's
+///   `limits` allow, and it chunks large playlist adds the same way.
+/// - The host caches page and listing results and revalidates them in the
+///   background. Plugins do not keep their own result caches.
+/// - Never sleep, retry or poll inside a call. Return an `error` and let the
+///   host decide.
+interface catalog {
+    use types.{error, item, track, page, target, library, listing, list-request, stream-source};
+    use connection.{connection};
+
+    flags kinds {
+        tracks,
+        albums,
+        artists,
+        users,
+        playlists,
+    }
+
+    record search-request {
+        query: string,
+        /// The groups to return. The first request asks for all supported
+        /// groups. "Show more" asks for one group with `cursor`.
+        kinds: kinds,
+        /// Per group.
+        limit: u32,
+        /// A `next` token from a previous single-group search.
+        cursor: option<string>,
+    }
+
+    record search-results {
+        /// Best match first within each group. The host groups by item kind
+        /// and interleaves Providers. Never contains `track-id` items.
+        items: list<item>,
+        /// Only for single-group requests.
+        next: option<string>,
+    }
+
+    enum quality {
+        data-saver,
+        balanced,
+        high,
+        lossless,
+    }
+
+    /// Everywhere Search across this Provider's catalog. Unified Search waits
+    /// at most 5 s for an answer. My Library Search is done by the host over
+    /// the collections from `my-library`.
+    search: func(conn: borrow<connection>, request: search-request) -> result<search-results, error>;
+
+    /// The standard library collections and the Provider Views shown in
+    /// navigation. Called after sign-in and when the user refreshes.
+    my-library: func(conn: borrow<connection>) -> result<library, error>;
+
+    /// An album, artist, user, playlist or Provider View, as a header and
+    /// sections.
+    open: func(conn: borrow<connection>, target: target) -> result<page, error>;
+
+    /// One page of a collection from `my-library`, `open` or a section.
+    %list: func(conn: borrow<connection>, collection: string, request: list-request) -> result<listing, error>;
+
+    /// Full Tracks for ids, in the same order. A Track that no longer exists
+    /// is `error.unavailable` in its slot; a failure of the whole request is
+    /// the outer error.
+    tracks: func(conn: borrow<connection>, ids: list<string>) -> result<list<result<track, error>>, error>;
+
+    /// Where the Track's audio comes from. Called shortly before playback and
+    /// again when the returned location expires.
+    resolve: func(conn: borrow<connection>, track: string, quality: quality) -> result<stream-source, error>;
+}
+
+/// Sign-in through Authorization Sessions. Export this when the Provider has
+/// accounts.
+///
+/// The host owns the session: it creates the OAuth `state` and PKCE verifier,
+/// runs the callback (loopback port, custom scheme, app link or remote
+/// redirect page, from the manifest's `redirects`), opens windows, and keeps
+/// the `state` string a Plugin returns between steps. The Plugin turns
+/// answers into a Credential Record. It stores nothing itself.
+interface accounts {
+    use types.{error, credential, account};
+    use connection.{connection};
+
+    enum reason {
+        sign-in,
+        /// The credential stopped working. The Provider Connection, its stored
+        /// credential and its data are kept until this succeeds.
+        reauthorize,
+    }
+
+    flags challenge-kinds {
+        redirect,
+        form,
+        web-capture,
+        device-code,
+    }
+
+    /// The callback the host prepared for this step. Put `uri` in the
+    /// authorization URL as `redirect_uri`, `state` as `state`, and
+    /// `code-challenge` as the S256 `code_challenge`.
+    record redirect-target {
+        uri: string,
+        state: string,
+        code-challenge: string,
+    }
+
+    record session-context {
+        reason: reason,
+        /// What this platform can show. Only return challenges listed here.
+        supported: challenge-kinds,
+        /// Present when the manifest declares a redirect this platform can
+        /// serve. Fresh for every step.
+        redirect: option<redirect-target>,
+    }
+
+    enum opener {
+        /// A browser the host chooses (system browser or an in-app session).
+        browser,
+        /// The operating system, so that the Provider's own app answers
+        /// (deep link). Falls back to `fallback-url` in a browser.
+        app,
+    }
+
+    /// Open a URL and wait for the redirect to come back.
+    record redirect-challenge {
+        url: string,
+        opener: opener,
+        fallback-url: option<string>,
+        /// Callback parameters to pass on besides `code`, `error` and
+        /// `error_description`. Everything else is dropped.
+        keep: list<string>,
+    }
+
+    enum field-kind {
+        text,
+        secret,
+        email,
+        url,
+    }
+
+    record field {
+        name: string,
+        label: string,
+        kind: field-kind,
+        required: bool,
+        placeholder: option<string>,
+        /// Pre-filled value, such as the username on re-authorization.
+        value: option<string>,
+    }
+
+    /// A form the host renders, for API tokens, server URLs or passwords.
+    record form {
+        title: string,
+        instructions: option<string>,
+        fields: list<field>,
+        help-url: option<string>,
+    }
+
+    variant user-agent {
+        /// The platform web view's own.
+        platform,
+        /// A current desktop browser, kept up to date by the host. Use it when
+        /// the mobile site is a different application.
+        desktop,
+        custom(string),
+    }
+
+    record query-param {
+        /// Matches request URLs that start with this.
+        url-prefix: string,
+        name: string,
+    }
+
+    /// Where a captured value may come from. The host looks only at traffic,
+    /// cookies and pages on `observe` hosts.
+    variant source {
+        cookie(string),
+        request-header(string),
+        response-header(string),
+        query-param(query-param),
+        /// A page script called `ristle.capture(name, value)` for this value.
+        script,
+    }
+
+    record capture {
+        name: string,
+        /// Tried in order. A later observation replaces an earlier value.
+        sources: list<source>,
+        required: bool,
+    }
+
+    /// JavaScript the host runs at document end on every main-frame load whose
+    /// URL starts with `url-prefix`. Only the first matching script runs, so
+    /// list specific prefixes first. Scripts may call
+    /// `ristle.capture(name, value)`.
+    record page-script {
+        url-prefix: string,
+        code: string,
+    }
+
+    /// Sign-in on the Provider's real website in an isolated, non-persistent
+    /// web view. When every required value has been seen, the host closes the
+    /// window and calls `continue-authorization` with the values. The Plugin
+    /// declares what to capture; the host does the watching.
+    record web-capture {
+        start-url: string,
+        user-agent: user-agent,
+        /// Exact hosts, or `*.example.com` for subdomains.
+        observe: list<string>,
+        values: list<capture>,
+        scripts: list<page-script>,
+    }
+
+    record device-code {
+        verification-url: string,
+        user-code: string,
+        expires-in-seconds: u32,
+    }
+
+    variant challenge {
+        redirect(redirect-challenge),
+        form(form),
+        web-capture(web-capture),
+        /// The host shows the code and keeps polling with `answer.poll`.
+        device-code(device-code),
+    }
+
+    record ask {
+        challenge: challenge,
+        /// Kept by the host and passed back with the answer.
+        state: string,
+    }
+
+    record wait {
+        after-ms: u32,
+        state: string,
+    }
+
+    record authorized {
+        credential: credential,
+        account: account,
+    }
+
+    variant step {
+        ask(ask),
+        /// Device code still pending: the host calls again with `answer.poll`
+        /// after the wait.
+        wait(wait),
+        done(authorized),
+    }
+
+    record callback {
+        /// `code`, `error`, `error_description` and the `keep` parameters.
+        params: list<tuple<string, string>>,
+        /// For the token request.
+        redirect-uri: string,
+        code-verifier: string,
+    }
+
+    variant answer {
+        redirect(callback),
+        form(list<tuple<string, string>>),
+        web-capture(list<tuple<string, string>>),
+        poll,
+    }
+
+    begin-authorization: func(conn: borrow<connection>, context: session-context) -> result<step, error>;
+
+    continue-authorization: func(conn: borrow<connection>, context: session-context, state: string, answer: answer) -> result<step, error>;
+
+    /// Returns a fresh Credential Record. Called before `expires-at` and after
+    /// an `error.unauthorized`. Fail with `error.unauthorized` when only the
+    /// user can fix it.
+    refresh-credential: func(conn: borrow<connection>) -> result<credential, error>;
+}
+
+/// Liking Tracks, saving albums, following artists, users and playlists.
+interface likes {
+    use types.{error, item-ref};
+    use connection.{connection};
+
+    set-liked: func(conn: borrow<connection>, item: item-ref, liked: bool) -> result<_, error>;
+}
+
+/// Liked state in batches. Optional: without it, the host derives liked state
+/// from the matching library shelf (for example `liked-tracks`), which it
+/// enumerates with `detail.ids`.
+interface like-lookup {
+    use types.{error, item-ref};
+    use connection.{connection};
+
+    /// Answers in request order.
+    liked-states: func(conn: borrow<connection>, items: list<item-ref>) -> result<list<bool>, error>;
+}
+
+/// Creating, changing and deleting Provider Playlists.
+interface playlist-editing {
+    use types.{error, playlist};
+    use connection.{connection};
+
+    record new-playlist {
+        title: string,
+        description: option<string>,
+        public: bool,
+    }
+
+    record details {
+        title: option<string>,
+        description: option<string>,
+        public: option<bool>,
+    }
+
+    record insertion {
+        tracks: list<string>,
+        /// Position to insert at. `none` appends.
+        at: option<u32>,
+    }
+
+    /// One occurrence of a Track, so that duplicates stay distinct.
+    record occurrence {
+        track: string,
+        position: u32,
+    }
+
+    record moving {
+        %from: u32,
+        count: u32,
+        to: u32,
+    }
+
+    variant change {
+        add(insertion),
+        remove(list<occurrence>),
+        move(moving),
+        details(details),
+    }
+
+    record rejection {
+        /// Index into `add.tracks` or `remove`.
+        index: u32,
+        error: error,
+    }
+
+    record outcome {
+        revision: option<string>,
+        /// Items the Provider refused while the rest succeeded.
+        rejected: list<rejection>,
+    }
+
+    create: func(conn: borrow<connection>, playlist: new-playlist) -> result<playlist, error>;
+
+    /// `revision` is the one the user's view was based on. Fail with
+    /// `error.conflict` if the Provider rejects it.
+    edit: func(conn: borrow<connection>, playlist: string, revision: option<string>, change: change) -> result<outcome, error>;
+
+    /// Deletes an owned playlist. Unfollowing someone else's is
+    /// `likes.set-liked`.
+    delete: func(conn: borrow<connection>, playlist: string) -> result<_, error>;
+}
+
+/// Plugin-defined row actions (`types.action`).
+interface actions {
+    use types.{error};
+    use connection.{connection};
+
+    /// Returns a short confirmation to show, if any.
+    invoke: func(conn: borrow<connection>, action: string) -> result<option<string>, error>;
+}
+
+/// Plugin Byte Sources. Export this only if `resolve` returns
+/// `location.bytes`.
+interface byte-source {
+    use types.{error};
+    use connection.{connection};
+
+    /// Up to `length` bytes from `offset`. Fewer bytes than asked for means
+    /// the end of the stream. The host reads ahead of the playhead and on
+    /// seek, in chunks of at least 64 KiB.
+    read: func(conn: borrow<connection>, handle: string, offset: u64, length: u32) -> result<list<u8>, error>;
+}

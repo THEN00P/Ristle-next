@@ -33,6 +33,14 @@ it, covering every data domain. The walkthrough is the test of whether the API i
 verbose. Review it with the user before host code is written. The WIT is not
 final until spike C has passed on a real iPhone.
 
+**Status 2026-10-12:** draft `ristle:plugin@0.1.0` is in `plugin-api/wit/`
+(validated with `wasm-tools component wit` and `wit-bindgen rust`). The
+walkthrough, with the decisions and open questions for the user at its end, is
+`docs/plugin-api/walkthrough.md`; packaging is `docs/plugin-api/packaging.md`.
+Waiting for the user's review. Before it is final, a short Spotify spike should
+confirm the access-point key and spclient paths, which decide whether the
+`socket` import stays.
+
 ## Spike A: Qt Quick desktop
 
 Goal: certify Qt Quick for the desktop app, or trigger an evaluation of GPUI.

@@ -95,6 +95,9 @@ All of these must be expressible without Plugin-specific host code:
 
 ## Open questions for the WIT draft
 
+The draft's proposed answers are in `walkthrough.md`, under "Decisions and
+open questions for the user".
+
 1. Do Provider Views stay as plugin-defined rows and links, or does the API need
    richer layout primitives (shelves, hero, grids)?
 2. How should writes report partial failure, for example when adding 50 Tracks

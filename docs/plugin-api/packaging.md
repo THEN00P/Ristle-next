@@ -87,9 +87,16 @@ liked-states = 40
 playlist-add = 100
 
 [party]
-# Fields a Party Host may relay to guests. Omitted means every field of
-# track, album, profile and playlist. Never credentials or stream sources.
+# Fields a Party Host may relay to guests besides the Track reference, which is
+# always relayed. Omitted means every field of track, album, profile and
+# playlist; empty means the reference only (ADR 0012). Never credentials or
+# stream sources.
 share = ["title", "artists", "album", "artwork", "duration"]
+
+[playback]
+# false: no crossfade or other overlap into or out of this Provider's Tracks
+# (ADR 0012). Defaults to true.
+overlap = true
 ```
 
 What is *not* in the manifest:

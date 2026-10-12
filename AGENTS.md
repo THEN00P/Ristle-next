@@ -29,6 +29,10 @@ contradicts one, say so and propose an amendment.
 - The app repository contains only the Local Files Plugin and example Plugins.
   Provider Plugins for third-party services live in their own repositories
   (ADR 0010).
+- Provider terms are followed where the design allows, through generic
+  manifest switches rather than Provider-specific host code. ADR 0012 has
+  Ristle's reading of Spotify's terms (no overlap at Spotify boundaries, the
+  Provider always shown, only Track references relayed to Party guests).
 
 ## UI
 

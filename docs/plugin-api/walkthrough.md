@@ -100,8 +100,9 @@ tracks = 50
 liked-states = 40
 playlist-add = 100
 [party]
-# See "Party and Provider terms" below.
-share = ["title", "artists", "artwork", "url"]
+share = []          # only the Track reference reaches Party guests (ADR 0012)
+[playback]
+overlap = false     # no crossfade at Spotify boundaries (ADR 0012)
 ```
 
 ## What Plugins no longer do
@@ -1050,38 +1051,29 @@ of spike E.
 Party State relays Track metadata to guests. By default every field of
 `track`, `album`, `profile` and `playlist` may be relayed; nothing from a
 Credential Record, a Stream Source or `storage` ever is. A Plugin narrows
-this with `[party] share` in its manifest.
+this with `[party] share` in its manifest; the Track reference is always
+relayed.
 
-Spotify's Developer Terms and Developer Policy (read 2026-10-12) are stricter
-than a field list can capture:
+Spotify's Developer Terms and Developer Policy restrict sharing content with
+third parties, playing to several listeners, and mixing Spotify with other
+services. ADR 0012 records how Ristle reads them and what it does, in short:
 
-- Spotify Content may only be displayed back to the user of the application,
-  and must not be transferred to third parties (Terms IV.2.5, V.4). A Party
-  guest is a third party.
-- An application must not play content from one source to several
-  simultaneous listeners (Policy III.4), and must not be integrated with
-  streams or content from another service (Policy III.5).
-- Wherever Spotify content is displayed it must be attributed to Spotify and
-  link back to the item on Spotify (Policy II.4.1, II.4.2).
-- Spotify Content must not be stored indefinitely or compiled into databases;
-  caching is allowed only as needed for performance (Terms IV.3.1, IV.3.2).
+- **Mixing** means blending audio or passing one service off as another. A
+  queue that holds Spotify Tracks next to other Providers' Tracks does not mix
+  them as long as the audio never overlaps and every Track is shown as its
+  Provider's. The Spotify manifest sets `[playback] overlap = false`, so the
+  host never crossfades into or out of a Spotify Track, and Ristle's UI rules
+  already show the Provider, here with Spotify's attribution and the link
+  back (`track.url`).
+- **Third parties.** The Spotify manifest sets `[party] share = []`, so the
+  Party Host relays only the Track reference. A guest whose Ristle has a
+  Spotify Provider Connection resolves the metadata with their own account;
+  any other guest sees that a Spotify Track is queued, without its details.
+- **Storage.** The host's cache of Provider data is bounded and refreshed by
+  user action, never kept indefinitely.
 
-A mixed-Provider queue that a Party plays through one speaker conflicts with
-III.4 and III.5 whatever fields are shared, and so does the Spotify Plugin's
-use of the playback client, which is why it lives outside the app repository
-(ADR 0010). What the API can do is let the Spotify Plugin follow the parts
-that are about display: share only what guests need to recognize a Track,
-with attribution and the link back.
-
-```toml
-[party]
-share = ["title", "artists", "artwork", "url"]   # url is the link back to Spotify
-```
-
-The host shows the Provider and the link wherever a Track is displayed
-(Ristle's UI rules already show the Provider once per context), and its
-cache of Provider data is bounded and refreshed by user action, never kept
-indefinitely.
+These measures are made out of respect, not as a legal position. Spotify can
+stop the Spotify Plugin whatever Ristle does.
 
 ## Streams
 
@@ -1338,10 +1330,10 @@ Settled in review (2026-10-12):
   world side by side and keeps the previous major for 12 months.
 - **Party metadata:** `track`, `album`, `profile` and `playlist` fields may
   be relayed to guests, never anything from `credential`, `stream-source` or
-  `storage`. A Plugin narrows this in its manifest (`[party] share`); the
-  Spotify Plugin shares title, artists, artwork and the link back. See
-  [Party and Provider terms](#party-and-provider-terms) for what Spotify's
-  terms say beyond fields.
+  `storage`. A Plugin narrows this in its manifest (`[party] share`). The
+  Spotify Plugin relays only the Track reference, and guests resolve it with
+  their own Spotify account. ADR 0012 records Ristle's reading of Spotify's
+  terms, including no crossfade at Spotify boundaries.
 - **A Spotify spike** confirms the access point and spclient paths before the
   WIT is final. Its brief is in `HANDOFF.md`.
 

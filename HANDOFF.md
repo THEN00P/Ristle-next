@@ -1,7 +1,7 @@
 # Handoff
 
 Current phase: **1, design and spikes.** Decisions are recorded in ADRs
-0001–0011. Next come the Plugin API design and five spikes (A–E).
+0001–0012. Next come the Plugin API design and five spikes (A–E).
 
 Spikes are the only disposable work in this repository. Each lives in
 `spikes/<letter>-<name>/` and is deleted once its findings are written into the

@@ -121,8 +121,14 @@ Smaller things:
   a guard that aborts the task when the platform drops the future. Dropping the
   runtime from a core thread panics, so `Core::drop` uses
   `shutdown_background`.
-- Push callbacks arrive on core threads. Media3 needs its application looper and
-  Compose state wants main, so every platform observer hops threads itself.
+- Push callbacks from async work (loads, the playhead ticker) arrive on core
+  threads. **The stub's synchronous commands (`play`, `pause`, `seek`) notify
+  observers inline, on the caller's thread**, which is usually the platform's
+  main thread. The threading tests only covered the async path. The production
+  core must dispatch every observer notification through its own runtime, so a
+  slow observer can never block a UI transport action. Either way, Media3 needs
+  its application looper and Compose state wants main, so every platform
+  observer hops threads itself. (Found in review on PR #3.)
 - Kotlin's `CoreException.message` is `id=missing-1`, not the Rust `Display`
   string. Swift's `localizedDescription` is the Swift type description.
 - Kotlin async foreign-trait calls run on `GlobalScope` and

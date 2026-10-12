@@ -148,6 +148,7 @@ jobs:
           grep -E "RISTLE_SPIKE_D|Test Case .*(passed|failed)|error:" ../build-test.log | tee -a "$METRICS"
           echo "xcodebuild_test_exit=$rc" | tee -a "$METRICS"
           tail -30 ../build-test.log
+          exit $rc
       - name: Release device builds (sizes and build time)
         if: always()
         working-directory: spikes/d-uniffi/ios

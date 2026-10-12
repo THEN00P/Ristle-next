@@ -43,8 +43,10 @@ spanned three layers.
     Swift does not forward `Task` cancellation to the Rust future. Kotlin does.
   - The core never panics across the boundary. A panic in a non-throwing
     function traps the iOS process. Fallible functions return `Result`.
-  - Callbacks arrive on core threads. Platform observers hop to their UI or
-    Media3 thread themselves.
+  - Callbacks always arrive on core threads. The core dispatches every
+    observer notification through its runtime, including those caused by
+    synchronous commands, and never calls an observer inline on the caller's
+    thread. Platform observers hop to their UI or Media3 thread themselves.
   - Android keeps core threads attached to the JVM with a JNA
     `CallbackThreadInitializer` and creates the core off the main thread.
   - The Swift bindings build in their own Swift 5 language-mode module until

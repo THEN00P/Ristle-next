@@ -42,6 +42,13 @@ pub fn run_component(pulley: bool) -> Result<String> {
     if pulley {
         config.target("pulley64")?;
         config.signals_based_traps(false);
+        // iOS caps an app's virtual address space, so the default 4 GiB
+        // reservation per linear memory fails with ENOMEM. Reserve nothing
+        // up front and let memories grow (and move) on demand instead.
+        config.memory_reservation(0);
+        config.memory_guard_size(0);
+        config.memory_reservation_for_growth(1 << 20);
+        config.memory_may_move(true);
     }
     let engine = Engine::new(&config)?;
     let engine_ms = ms(t);

@@ -67,3 +67,27 @@ wait for the iPhone.
 - [swift-wasmtime](https://github.com/OpenCow42/swift-wasmtime), [wasmtime-kmp](https://github.com/brahmkshatriya/wasmtime-kmp), [wasmtime#5754 iOS target](https://github.com/bytecodealliance/wasmtime/issues/5754)
 - [wasm-benchmark (iPhone 12/XS results)](https://github.com/rebeckerspecialties/wasm-benchmark)
 - [Firebase Test Lab for iOS](https://firebase.google.com/docs/test-lab/ios/get-started)
+
+## Spike C results so far (2026-10-12)
+
+| Where | Pulley search (200 tracks) | Pulley AES-CTR 1 MiB | Native search / AES | Outcome |
+|---|---|---|---|---|
+| Windows desktop | 12.2 ms | 281 ms | 0.8 ms / 0.1 ms | Pass, identical results in all modes |
+| macOS CI runner | 12.1 ms | 198 ms | 0.4 ms / 3.2 ms | Pass |
+| iOS Simulator (iPhone 16 Pro, CI) | 12.5 ms | 202 ms | 0.5 ms / 4.3 ms | Pass |
+| **iPhone 8, iOS 16.6, Firebase Test Lab** | — | — | 1.0 ms / 5.8 ms | **Fail:** `mmap failed to reserve 0x100000000 bytes: Cannot allocate memory` |
+
+What is proven on the real device:
+- An ad-hoc-signed XCTest build without an Apple Developer account installs and
+  runs in Test Lab (Spark plan, no billing account linked).
+- The Rust core runs natively on the device.
+
+What failed: wasmtime reserves 4 GiB of virtual address space per linear memory
+by default. iOS caps an app's address space, so instantiation fails. The Simulator
+does not reproduce this, because it runs inside the macOS address space.
+
+Fix, prepared and verified on Windows but **not yet run on a device**:
+`memory_reservation(0)`, `memory_guard_size(0)`, `memory_reservation_for_growth(1 MiB)`
+and `memory_may_move(true)` for the Pulley engine. Pulley timings are unchanged
+with it (12.7 ms / 287 ms on Windows). This becomes a required engine setting on
+iOS in the production Plugin host.

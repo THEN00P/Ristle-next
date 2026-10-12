@@ -1,9 +1,16 @@
 name: spike-c-ios
 
 # Manual only: macOS minutes are expensive on a private repository.
+# Also hosts spike D (UniFFI), because workflow_dispatch only works for workflow
+# files that already exist on the default branch.
 on:
   workflow_dispatch:
     inputs:
+      spike:
+        description: Which spike to run
+        type: choice
+        options: [c, d]
+        default: c
       device_build:
         description: Also build the signed-ad-hoc device test zip for Firebase Test Lab
         type: boolean
@@ -15,6 +22,7 @@ on:
 
 jobs:
   ios:
+    if: ${{ inputs.spike == 'c' }}
     runs-on: macos-15
     timeout-minutes: 40
     defaults:
@@ -73,3 +81,113 @@ jobs:
           name: ristle-spike-ios
           path: spikes/c-wasm-ios/ristle-spike-ios.zip
           retention-days: 3
+
+  spike-d:
+    # Spike D: UniFFI bindings. One run reports Simulator tests, build timings and
+    # binary sizes. No cache, so the Rust timings are cold.
+    if: ${{ inputs.spike == 'd' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: spikes/d-uniffi
+    env:
+      METRICS: ${{ github.workspace }}/spike-d-metrics.txt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Environment
+        run: |
+          { echo "xcode=$(xcodebuild -version | head -1)"; echo "rustc=$(rustc --version)"; sysctl -n machdep.cpu.brand_string; } | tee -a "$METRICS"
+      - name: Build uniffi-bindgen (host, one-off per cache)
+        run: |
+          t0=$(date +%s); cargo build -p uniffi-bindgen --release; t1=$(date +%s)
+          echo "bindgen_build_cold_s=$((t1-t0))" | tee -a "$METRICS"
+      - name: Build core for Simulator and device
+        run: |
+          t0=$(date +%s); cargo build -p ristle-core-stub --release --target aarch64-apple-ios-sim; t1=$(date +%s)
+          cargo build -p ristle-core-stub --release --target aarch64-apple-ios; t2=$(date +%s)
+          touch core/src/lib.rs
+          cargo build -p ristle-core-stub --release --target aarch64-apple-ios-sim; t3=$(date +%s)
+          {
+            echo "cargo_sim_cold_s=$((t1-t0))"
+            echo "cargo_device_cold_s=$((t2-t1))  (shares host build scripts with the sim build)"
+            echo "cargo_sim_incremental_s=$((t3-t2))  (core crate only, release + LTO)"
+            echo "staticlib_device_bytes=$(stat -f%z target/aarch64-apple-ios/release/libristle_core.a)"
+          } | tee -a "$METRICS"
+      - name: Generate Swift bindings
+        run: |
+          # Library mode reads metadata from any build of the crate; fall back to a host build.
+          LIB=target/aarch64-apple-ios-sim/release/libristle_core.dylib
+          [ -f "$LIB" ] || { cargo build -p ristle-core-stub --release; LIB=target/release/libristle_core.dylib; }
+          t0=$(date +%s)
+          ./target/release/uniffi-bindgen generate --library "$LIB" \
+            --language swift --no-format --out-dir ios/Generated
+          t1=$(date +%s)
+          mv ios/Generated/ristle_coreFFI.modulemap ios/Generated/module.modulemap
+          {
+            echo "bindgen_swift_s=$((t1-t0))"
+            echo "swift_bindings_lines=$(wc -l < ios/Generated/ristle_core.swift) bytes=$(wc -c < ios/Generated/ristle_core.swift)"
+            echo "c_header_lines=$(wc -l < ios/Generated/ristle_coreFFI.h)"
+          } | tee -a "$METRICS"
+      - name: Generate Xcode project
+        working-directory: spikes/d-uniffi/ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Test in iOS Simulator
+        working-directory: spikes/d-uniffi/ios
+        run: |
+          set +e
+          SIM=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
+          echo "simulator=$SIM" | tee -a "$METRICS"
+          xcodebuild test -project RistleSpikeD.xcodeproj -scheme RistleSpikeD \
+            -destination "platform=iOS Simulator,name=$SIM" -derivedDataPath ../build/dd-test > ../build-test.log 2>&1
+          rc=$?
+          grep -E "RISTLE_SPIKE_D|Test Case .*(passed|failed)|error:" ../build-test.log | tee -a "$METRICS"
+          echo "xcodebuild_test_exit=$rc" | tee -a "$METRICS"
+          tail -30 ../build-test.log
+      - name: Release device builds (sizes and build time)
+        if: always()
+        working-directory: spikes/d-uniffi/ios
+        run: |
+          set +e
+          build() { # scheme dd
+            xcodebuild build -project RistleSpikeD.xcodeproj -scheme "$1" -configuration Release \
+              -sdk iphoneos -destination generic/platform=iOS -derivedDataPath "../build/$2" > "../build-$1.log" 2>&1
+            echo "exit $1=$?" | tee -a "$METRICS"
+          }
+          t0=$(date +%s); build Baseline dd-baseline; t1=$(date +%s); build RistleSpikeD dd-core; t2=$(date +%s)
+          B=../build/dd-baseline/Build/Products/Release-iphoneos/Baseline.app
+          C=../build/dd-core/Build/Products/Release-iphoneos/RistleSpikeD.app
+          {
+            echo "xcode_release_baseline_s=$((t1-t0))"
+            echo "xcode_release_core_s=$((t2-t1))  (Rust prebuilt; bindings compile + link)"
+            echo "baseline_exe_bytes=$(stat -f%z $B/Baseline)"
+            echo "core_exe_bytes=$(stat -f%z $C/RistleSpikeD)"
+            echo "baseline_app_kb=$(du -sk $B | cut -f1) core_app_kb=$(du -sk $C | cut -f1)"
+          } | tee -a "$METRICS"
+          echo "strict_concurrency_warnings_in_bindings=$(grep -E 'ristle_core\.swift:[0-9]+:[0-9]+: warning' ../build-RistleSpikeD.log | sort -u | wc -l)" | tee -a "$METRICS"
+          grep -E 'ristle_core\.swift:[0-9]+:[0-9]+: warning' ../build-RistleSpikeD.log | sed 's/.*warning: //' | sort | uniq -c | sort -rn | head -10 | tee -a "$METRICS"
+      - name: Bindings in Swift 6 language mode
+        if: always()
+        working-directory: spikes/d-uniffi/ios
+        run: |
+          set +e
+          xcodebuild build -project RistleSpikeD.xcodeproj -scheme Bindings6 -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" -derivedDataPath ../build/dd-swift6 > ../build-swift6.log 2>&1
+          echo "swift6_exit=$? errors=$(grep -cE 'ristle_core\.swift:[0-9]+:[0-9]+: error' ../build-swift6.log) warnings=$(grep -E 'ristle_core\.swift:[0-9]+:[0-9]+: warning' ../build-swift6.log | sort -u | wc -l)" | tee -a "$METRICS"
+          grep -E 'ristle_core\.swift:[0-9]+:[0-9]+: (error|warning)' ../build-swift6.log | sed -E 's/.*: (error|warning): //' | sort | uniq -c | sort -rn | head -10 | tee -a "$METRICS"
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$METRICS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-d-ios-logs
+          path: |
+            spike-d-metrics.txt
+            spikes/d-uniffi/build-*.log
+          retention-days: 7

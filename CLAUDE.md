@@ -38,3 +38,8 @@ before relying on it, and update it when you learn something new.
   device runs go through Firebase Test Lab (`spikes/c-wasm-ios/README.md`).
 - cmake and ninja for any native build ship inside Visual Studio and are not on
   PATH. Resolve them with `vswhere` (see `../Ristle/CLAUDE.local.md`).
+- **WIT tooling** is installed with `cargo install --locked wasm-tools wit-bindgen-cli`.
+  Validate with `wasm-tools component wit plugin-api/wit` and
+  `wit-bindgen rust --world full-provider --out-dir <tmp> plugin-api/wit` (the
+  WIT path goes last). In WIT, `from` is a keyword (write `%from`), and a
+  function cannot share a name with a type in the same interface.

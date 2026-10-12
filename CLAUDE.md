@@ -43,3 +43,6 @@ before relying on it, and update it when you learn something new.
   `wit-bindgen rust --world full-provider --out-dir <tmp> plugin-api/wit` (the
   WIT path goes last). In WIT, `from` is a keyword (write `%from`), and a
   function cannot share a name with a type in the same interface.
+- **Bash heredocs break on `'''`.** A quoted heredoc containing Python
+  triple-single-quotes fails with "unexpected EOF". Write the script to a file
+  with the Write tool and run it instead.

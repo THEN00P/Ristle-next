@@ -36,5 +36,10 @@ before relying on it, and update it when you learn something new.
 - **The iOS Simulator hides address-space limits.** Anything that reserves large
   virtual memory (wasmtime memories) passes there and fails on a device. Real
   device runs go through Firebase Test Lab (`spikes/c-wasm-ios/README.md`).
+- **Android emulator timings need `-memory 6144`.** The default 2 GB AVD swaps
+  while the Play Store installs after boot, which voids measurements. Discard the
+  first run after a boot. Other sessions install apps on the same AVD, and adb
+  can list a stale `emulator-5562`, so pass `-s emulator-5554`. Results can come
+  back through logcat or `run-as`, so no UI agent is needed.
 - cmake and ninja for any native build ship inside Visual Studio and are not on
   PATH. Resolve them with `vswhere` (see `../Ristle/CLAUDE.local.md`).

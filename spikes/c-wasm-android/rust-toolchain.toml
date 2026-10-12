@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.97.0"
+targets = ["wasm32-unknown-unknown", "x86_64-linux-android", "aarch64-linux-android"]
+profile = "minimal"

@@ -19,7 +19,65 @@ const DECRYPT_ITERS: u32 = 10;
 const KEY: [u8; 16] = *b"ristle-spike-key";
 const IV: [u8; 16] = *b"ristle-spike-iv!";
 
-struct HostState;
+/// Store data. The limiter records how much linear memory the instance holds.
+#[derive(Default)]
+struct HostState {
+    memory: MemoryLimiter,
+}
+
+/// Records linear-memory growth. Grants every request: it only measures.
+#[derive(Default)]
+pub struct MemoryLimiter {
+    pub linear_memory_bytes: usize,
+}
+
+impl wasmtime::ResourceLimiter for MemoryLimiter {
+    fn memory_growing(&mut self, current: usize, desired: usize, _max: Option<usize>) -> Result<bool> {
+        self.linear_memory_bytes += desired - current;
+        Ok(true)
+    }
+
+    fn table_growing(&mut self, _current: usize, _desired: usize, _max: Option<usize>) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Engine settings under test.
+#[derive(Clone, Copy, Debug)]
+pub struct EngineMode {
+    /// Force the Pulley interpreter instead of the Cranelift JIT.
+    pub pulley: bool,
+    /// The iOS memory settings: no up-front reservation and no guard region.
+    pub small_memory: bool,
+}
+
+impl EngineMode {
+    pub fn name(self) -> String {
+        format!(
+            "{}{}",
+            if self.pulley { "pulley" } else { "cranelift" },
+            if self.small_memory { "+small-memory" } else { "+default-memory" }
+        )
+    }
+
+    pub fn config(self) -> Result<Config> {
+        let mut config = Config::new();
+        if self.pulley {
+            config.target("pulley64")?;
+            config.signals_based_traps(false);
+        }
+        if self.small_memory {
+            // iOS caps an app's virtual address space, so the default 4 GiB
+            // reservation per linear memory fails with ENOMEM. Reserve nothing
+            // up front and let memories grow (and move) on demand instead.
+            config.memory_reservation(0);
+            config.memory_guard_size(0);
+            config.memory_reservation_for_growth(1 << 20);
+            config.memory_may_move(true);
+        }
+        Ok(config)
+    }
+}
 
 impl ristle::spike::host::Host for HostState {
     fn fetch_page(&mut self, page: u32) -> Vec<u8> {
@@ -35,22 +93,16 @@ fn checksum(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 
-/// Runs the workloads in the component. `pulley` forces the interpreter.
+/// Runs the workloads in the component. `pulley` forces the interpreter, and
+/// with it the iOS memory settings, as on the device.
 pub fn run_component(pulley: bool) -> Result<String> {
+    run_component_with(EngineMode { pulley, small_memory: pulley })
+}
+
+/// Runs the workloads in the component under the given engine settings.
+pub fn run_component_with(mode: EngineMode) -> Result<String> {
     let t = Instant::now();
-    let mut config = Config::new();
-    if pulley {
-        config.target("pulley64")?;
-        config.signals_based_traps(false);
-        // iOS caps an app's virtual address space, so the default 4 GiB
-        // reservation per linear memory fails with ENOMEM. Reserve nothing
-        // up front and let memories grow (and move) on demand instead.
-        config.memory_reservation(0);
-        config.memory_guard_size(0);
-        config.memory_reservation_for_growth(1 << 20);
-        config.memory_may_move(true);
-    }
-    let engine = Engine::new(&config)?;
+    let engine = Engine::new(&mode.config()?)?;
     let engine_ms = ms(t);
 
     let t = Instant::now();
@@ -60,9 +112,11 @@ pub fn run_component(pulley: bool) -> Result<String> {
     let t = Instant::now();
     let mut linker = Linker::<HostState>::new(&engine);
     Plugin::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(&mut linker, |s| s)?;
-    let mut store = Store::new(&engine, HostState);
+    let mut store = Store::new(&engine, HostState::default());
+    store.limiter(|s| &mut s.memory);
     let plugin = Plugin::instantiate(&mut store, &component, &linker)?;
     let instantiate_ms = ms(t);
+    let instance_memory = store.data().memory.linear_memory_bytes;
     let provider = plugin.ristle_spike_provider();
 
     let mut search_ms = Vec::new();
@@ -83,9 +137,10 @@ pub fn run_component(pulley: bool) -> Result<String> {
         sum = checksum(&out);
     }
 
+    let peak_memory = store.data().memory.linear_memory_bytes;
     Ok(format!(
-        "{{\"mode\":\"{}\",\"engine_ms\":{engine_ms:.2},\"compile_ms\":{compile_ms:.2},\"instantiate_ms\":{instantiate_ms:.2},\"search_hits\":{hits},\"search_ms\":{},\"decrypt_mib_ms\":{},\"decrypt_checksum\":{sum}}}",
-        if pulley { "pulley" } else { "cranelift" },
+        "{{\"mode\":\"{}\",\"engine_ms\":{engine_ms:.2},\"compile_ms\":{compile_ms:.2},\"instantiate_ms\":{instantiate_ms:.2},\"linear_memory_after_instantiate\":{instance_memory},\"linear_memory_after_workload\":{peak_memory},\"search_hits\":{hits},\"search_ms\":{},\"decrypt_mib_ms\":{},\"decrypt_checksum\":{sum}}}",
+        mode.name(),
         stats(&search_ms),
         stats(&decrypt_ms)
     ))

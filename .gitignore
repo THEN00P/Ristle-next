@@ -12,3 +12,4 @@ spikes/*/build/
 spikes/*/ios/*.xcodeproj/
 spikes/*/*.zip
 spikes/*/*.log
+spikes/d-uniffi/ios/Generated/

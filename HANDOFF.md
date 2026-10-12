@@ -95,6 +95,11 @@ the end of that document.
 
 ## Spike D: UniFFI
 
+**Status 2026-10-12: go.** Items 1–4 passed on the Android emulator and in the
+iOS Simulator. Results and sharp edges are in `docs/research/uniffi.md`, and the
+resulting API conventions are in ADR 0001. The code is in `spikes/d-uniffi/` until
+the findings are reviewed.
+
 1. A Rust core stub with an async function, a callback interface (state
    observer) and a streaming update every 100 ms.
 2. Kotlin: call it from a Compose screen and a Media3 service, with no leaks

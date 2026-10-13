@@ -30,10 +30,11 @@ package ristle:plugin@0.1.0;
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.
 /// - Bounded arguments, for every import in this package, not only `http`:
-///   each string a Plugin passes is at most 64 KiB, a byte payload (a
-///   request body, live frame, socket data or storage value) at most 16 MiB
-///   or its interface's lower limit, and everything else in one call at
-///   most 1 MiB. The host reads the lengths from the instance's memory
+///   each string a Plugin passes is at most 64 KiB, the byte payloads of
+///   one call (request bodies, a live frame, socket data, a storage value)
+///   at most 16 MiB together, so all bodies of a `fetch-all` share it, each
+///   also within its interface's lower limit, and everything else in one
+///   call at most 1 MiB. The host reads the lengths from the instance's memory
 ///   before copying anything and fails the call with `error.internal` (or
 ///   traps, for an import without an error result) at the first value over
 ///   a limit, as it does for exported results (see `catalog`).

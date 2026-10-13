@@ -60,3 +60,10 @@ before relying on it, and update it when you learn something new.
   `\Memory\Available MBytes` before timing on the emulator. Use the AGP 9.2 line
   with Gradle ≥ 9.4.1 and the Android Studio JBR (Java 21) as `JAVA_HOME`,
   not the global Java 25.
+- **Babysitting Codex reviews: T3's PR watch wakes late.** It reacts
+  promptly to the edited "Codex Review Summary" comment, but delivers the
+  inline review comments about ten minutes late. Poll in the background
+  instead: wait until `pulls/1/reviews` has a review by
+  `chatgpt-codex-connector[bot]` whose `commit_id` is the head, or a `+1`
+  reaction on the PR. Resolve threads with the GraphQL `resolveReviewThread`
+  mutation after replying.

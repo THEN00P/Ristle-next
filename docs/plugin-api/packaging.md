@@ -15,11 +15,17 @@ Custom sections at the top level of the component, in this order:
 |---|---|---|
 | `signature` | Publisher signature in the WebAssembly signatures format (`wasmsign2`). Must be first | 4 KiB |
 | `ristle-manifest` | The manifest, UTF-8 TOML | 64 KiB |
-| `ristle-icon` | Square PNG (256 × 256 or larger) or SVG | 64 KiB |
+| `ristle-icon` | Square PNG, 256 × 256 to 1024 × 1024 | 64 KiB |
 | `ristle-handover` | Optional. A handover signed by the previous Publisher key | 1 KiB |
 
 The rest of the file is the component itself. A whole package is at most
 20 MiB.
+
+The icon is untrusted input shown before anything is accepted, so its
+decoded size is bounded too: the host reads the dimensions from the PNG
+header and refuses anything outside 256–1024 pixels square before decoding,
+then stores a downscaled copy. SVG is not accepted, because a small file can
+demand unbounded rendering work.
 
 Custom sections have no effect on execution, so wasmtime loads the component
 unchanged. The host reads the sections with a plain section parser before it
@@ -135,7 +141,8 @@ The consent screen at install lists, in plain words:
 
 - "Connects to" the `hosts`, `media-hosts` and `image-hosts`, and "Checks
   for updates at" the host of `updates`.
-- "Shares Track details with Party guests" unless `[party] share` is empty,
+- "Shares details of Tracks, albums, artists and playlists with Party
+  guests" unless `[party] share` is empty,
   naming the details when the list is short. Omitting `share` grants every
   field, and the screen says so.
 - "Stores up to N MB on this device" when `storage-mib` is above the
@@ -296,7 +303,9 @@ by installing a newer file by hand.
 ```
 
 - **When it is read.** When the user opens the Plugins page or taps "Check
-  for updates", and once at app start at most every 24 hours. A check only
+  for updates", and once at app start at most every 24 hours. A feed
+  response is at most 256 KiB and must arrive within 15 s; past either the
+  host stops reading and treats the feed as unreachable. A check only
   sets a badge on the Plugins page. Nothing is downloaded or installed in the
   background.
 - **Installing** is one tap ("Update all", or per Plugin). The host downloads

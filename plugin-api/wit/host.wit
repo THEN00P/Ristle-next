@@ -274,6 +274,10 @@ interface live {
     /// Connects a closed channel again with a fresh request, keeping its id.
     reopen: func(channel: string, request: channel-request) -> result<_, error>;
 
+    /// Sends a `text` or `binary` frame of at most 1 MiB. Each channel
+    /// queues at most 1 MiB of unsent frames; when the queue is full, `send`
+    /// waits up to 10 s for room, then fails with `error.transient` and the
+    /// host closes the channel and delivers `closed`.
     send: func(channel: string, frame: frame) -> result<_, error>;
 
     close: func(channel: string);

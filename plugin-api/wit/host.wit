@@ -6,15 +6,18 @@ package ristle:plugin@0.1.0;
 ///
 /// The host enforces, for every request:
 ///
-/// - HTTPS only, to hosts declared in the manifest's `hosts`. Redirects are
-///   followed only within those hosts.
+/// - HTTPS only, to hosts declared in the manifest's `hosts`, or to the
+///   origins of the connection's Server Grant (`connection.server`), which
+///   may also be plain HTTP. Redirects are followed only within those.
 /// - Public addresses only. The host resolves every name itself and refuses
 ///   loopback, link-local, private, unique-local, multicast and unspecified
 ///   addresses, checking again for every new connection so DNS rebinding
 ///   gains nothing. This applies to every connection the host makes for a
 ///   Plugin: `http`, `live`, `socket`, Stream Sources and images.
-///   A self-hosted Provider on the user's network would need an explicit
-///   grant of its own, which this version does not define.
+///   The one exception is a Server Grant: its origins may resolve to any
+///   unicast address, including the local network and, on desktop, this
+///   device, because the user chose that server and confirmed it. The
+///   exception holds only for that connection and only for those origins.
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.
 /// - Rate limiting. A 429, or a 503 with `Retry-After`, never reaches the
@@ -105,7 +108,7 @@ interface http {
 /// account is connected, it is an anonymous connection with an empty id and no
 /// credential.
 interface connection {
-    use types.{error, credential, account, setting-value};
+    use types.{error, credential, account, setting-value, media-server};
     use http.{request, response};
 
     resource connection {
@@ -115,6 +118,11 @@ interface connection {
 
         /// The account from the last successful authorization.
         account: func() -> option<account>;
+
+        /// The server the user granted this connection during sign-in, for
+        /// Plugins whose manifest sets `servers = true`. Its origins count
+        /// as `hosts`, `media-hosts` and `image-hosts` for this connection.
+        server: func() -> option<media-server>;
 
         /// The stored Credential Record.
         credential: func() -> option<credential>;

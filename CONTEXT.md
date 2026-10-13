@@ -16,6 +16,10 @@ _Avoid_: Provider, adapter
 A user's configured access to a Provider, including an authenticated account or selected local library. Provider-owned playlists, saves, uploads, and writes retain their specific Provider Connection; ordinary catalog Tracks do not.
 _Avoid_: Provider, account
 
+**Server Grant**:
+A user's permission, given during sign-in, for one Provider Connection's Plugin to reach a server the user chose, such as a Jellyfin or Plex server, including on the local network. It is never granted by a manifest.
+_Avoid_: Server URL setting, local network permission
+
 **Credential Record**:
 Provider Connection authentication data containing a versioned auth scheme, standard token or login fields, and optional encrypted custom data. Plugin access grants and callback configuration are stored separately.
 _Avoid_: Plugin credentials, auth configuration

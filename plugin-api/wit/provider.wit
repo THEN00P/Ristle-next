@@ -120,7 +120,7 @@ interface catalog {
 /// the `state` string a Plugin returns between steps. The Plugin turns
 /// answers into a Credential Record. It stores nothing itself.
 interface accounts {
-    use types.{error, credential, account};
+    use types.{error, credential, account, media-server};
     use connection.{connection};
 
     enum reason {
@@ -135,6 +135,7 @@ interface accounts {
         form,
         web-capture,
         device-code,
+        server,
     }
 
     /// The callback the host prepared for this step. Put `uri` in the
@@ -295,12 +296,32 @@ interface accounts {
         expires-in-seconds: u32,
     }
 
+    /// Ask the user which server to use. Only for Plugins whose manifest
+    /// sets `servers = true`.
+    ///
+    /// The host lists `found` (servers the Plugin discovered, for example
+    /// through a Plex account) and, with `allow-entry`, a field for an
+    /// address. The user picks or types one; the host then shows every
+    /// origin of that server and asks once more, in plain words, when an
+    /// origin is on the local network ("This server is on your home
+    /// network") or not encrypted ("Traffic to this server is not
+    /// encrypted"). Only after that does the server become the connection's
+    /// Server Grant, and `answer.server` carries it. A typed address becomes
+    /// a server with that one origin and the host as its name.
+    record server-choice {
+        found: list<media-server>,
+        allow-entry: bool,
+        /// For example "http://192.168.1.20:8096".
+        placeholder: option<string>,
+    }
+
     variant challenge {
         redirect(redirect-challenge),
         form(form),
         web-capture(web-capture),
         /// The host shows the code and keeps polling with `answer.poll`.
         device-code(device-code),
+        server(server-choice),
     }
 
     record ask {
@@ -343,6 +364,10 @@ interface accounts {
         form(list<tuple<string, string>>),
         web-capture(list<tuple<string, string>>),
         poll,
+        /// The server the user chose and confirmed. From here on the
+        /// session's requests may reach its origins; the grant is stored
+        /// with the credential when the authorization is accepted.
+        server(media-server),
     }
 
     /// `connection.set-credential` inside these two calls sets a candidate

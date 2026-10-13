@@ -85,6 +85,7 @@ sockets = []                           # "host:port", for the socket import
 # Hosts the sign-in window may show. Omitted or empty: no web capture.
 web-capture = ["soundcloud.com", "*.soundcloud.com"]
 storage-mib = 5
+# servers = true                       # self-hosted: may ask the user for a server
 
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
@@ -147,6 +148,10 @@ The consent screen at install lists, in plain words:
   field, and the screen says so.
 - "Stores up to N MB on this device" when `storage-mib` is above the
   default of 5. The host refuses a manifest above 64.
+- "Connects to servers you choose, including ones on your home network"
+  when `servers = true`. Nothing is granted at install: each server is
+  granted to one Provider Connection when the user picks and confirms it
+  during sign-in.
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
@@ -217,8 +222,8 @@ key, with a higher `version`.
 - **Loosened restrictions count as new permissions.** Sharing more Track
   fields with Party guests (`[party] share` gains fields, or is removed and
   falls back to every field), allowing overlap (`[playback] overlap` from
-  `false` to `true`), new `[auth] app-schemes` and a larger `storage-mib`
-  are shown as a difference, such as "now shares Track
+  `false` to `true`), new `[auth] app-schemes`, a larger `storage-mib` and
+  `servers` turning on are shown as a difference, such as "now shares Track
   details with Party guests", and need consent like a new host.
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must

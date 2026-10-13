@@ -538,6 +538,21 @@ interface types {
     }
 
     // ---------------------------------------------------------------------
+    // Self-hosted servers
+
+    /// A server the user runs, such as Jellyfin, Plex or Navidrome. Granted
+    /// to one Provider Connection by the user during sign-in (a Server
+    /// Grant), never by the manifest.
+    record media-server {
+        /// The server's own name, such as "Living Room".
+        name: string,
+        /// Origins (`scheme://host:port`) that reach this server, for example
+        /// a local address and a remote one. Every one is shown to the user
+        /// and granted together.
+        origins: list<string>,
+    }
+
+    // ---------------------------------------------------------------------
     // Accounts
 
     record account {

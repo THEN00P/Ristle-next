@@ -14,7 +14,7 @@ the generated bindings, not tested code.
 
 ## How to read the code
 
-The code is Rust against the types `wit-bindgen` generates. It assumes six
+The code is Rust against the types `wit-bindgen` generates. It assumes seven
 helpers that the Ristle SDK will provide, each a few lines over the generated
 types:
 
@@ -28,6 +28,7 @@ impl Request {
 fn json<T: DeserializeOwned>(r: Response) -> Result<T, Error>;
 // 2xx → T; 404/410 → Unavailable; 5xx → Transient; other → Internal(status + body excerpt)
 impl From<Item> for Entry { /* added: None, added_by: None */ }
+fn ask(challenge: Challenge, state: &str) -> Step;  // Step::Ask(Ask { challenge, state })
 ```
 
 Every export receives `conn: &Connection`. All HTTP goes through
@@ -1099,8 +1100,10 @@ fn apply(_: &Connection, _key: String, _value: SettingValue) -> Result<Option<St
 
 `posts` then skips reposts when `conn.setting("feed-reposts")` is
 `Some(SettingValue::Toggle(false))`. `apply` matters for settings that must be
-checked or acted on: a server URL a self-hosted Provider has to reach, or a
-button such as "Clear saved audio keys". Turning a Queue Projection on is not a
+checked or acted on, such as a button "Clear saved audio keys". A
+self-hosted Provider's server is not a setting: it is chosen during sign-in
+(see [Self-hosted Providers](#self-hosted-providers)), because only the user
+may grant a Plugin a new destination. Turning a Queue Projection on is not a
 Plugin setting: for every Plugin that exports `queue-projection`, Ristle shows
 its own per-connection switch ("Show Ristle in Spotify").
 
@@ -1364,6 +1367,71 @@ playback. Which spclient endpoints serve these, and at what batch sizes, is
 part of spike E. Sources: [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026),
 [migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
 
+## Self-hosted Providers
+
+Jellyfin, Plex, Navidrome and other servers the user runs are Providers like
+any other, but their address is not known when the Plugin is packaged, and
+it is often on the home network. A manifest cannot list it, and the public
+address rule would refuse it. A **Server Grant** solves this: the manifest
+only says the Plugin may ask (`servers = true`), and the user grants one
+server to one Provider Connection during sign-in.
+
+```rust
+// Jellyfin
+fn begin_authorization(_: &Connection, _: SessionContext) -> Result<Step, Error> {
+    Ok(ask(Challenge::Server(ServerChoice {
+        found: vec![], allow_entry: true,
+        placeholder: Some("http://192.168.1.20:8096".into()) }), "server"))
+}
+
+fn continue_authorization(conn: &Connection, _: SessionContext, state: String, answer: Answer)
+        -> Result<Step, Error> {
+    match (state.as_str(), answer) {
+        ("server", Answer::Server(_)) => Ok(ask(Challenge::Form(login_form()), "login")),
+        ("login", Answer::Form(values)) => {
+            let server = conn.server().ok_or_else(unauthorized)?;   // granted from here on
+            let base = &server.origins[0];
+            let auth: JfAuth = json(conn.fetch(&with_json(Method::Post,
+                format!("{base}/Users/AuthenticateByName"), login_body(&values)))?)?;
+            let credential = token_credential(&server, &auth.access_token);
+            conn.set_credential(&credential)?;
+            Ok(Step::Done(Authorized { credential, account: auth.user.into() }))
+        }
+        _ => Err(Error::Internal("unexpected step".into())),
+    }
+}
+```
+
+Plex discovers instead of asking for an address: the Plugin signs in to
+plex.tv (a manifest host), lists the account's servers, and returns them as
+`found`, each with its local and remote origins. The user picks one.
+
+What the user sees and what the host enforces:
+
+- **At install**, one line: "Connects to servers you choose, including ones
+  on your home network". Nothing is reachable yet.
+- **At sign-in**, the server and every origin it would grant. A local
+  origin adds "This server is on your home network" and an `http` origin
+  adds "Traffic to this server is not encrypted", each as a confirmation the
+  user must accept. A Plugin cannot add origins later; changing servers is
+  signing in again, which asks again.
+- **The grant** belongs to that Provider Connection. Its origins count as
+  `hosts`, `media-hosts` and `image-hosts` for that connection only, may be
+  plain HTTP, and may resolve to local addresses, and on desktop to this
+  device. Every other destination keeps the public-HTTPS rule. Removing the
+  connection removes the grant.
+- **Platforms.** iOS shows its Local Network permission the first time a
+  granted origin is local, so the app declares
+  `NSLocalNetworkUsageDescription`. Android must allow cleartext traffic in
+  its network security config, since granted addresses are not known in
+  advance; the host's own rule keeps everything else HTTPS.
+
+**Developer mode.** A Ristle setting for Plugin authors lets a sideloaded
+Plugin's manifest hosts resolve to local addresses and use HTTP, so a Plugin
+can be tested against a server on the developer's machine. Ristle shows a
+banner while it is on, and it never applies to Plugins installed from a
+feed.
+
 ## Errors and rate limits
 
 Every legacy string error that the host had to classify becomes a case:
@@ -1504,6 +1572,16 @@ Settled in the second review:
 - **Playlist editing on both Plugins.** SoundCloud's web-session requests
   still have to be observed and recorded.
 - **Device-code sign-in stays.**
+
+Settled after the Codex reviews (2026-10-13):
+
+- **Self-hosted Providers are in 0.1** through Server Grants: the user
+  grants one server to one Provider Connection during sign-in, with
+  explicit confirmations for local and unencrypted origins.
+- **Playlist write races are accepted where the Provider has no
+  conditional write:** SoundCloud's whole-list `PUT` (unless it honours
+  `If-Unmodified-Since`) and the moment around a Spotify positional add.
+  Both editing paths stay.
 
 Principle from that review: build what is known to be needed into the first
 version instead of retrofitting it.

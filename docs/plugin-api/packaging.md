@@ -113,7 +113,8 @@ playlist-remove = 100
 # token. Any other image, such as one from a Server Grant origin or a
 # pre-signed URL, is fetched by the Party Host and relayed as the image
 # itself, scaled down, so guests never learn a private address or receive a
-# credential.
+# credential. An item's `url` passes the same test and is left out when it
+# fails, since a link cannot be relayed as content.
 share = ["title", "artists", "album", "artwork", "duration-ms"]
 
 [playback]
@@ -256,6 +257,14 @@ Credential Records, storage and Provider Connections carry over unchanged,
 with one exception: an update that drops `servers = true` ends every Server
 Grant of the Plugin, and those connections need signing in again. Items they
 returned stay bound to their connection (see `catalog` in `provider.wit`).
+
+Installing any version (an update, a downgrade or a takeover) drops the
+Plugin's cached HTTP responses and page, listing and Feed results before
+the new code runs, since a new version may map them differently. What the
+user saved, such as Ristle Playlist entries and the library, keeps its
+Provider ids, so every version must keep accepting the ids earlier versions
+returned. Active Stream Sources and live channels are retired too (see
+`stream-source` in `types.wit` and `live` in `host.wit`).
 
 ### Key rotation
 

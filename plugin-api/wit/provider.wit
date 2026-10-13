@@ -457,9 +457,11 @@ interface playlist-editing {
         public: bool,
     }
 
+    /// Only the fields that are `some` change.
     record details {
         title: option<string>,
-        description: option<string>,
+        /// `some(none)` removes the description.
+        description: option<option<string>>,
         public: option<bool>,
     }
 

@@ -164,6 +164,12 @@ interface accounts {
     }
 
     /// Open a URL and wait for the redirect to come back.
+    ///
+    /// `url` and `fallback-url` must be HTTPS on a host in the manifest's
+    /// `hosts`. With `opener.app`, `url` may instead use a scheme listed in
+    /// `[auth] app-schemes`. Anything else (`file:`, `intent:`, other custom
+    /// schemes, local addresses) is refused with `error.internal` and nothing
+    /// is opened.
     record redirect-challenge {
         url: string,
         opener: opener,

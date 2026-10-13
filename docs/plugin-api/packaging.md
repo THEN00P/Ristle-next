@@ -82,6 +82,7 @@ storage-mib = 5
 
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
+# app-schemes = ["soundcloud"]         # schemes an `opener: app` URL may use
 
 [limits]                               # the host never exceeds these per call
 tracks = 50
@@ -165,13 +166,18 @@ every request to hosts outside the list, from navigation to subresources,
 
 1. Read the sections. Reject a package without `signature` as first section,
    without a manifest, or over the size limits.
-2. Verify the signature over the rest of the file.
-3. Parse the manifest. Check `id` and `version`.
-4. Load the component with wasmtime and check its imports and exports
+2. Read only `id` and `publisher-key` from the still untrusted manifest, to
+   choose the key to verify with. Nothing else in it is used yet.
+3. Verify the signature over the rest of the file with the manifest's
+   `publisher-key`. If that `id` is installed, the result is then compared
+   with the installed Publisher key (or the key a valid handover names) to
+   tell an update from a takeover in step 6.
+4. Parse and validate the whole manifest. Check `id` and `version`.
+5. Load the component with wasmtime and check its imports and exports
    against the `ristle:plugin` versions the host implements.
-5. Decide new install, update or takeover (below) and show the matching
+6. Decide new install, update or takeover (below) and show the matching
    screen.
-6. Store the package, then compile it once (Cranelift, or Pulley bytecode on
+7. Store the package, then compile it once (Cranelift, or Pulley bytecode on
    iOS) and keep the compiled artifact, so later starts skip compilation.
 
 ## Updates
@@ -283,9 +289,10 @@ by installing a newer file by hand.
   that needs new permissions shows the diff; one that would be a takeover
   shows the takeover screen. The feed adds no trust of its own, so a
   compromised feed can at worst offer a package the user then refuses.
-- **Download URLs** must be HTTPS on the same host as `updates`, and
-  redirects are followed only within it. A release whose `url` points
-  elsewhere is ignored, so a feed cannot send the host to a destination the
+- **The feed request and download URLs** must be HTTPS on the host of
+  `updates`, and redirects are followed only within it. A feed that
+  redirects elsewhere counts as unreachable, and a release whose `url`
+  points elsewhere is ignored, so a feed cannot send the host to a destination the
   user never consented to. Publishers who serve files from a CDN put the
   feed there too.
 - **`api`** is the `ristle:plugin` version the release needs. The host offers

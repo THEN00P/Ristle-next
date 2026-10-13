@@ -362,6 +362,9 @@ Mobile: the manifest lists `scheme`, so on Android and iOS the host passes a
 not change. To sign in through the installed Spotify app (deep link), the
 Plugin would return `opener: App` with the app's authorize URL and the web URL
 as `fallback_url`; the callback still comes back through the redirect target.
+The app URL is either an HTTPS link on `accounts.spotify.com` that the system
+hands to the app, or a scheme the manifest lists in `[auth] app-schemes`;
+spike E records which one the Spotify app answers.
 
 ## Search
 
@@ -577,8 +580,9 @@ applications in 2024.
 `/users/{id}/playlists` are gone for Development Mode apps, so the profile
 and its public playlists come from spclient (the user's profile and
 rootlist), which spike E checks. If spclient cannot serve them, the Plugin
-returns the profile it already knows from the playlist that linked here
-(name and id) with `playlists: none`, and the page shows only the header.
+returns `error.unavailable`. A stateless Plugin cannot know the name, but the
+host can: it opened the page from a `person` it already shows (a playlist's
+owner, a feed post), so it shows that name as the header with no parts.
 
 ## Playlists
 

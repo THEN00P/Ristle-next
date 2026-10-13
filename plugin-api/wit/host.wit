@@ -241,6 +241,9 @@ interface live {
         keepalive: option<keepalive>,
     }
 
+    /// A received `text` or `binary` message is at most 1 MiB. The host
+    /// stops reading a larger one as soon as it passes the limit, closes the
+    /// channel and delivers `closed`, so a message is never assembled in full.
     variant frame {
         text(string),
         binary(list<u8>),

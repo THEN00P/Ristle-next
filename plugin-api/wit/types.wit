@@ -551,10 +551,14 @@ interface types {
     record media-server {
         /// The server's own name, such as "Living Room".
         name: string,
-        /// Origins (`scheme://host:port`) that reach this server, for example
-        /// a local address and a remote one. Every one is shown to the user
-        /// and granted together.
-        origins: list<string>,
+        /// Base URLs that reach this server, with any path the server is
+        /// deployed under, such as `http://192.168.1.20:8096` and
+        /// `https://music.example/jellyfin`: a local address and a remote
+        /// one, for example. Every one is shown to the user and granted
+        /// together. The grant covers each URL's origin
+        /// (`scheme://host:port`); the path is for the Plugin to build its
+        /// requests on.
+        urls: list<string>,
     }
 
     // ---------------------------------------------------------------------

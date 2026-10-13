@@ -11,7 +11,12 @@ package ristle:plugin@0.1.0;
 ///   keeps an instance alive while it is in use (during playback, and for a
 ///   few minutes after its last call), so warm connections are rarely lost.
 /// - Every call names a Provider Connection. For a public item the host
-///   passes the connection it came from, or any connected one.
+///   passes the connection it came from, or any connected one. Items of a
+///   Plugin whose manifest sets `servers = true` are never treated as
+///   public: different servers issue unrelated ids, so the host keeps the
+///   Provider Connection with each such item, Tracks in the queue included,
+///   and calls only that connection for it. Without it the item is
+///   unavailable.
 /// - The host batches. It never asks for more ids in one `tracks` call, or
 ///   more items in one `like-lookup.liked-states` call, than the manifest's
 ///   `limits` allow, and it chunks large playlist adds and removals the same
@@ -316,7 +321,7 @@ interface accounts {
     /// network") or not encrypted ("Traffic to this server is not
     /// encrypted"). Only after that does the server become the connection's
     /// Server Grant, and `answer.server` carries it. A typed address becomes
-    /// a server with that one origin and the host as its name.
+    /// a server with that one URL, path included, and the host as its name.
     record server-choice {
         found: list<media-server>,
         allow-entry: bool,

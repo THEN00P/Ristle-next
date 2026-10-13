@@ -1391,7 +1391,7 @@ fn continue_authorization(conn: &Connection, _: SessionContext, state: String, a
         ("server", Answer::Server(_)) => Ok(ask(Challenge::Form(login_form()), "login")),
         ("login", Answer::Form(values)) => {
             let server = conn.server().ok_or_else(unauthorized)?;   // granted from here on
-            let base = &server.origins[0];
+            let base = &server.urls[0];                       // may carry a path
             let auth: JfAuth = json(conn.fetch(&with_json(Method::Post,
                 format!("{base}/Users/AuthenticateByName"), login_body(&values)))?)?;
             let credential = token_credential(&server, &auth.access_token);
@@ -1405,7 +1405,7 @@ fn continue_authorization(conn: &Connection, _: SessionContext, state: String, a
 
 Plex discovers instead of asking for an address: the Plugin signs in to
 plex.tv (a manifest host), lists the account's servers, and returns them as
-`found`, each with its local and remote origins. The user picks one.
+`found`, each with its local and remote URLs. The user picks one.
 
 What the user sees and what the host enforces:
 
@@ -1418,12 +1418,18 @@ What the user sees and what the host enforces:
   add origins later; changing servers is signing in again, which asks
   again, and like a different account it drops everything cached for the
   connection.
-- **The confirmed address class sticks.** The grant remembers whether each
-  origin resolved to a public address, the home network or this device.
-  If a name later resolves to a class the user did not confirm, for example
-  a public name rebound to a home address, the host refuses the connection
-  and asks the user to sign in again, so DNS rebinding cannot skip the
-  warning.
+- **Confirmed addresses stick.** The grant remembers, for each origin,
+  that it was public, or the exact home-network or same-device address the
+  user confirmed. If a name later resolves anywhere else, for example a
+  public name rebound to a home address, or `nas.local` pointing at a
+  different device, the host refuses the connection and asks the user
+  whether the server at the new address is still theirs. DNS rebinding
+  cannot skip the warning or steer requests to another device; the cost is
+  one confirmation when a home server's address really changes.
+- **Items stay with their server.** Two Jellyfin servers can issue the
+  same id for different Tracks, so the host keeps the Provider Connection
+  with every item of a `servers = true` Plugin and never resolves it
+  through another connection.
 - **The grant** belongs to that Provider Connection. Its origins count as
   `hosts`, `media-hosts` and `image-hosts` for that connection only, so
   streams and artwork from the server may be plain HTTP too, and may resolve

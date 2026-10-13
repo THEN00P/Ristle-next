@@ -13,7 +13,7 @@ An installable Plugin that integrates one Provider with Ristle.
 _Avoid_: Provider, adapter
 
 **Provider Connection**:
-A user's configured access to a Provider, including an authenticated account or selected local library. Provider-owned playlists, saves, uploads, and writes retain their specific Provider Connection; ordinary catalog Tracks do not.
+A user's configured access to a Provider, including an authenticated account or selected local library. Provider-owned playlists, saves, uploads, and writes retain their specific Provider Connection; ordinary catalog Tracks do not, except those from a self-hosted server (a Server Grant), whose ids mean nothing on another server.
 _Avoid_: Provider, account
 
 **Server Grant**:

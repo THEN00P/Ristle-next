@@ -7,8 +7,8 @@ package ristle:plugin@0.1.0;
 /// The host enforces, for every request:
 ///
 /// - HTTPS only, to hosts declared in the manifest's `hosts`, or to the
-///   origins of the connection's Server Grant (`connection.server`), which
-///   may also be plain HTTP. Redirects are followed only within those.
+///   origins of the connection's Server Grant (`connection.server`, the
+///   origins of its `urls`), which may also be plain HTTP. Redirects are followed only within those.
 /// - Public addresses only. The host resolves every name itself and refuses
 ///   loopback, link-local, private, unique-local, multicast and unspecified
 ///   addresses, checking again for every new connection so DNS rebinding
@@ -16,12 +16,16 @@ package ristle:plugin@0.1.0;
 ///   Plugin: `http`, `live`, `socket`, Stream Sources and images.
 ///   The one exception is a Server Grant: its origins may resolve to the
 ///   local network or, on desktop, to this device, because the user chose
-///   that server and confirmed it. The grant records, per origin, the
-///   address class the user confirmed (public, local network, this device).
-///   Every new connection resolves again, and one that reaches a class the
-///   user did not confirm, such as a public name rebound to a private
-///   address, is refused with `error.transient` and the Provider Connection
-///   shows "Server address changed; sign in again to confirm it". The
+///   that server and confirmed it. The grant records, per origin, what the
+///   user confirmed: for a public address its class only (public addresses
+///   change routinely, and reaching one needs no grant), and for a local
+///   network or same-device address the exact address. Every new connection
+///   resolves again. One that reaches anything else, such as a public name
+///   rebound to a private address or a local name now pointing at another
+///   device on the network, is refused with `error.transient`, and the host
+///   asks the user itself, outside any Plugin call, whether the server at
+///   the new address is still theirs, with the same warnings as at sign-in.
+///   Confirming adds the address; nothing reaches it before that. The
 ///   exception holds only for that connection and only for those origins.
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.

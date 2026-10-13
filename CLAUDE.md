@@ -65,5 +65,6 @@ before relying on it, and update it when you learn something new.
   inline review comments about ten minutes late. Poll in the background
   instead: wait until `pulls/1/reviews` has a review by
   `chatgpt-codex-connector[bot]` whose `commit_id` is the head, or a `+1`
-  reaction on the PR. Resolve threads with the GraphQL `resolveReviewThread`
+  reaction on the PR. Use `gh api --paginate` for both: PR #1 has more
+  than 100 reviews, and a single page silently misses new ones. Resolve threads with the GraphQL `resolveReviewThread`
   mutation after replying.

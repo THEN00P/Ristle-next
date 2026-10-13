@@ -10,8 +10,12 @@ package ristle:plugin@0.1.0;
 ///   Credential Record, `storage`, or the tokens the Plugin returns. The host
 ///   keeps an instance alive while it is in use (during playback, and for a
 ///   few minutes after its last call), so warm connections are rarely lost.
-/// - Every call names a Provider Connection. For a public item the host
-///   passes the connection it came from, or any connected one. Items that
+/// - Every call names a Provider Connection. Reading a public catalog item
+///   (a Track, album or artist) may go through the connection it came from
+///   or any connected one. Everything an account owns or acts on keeps the
+///   connection it came from, as CONTEXT.md requires: playlists, a user's
+///   own uploads and profile, and every write, so a playlist found through
+///   one account is never edited or checked through another. Items that
 ///   come through a Provider Connection holding a Server Grant are never
 ///   treated as public: different servers issue unrelated ids, so the host
 ///   records that connection with each such item when it arrives, Tracks in

@@ -168,6 +168,19 @@ interface connection {
         /// Empty for the anonymous connection.
         id: func() -> string;
 
+        /// Data kept for this connection's current generation (see `http`),
+        /// such as an account's cached ids: anything about the account
+        /// belongs here, not in `storage`. It counts against the Plugin's
+        /// `storage-mib` quota. The host deletes all of it when the
+        /// generation changes or ends, and a call from a retired
+        /// generation reads nothing and fails to write with
+        /// `error.unauthorized`, so one account's data never reaches the
+        /// next.
+        get-data: func(key: string) -> option<list<u8>>;
+        /// Fails with `error.internal` when the quota is exceeded.
+        set-data: func(key: string, value: list<u8>, ttl-seconds: option<u32>) -> result<_, error>;
+        delete-data: func(key: string) -> result<_, error>;
+
         /// The account from the last successful authorization.
         account: func() -> option<account>;
 
@@ -238,8 +251,10 @@ interface connection {
 
 /// A per-Plugin key-value store with a quota: the manifest's `storage-mib`,
 /// default 5, at most 64 (a larger manifest is refused). Shared by all
-/// instances and all Provider Connections of the Plugin: prefix keys with
-/// `connection.id` for per-connection data. Never put credentials here; they
+/// instances and all Provider Connections of the Plugin, and it outlives
+/// sign-outs, so it holds only data about no account, such as a public
+/// client id scraped from a web player. Data about an account goes into
+/// `connection.set-data`, which the host scopes to the account; credentials
 /// belong in the Credential Record.
 interface storage {
     use types.{error};

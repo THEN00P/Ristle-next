@@ -570,7 +570,8 @@ interface types {
         /// is dropped. On sign-out or removal the Track stops; after an
         /// accepted authorization the host resolves it again with the new
         /// credential and continues at the same position, or stops if that
-        /// fails. Installing any version of the Plugin retires it the same
+        /// fails. Disabling the Plugin stops the Track at once too.
+        /// Installing any version of the Plugin retires it the same
         /// way: a Byte Source handle or location from the old code never
         /// reaches the new code, which resolves the Track again.
         expires-at: option<instant>,

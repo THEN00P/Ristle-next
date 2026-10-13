@@ -1,0 +1,61 @@
+package ristle:spike-sc;
+
+/// HTTPS supplied by the host. The host only allows hosts the manifest declares.
+interface http {
+  record request {
+    url: string,
+    headers: list<tuple<string, string>>,
+  }
+  record response {
+    status: u16,
+    body: list<u8>,
+  }
+  get: func(req: request) -> result<response, string>;
+  /// Runs the requests concurrently. Results keep the request order.
+  get-batch: func(reqs: list<request>) -> list<result<response, string>>;
+}
+
+interface provider {
+  record track {
+    id: string,
+    title: string,
+    artist: string,
+    duration-ms: option<u64>,
+    artwork: option<string>,
+    permalink: option<string>,
+    playable: bool,
+    unavailable-reason: option<string>,
+  }
+  record artist {
+    id: string,
+    name: string,
+    artwork: option<string>,
+  }
+  record playlist {
+    id: string,
+    title: string,
+    owner: option<string>,
+    track-count: option<u64>,
+    artwork: option<string>,
+  }
+  record search-results {
+    tracks: list<track>,
+    artists: list<artist>,
+    playlists: list<playlist>,
+    next-page: option<string>,
+  }
+  enum stream-protocol { hls, progressive }
+  /// Where the host fetches the audio. The host demuxes and decodes (ADR 0004).
+  record stream-source {
+    url: string,
+    protocol: stream-protocol,
+    mime-type: string,
+  }
+  search: func(query: string, limit: u32) -> result<search-results, string>;
+  resolve: func(track-id: string) -> result<stream-source, string>;
+}
+
+world soundcloud {
+  import http;
+  export provider;
+}

@@ -1,0 +1,86 @@
+name: RistleSpikeD
+options:
+  bundleIdPrefix: dev.ristle.spiked
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    SWIFT_VERSION: "5.0"
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  configs:
+    Release:
+      DEPLOYMENT_POSTPROCESSING: "YES"
+      STRIP_INSTALLED_PRODUCT: "YES"
+targets:
+  # Same SwiftUI shell without the core, to measure the size the core adds.
+  Baseline:
+    type: application
+    platform: iOS
+    sources: [Baseline]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spiked.baseline
+  RistleSpikeD:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: Generated/ristle_core.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spiked.app
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated
+        SWIFT_STRICT_CONCURRENCY: complete
+        # Full path, not -l: the same directory also holds the cdylib, which -l would prefer.
+        "OTHER_LDFLAGS[sdk=iphoneos*]": $(PROJECT_DIR)/../target/aarch64-apple-ios/release/libristle_core.a
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]": $(PROJECT_DIR)/../target/aarch64-apple-ios-sim/release/libristle_core.a
+  RistleSpikeDTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: RistleSpikeD
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spiked.tests
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated
+        SWIFT_STRICT_CONCURRENCY: complete
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/RistleSpikeD.app/RistleSpikeD
+        BUNDLE_LOADER: $(TEST_HOST)
+  # Compiles only the generated bindings in Swift 6 language mode.
+  Bindings6:
+    type: framework
+    platform: iOS
+    sources:
+      - path: Generated/ristle_core.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ristle.spiked.bindings6
+        MACH_O_TYPE: staticlib
+        SWIFT_VERSION: "6.0"
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Generated
+schemes:
+  RistleSpikeD:
+    build:
+      targets:
+        RistleSpikeD: all
+        RistleSpikeDTests: [test]
+    test:
+      targets: [RistleSpikeDTests]
+  Baseline:
+    build:
+      targets:
+        Baseline: all
+  Bindings6:
+    build:
+      targets:
+        Bindings6: all

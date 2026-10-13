@@ -79,9 +79,12 @@ is), and Android background playback through Media3.
 
 ## Spike C: WASM Plugin host
 
-**Status 2026-10-12:** item 5 (real iPhone) and the iOS half of 1 and 3 have
-passed. Results are in `docs/research/apple-without-hardware.md` and the code is
-in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
+**Status 2026-10-12:** all five items have run. iOS (items 1, 3 and 5):
+`docs/research/apple-without-hardware.md`, code in `spikes/c-wasm-ios/`.
+Android, the SoundCloud Plugin (2), signing (4) and ten Plugins at once:
+`docs/research/plugin-host-spike.md`, code in `spikes/c-wasm-android/`.
+Android ran on the emulator only. No arm64 phone run yet. Open questions are at
+the end of that document.
 
 1. Build wasmtime with Cranelift for Windows and Android, and with Pulley and the
    component model for `aarch64-apple-ios` and `aarch64-apple-ios-sim`.
@@ -98,6 +101,11 @@ in `spikes/c-wasm-ios/`. Still open: Android, a real Plugin (2) and signing (4).
    the user's iPhone is then the fallback.
 
 ## Spike D: UniFFI
+
+**Status 2026-10-12: go.** Items 1–4 passed on the Android emulator and in the
+iOS Simulator. Results and sharp edges are in `docs/research/uniffi.md`, and the
+resulting API conventions are in ADR 0001. The code is in `spikes/d-uniffi/` until
+the findings are reviewed.
 
 1. A Rust core stub with an async function, a callback interface (state
    observer) and a streaming update every 100 ms.

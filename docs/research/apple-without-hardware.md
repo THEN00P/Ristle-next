@@ -111,5 +111,5 @@ oldest device Test Lab offers (iPhone 8, A11), so newer phones will be faster.
 - Required iOS engine settings: Pulley target, no signals-based traps, and no
   up-front memory reservation (see above).
 
-Not covered: the Android side of spike C, manifest signing in custom sections,
-and a real Plugin with network access. Those do not depend on Apple hardware.
+The Android side of spike C, manifest signing in custom sections and a real
+Plugin with network access are in `plugin-host-spike.md`.

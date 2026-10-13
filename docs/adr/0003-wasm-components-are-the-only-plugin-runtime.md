@@ -42,3 +42,17 @@ supervision rules behind one hand-versioned protocol.
   iPhone 8 (Firebase Test Lab), about 24× slower than native. iOS needs
   `memory_reservation(0)` and no guard region, otherwise instantiation fails
   with ENOMEM. See `docs/research/apple-without-hardware.md`.
+- Verified 2026-10-12 on the Android emulator (x86_64, also inside an app
+  process) and on Windows: Cranelift and Pulley both run a real Plugin (a
+  trimmed SoundCloud Plugin, live search and resolve over host HTTPS). See
+  `docs/research/plugin-host-spike.md`.
+- The host uses the iOS memory settings on **every** platform, not only iOS.
+  wasmtime's defaults reserve 4 GiB of address space per instance, which arm64
+  Android's smaller address space cannot sustain for many Plugins. The cost is
+  0.1–0.3 ms per call under Cranelift.
+- The host caches compiled artifacts (`Component::serialize`) on every
+  platform. Loading takes about 1 ms against 120–330 ms to compile, and runs in
+  the Android app process.
+- Linear memory never shrinks, so the host may recycle an instance (about
+  0.05 ms to instantiate). Plugin state therefore lives in host storage, never
+  only in instance memory.

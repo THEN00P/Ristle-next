@@ -36,6 +36,11 @@ before relying on it, and update it when you learn something new.
 - **The iOS Simulator hides address-space limits.** Anything that reserves large
   virtual memory (wasmtime memories) passes there and fails on a device. Real
   device runs go through Firebase Test Lab (`spikes/c-wasm-ios/README.md`).
+- **Android emulator timings need `-memory 6144`.** The default 2 GB AVD swaps
+  while the Play Store installs after boot, which voids measurements. Discard the
+  first run after a boot. Other sessions install apps on the same AVD, and adb
+  can list a stale `emulator-5562`, so pass `-s emulator-5554`. Results can come
+  back through logcat or `run-as`, so no UI agent is needed.
 - cmake and ninja for any native build ship inside Visual Studio and are not on
   PATH. Resolve them with `vswhere` (see `../Ristle/CLAUDE.local.md`).
 - **WIT tooling** is installed with `cargo install --locked wasm-tools wit-bindgen-cli`.
@@ -46,3 +51,12 @@ before relying on it, and update it when you learn something new.
 - **Bash heredocs break on `'''`.** A quoted heredoc containing Python
   triple-single-quotes fails with "unexpected EOF". Write the script to a file
   with the Write tool and run it instead.
+- **`workflow_dispatch` only works for workflow files already on `main`.** New
+  Apple jobs go into `spike-c-ios.yml` behind its `spike` input
+  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=d`).
+- **The host has 16 GB RAM and the emulator takes about 4.6 GB.** With Gradle
+  daemons and other sessions running, the host pages and the emulator stalls
+  for minutes, which voids any timing. Run `./gradlew --stop` and check
+  `\Memory\Available MBytes` before timing on the emulator. Use the AGP 9.2 line
+  with Gradle ≥ 9.4.1 and the Android Studio JBR (Java 21) as `JAVA_HOME`,
+  not the global Java 25.

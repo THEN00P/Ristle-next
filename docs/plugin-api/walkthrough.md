@@ -14,7 +14,7 @@ the generated bindings, not tested code.
 
 ## How to read the code
 
-The code is Rust against the types `wit-bindgen` generates. It assumes five
+The code is Rust against the types `wit-bindgen` generates. It assumes six
 helpers that the Ristle SDK will provide, each a few lines over the generated
 types:
 
@@ -23,6 +23,7 @@ fn get(url: impl Into<String>) -> Request;      // GET, no headers, no body, cac
 impl Request {
     fn header(self, name: &str, value: impl Into<String>) -> Self;
     fn ttl(self, seconds: u32) -> Self;          // cache: Override { ttl, stale: ttl, key: None }
+    fn fresh(self) -> Self;                      // cache: Bypass
 }
 fn json<T: DeserializeOwned>(r: Response) -> Result<T, Error>;
 // 2xx → T; 404/410 → Unavailable; 5xx → Transient; other → Internal(status + body excerpt)
@@ -622,7 +623,9 @@ same addressing and revision. The items response has no `snapshot_id`, so the
 Plugin reads the snapshot before and after the page. If they differ, the
 playlist changed during the read, and the page could pair old positions with
 the new snapshot; the Plugin returns `error.conflict` and the host reads the
-page again:
+page again. All three requests bypass the HTTP cache (`fresh`), because cached
+copies could agree with each other while describing different revisions; the
+host still caches the resulting listing:
 
 ```rust
 fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listing, Error> {
@@ -632,14 +635,14 @@ fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listin
         Detail::Items => "",
     };
     let snapshot_url = format!("https://api.spotify.com/v1/playlists/{id}?fields=snapshot_id");
-    let before: Snapshot = json(conn.fetch(&get(&snapshot_url))?)?;
+    let before: Snapshot = json(conn.fetch(&get(&snapshot_url).fresh())?)?;
     let items = conn.fetch(&get(format!(
-        "https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=50{fields}")))?;
+        "https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=50{fields}")).fresh())?;
     if items.status == 403 {                     // someone else's playlist
         return spclient_playlist(conn, id, req);
     }
     let page: PlaylistItems = json(items)?;
-    let snapshot: Snapshot = json(conn.fetch(&get(&snapshot_url))?)?;
+    let snapshot: Snapshot = json(conn.fetch(&get(&snapshot_url).fresh())?)?;
     if snapshot.snapshot_id != before.snapshot_id {
         return Err(Error::Conflict("Playlist changed while it was read".into()));
     }
@@ -692,6 +695,7 @@ fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change)
     let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
     let body = match change {
         Change::Add(i) => {
+            // current_snapshot reads `?fields=snapshot_id` with `.fresh()`
             if i.at.is_some() && revision.is_some() && current_snapshot(conn, &id)? != revision {
                 return Err(Error::Conflict("Playlist changed since it was shown".into()));
             }

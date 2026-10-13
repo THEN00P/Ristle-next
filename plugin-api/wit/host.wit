@@ -280,9 +280,10 @@ interface socket {
 
         send: func(data: list<u8>) -> result<_, error>;
 
-        /// Waits at most `timeout-ms` (capped at 10 s) for up to `max` bytes.
-        /// Returns an empty list on timeout and `error.transient` once the
-        /// peer has closed.
+        /// Waits at most `timeout-ms` (capped at 10 s) for up to `max` bytes,
+        /// with `max` capped at 1 MiB before anything is allocated. Returns
+        /// an empty list on timeout and `error.transient` once the peer has
+        /// closed.
         receive: func(max: u32, timeout-ms: u32) -> result<list<u8>, error>;
     }
 }

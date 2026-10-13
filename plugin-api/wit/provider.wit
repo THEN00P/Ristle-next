@@ -279,6 +279,8 @@ interface accounts {
     }
 
     record device-code {
+        /// HTTPS on a host in the manifest's `hosts`, like a redirect
+        /// challenge's `url`. Anything else is refused and nothing is shown.
         verification-url: string,
         user-code: string,
         expires-in-seconds: u32,

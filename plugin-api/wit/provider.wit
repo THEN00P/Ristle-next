@@ -613,6 +613,8 @@ interface comments {
 
     record comment-page {
         comments: list<comment>,
+        /// `none` at the end. As for `listing.next`, a cursor the host has
+        /// already followed for this item ends the comments there.
         next: option<string>,
     }
 

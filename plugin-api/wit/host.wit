@@ -57,8 +57,10 @@ package ristle:plugin@0.1.0;
 ///   even for the same account and server, since new credentials may reach
 ///   less than the old ones (a routine `refresh-credential` does not change
 ///   it), and ends for good when the user signs out or removes the
-///   connection. On a change the host drops that connection's cached HTTP
-///   responses and page and listing results before the next call, so
+///   connection. On a change the host drops every cached result of that
+///   connection before the next call (HTTP responses, pages, listings,
+///   loaded Feed pages, comments and search results) and reloads whatever
+///   is on screen, so
 ///   nothing read as the old account or from the old server is shown or
 ///   acted on as the new one. Every call is tagged with the generation it
 ///   started under; a call still running from before the change can finish,
@@ -111,6 +113,14 @@ interface http {
     record request {
         method: method,
         url: string,
+        /// The host owns the authority and the framing: a `Host`,
+        /// `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`,
+        /// `Keep-Alive`, `TE`, `Trailer` or `Proxy-*` header, or any HTTP/2
+        /// pseudo-header, fails the request with `error.internal` before
+        /// anything is sent. The host sets these itself from `url` and
+        /// `body`. The same names are refused in every header list the host
+        /// sends for a Plugin: `attach` rules, live channel requests and
+        /// Stream Sources.
         headers: list<header>,
         body: list<u8>,
         cache: cache,

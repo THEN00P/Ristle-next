@@ -42,8 +42,9 @@ The signature follows the WebAssembly tool-conventions signature format that
   verification). The manifest, icon and handover sections are therefore
   covered.
 - The section may carry several signatures. Ristle accepts a package when the
-  installed Publisher key is among them, which is also how a key rotation
-  without takeover works (see below).
+  installed Publisher key is among them. A second signature never changes
+  the Publisher key by itself: a key rotation goes only through the signed
+  handover and the user's consent (see "Key rotation" below).
 
 **Components.** `wasmsign2` 0.2.8 accepts components as they are: it puts
 its section first, hashes every section after it (so the manifest is

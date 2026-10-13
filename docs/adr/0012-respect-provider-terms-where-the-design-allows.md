@@ -37,7 +37,11 @@ Ristle's reading of the Spotify rules, which the measures below implement:
   Track is clearly shown. So: no crossfade or other overlap into or out of a
   Spotify Track, and Spotify Tracks carry the Provider's icon or a text badge,
   as every Provider's Tracks do. That badge is the attribution; no extra
-  attribution line or link is added.
+  attribution line or link is added. This deliberately stops short of Policy
+  II.4.2, which asks for a link back to the item on Spotify wherever its
+  content is shown. The user decided (2026-10-12) that a badge is enough,
+  and that decision is not to be reversed without asking. `track.url` stays
+  in the data, so a link can be added later without an API change.
 - **Third parties (IV.2.5)** are kept from Spotify metadata in a Ristle Party
   by relaying only the Track reference. A guest whose own Ristle has a Spotify
   Provider Connection resolves the metadata with their own account. Any other

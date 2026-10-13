@@ -557,16 +557,22 @@ Legacy's `artist-releases`, `profile-playlists`, `profile-likes` and
 `playlists`, `likes` and `reposts` parts, and the host shows them the same way
 for SoundCloud, Audius or any other Provider that has them.
 
-**Spotify** artist: `top_tracks` from `/artists/{id}/top-tracks` (no
-`more`), `releases` from `/artists/{id}/albums?include_groups=album,single,compilation`
+**Spotify** artist: `top_tracks` from spclient's artist metadata, which
+lists the popular Tracks (the Web API's `/artists/{id}/top-tracks` is gone for
+Development Mode apps; if spclient fails, the part is `none` and the page still
+loads), `releases` from `/artists/{id}/albums?include_groups=album,single,compilation`
 (offset-addressed, the host groups by `release-type`), `appears_on` from
 `include_groups=appears_on`, and `discography` as legacy's discography
 sequence. `related` stays `none`: Spotify closed related artists to new
 applications in 2024.
 
 **Spotify** user: `open(Target::User(id))` returns `Page::User` with
-`playlists` from `/users/{id}/playlists` and every other part `none`. The
-profile's `followers` comes from `/users/{id}`.
+`playlists` and every other part `none`. The Web API's `/users/{id}` and
+`/users/{id}/playlists` are gone for Development Mode apps, so the profile
+and its public playlists come from spclient (the user's profile and
+rootlist), which spike E checks. If spclient cannot serve them, the Plugin
+returns the profile it already knows from the playlist that linked here
+(name and id) with `playlists: none`, and the page shows only the header.
 
 ## Playlists
 
@@ -598,21 +604,31 @@ enumeration; the Plugin no longer invents entry ids such as
 `playlist:42@17`.
 
 **Spotify** playlists are offset-addressed and carry a `snapshot_id`, which
-is an exact revision. The Web API sketch below serves the user's own
-playlists; since 2026 others' playlist items come from spclient, with the
-same addressing and revision:
+is an exact revision. Since February 2026 the Web API returns items only for
+playlists the user owns or collaborates on (others answer 403), at most 50
+per page, with each entry's Track in `item`. The sketch below covers those;
+for any other playlist the Plugin reads `playlist/v2` from spclient, with the
+same addressing and revision. The items response has no `snapshot_id`, so the
+Plugin fetches it from the playlist itself in the same `fetch_all`:
 
 ```rust
 fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listing, Error> {
     let offset = match req.cursor { Cursor::Offset(o) => o, _ => 0 };
     let fields = match req.detail {           // cheap enumeration when the host only needs ids
-        Detail::Ids => "&fields=total,snapshot_id,items(track(id))",
+        Detail::Ids => "&fields=total,items(item(id))",
         Detail::Items => "",
     };
-    let page: PlaylistTracks = json(conn.fetch(&get(format!(
-        "https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=100{fields}")))?)?;
+    let [items, meta] = fetch2(conn, [
+        get(format!("https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=50{fields}")),
+        get(format!("https://api.spotify.com/v1/playlists/{id}?fields=snapshot_id")),
+    ])?;
+    if items.status == 403 {                     // someone else's playlist
+        return spclient_playlist(conn, id, req);
+    }
+    let page: PlaylistItems = json(items)?;
+    let snapshot: Snapshot = json(meta)?;
     Ok(Listing {
-        entries: page.items.into_iter().map(|i| match i.track {
+        entries: page.items.into_iter().map(|i| match i.item {
             Some(t) if req.detail == Detail::Ids => Item::TrackId(t.id).into(),
             Some(t) => Entry { item: Item::Track(track(&t)), added: instant(&i.added_at),
                                added_by: i.added_by.map(user) },
@@ -620,7 +636,7 @@ fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listin
         }).collect(),
         next: None,
         total: Some(Count::Exact(page.total)),
-        revision: page.snapshot_id,
+        revision: Some(snapshot.snapshot_id),
     })
 }
 ```
@@ -639,7 +655,9 @@ revision changes.
 
 ### Writing
 
-Spotify maps one-to-one:
+Spotify maps one-to-one onto `/playlists/{id}/items` (renamed from
+`/tracks` in February 2026, with removals now listing their entries under
+`items`):
 
 ```rust
 fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change) -> Result<Outcome, Error> {
@@ -647,7 +665,7 @@ fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change)
     let body = match change {
         Change::Add(i) => json!({ "uris": uris(&i.tracks), "position": i.at }),
         Change::Remove(o) => json!({ "snapshot_id": revision,
-            "tracks": o.iter().map(|o| json!({ "uri": uri(&o.track), "positions": [o.position] })).collect::<Vec<_>>() }),
+            "items": o.iter().map(|o| json!({ "uri": uri(&o.track), "positions": [o.position] })).collect::<Vec<_>>() }),
         Change::Move(m) => json!({ "snapshot_id": revision, "range_start": m.from,
                                    "range_length": m.count, "insert_before": m.to }),
         Change::Details(d) => return details(conn, &id, d),

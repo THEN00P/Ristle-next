@@ -258,8 +258,8 @@ landed, and writes to one connection are finite:
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
     let response = conn.fetch(&req)?;
-    if response.cached { return Ok(response); }    // a cached header is stale
-    if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
+    // only headers that arrived now, a 304's included; never stored ones
+    if let Some(fresh) = datadome_from_x_set_cookie(&response.received) {
         loop {
             let mut c = conn.credential().ok_or_else(unauthorized)?;   // the CAS base
             if rotation_sequence(&c) >= response.sequence { break; }   // a later response won
@@ -1112,7 +1112,7 @@ fn apply(_: &Connection, _key: String, _value: SettingValue) -> Result<Option<St
 
 `posts` then skips reposts when `conn.setting("feed-reposts")` is
 `Some(SettingValue::Toggle(false))`. `apply` matters for settings that must be
-checked or acted on, such as a button "Clear saved audio keys". A
+checked or acted on, such as a button "Test connection". A
 self-hosted Provider's server is not a setting: it is chosen during sign-in
 (see [Self-hosted Providers](#self-hosted-providers)), because only the user
 may grant a Plugin a new destination. Turning a Queue Projection on is not a
@@ -1279,7 +1279,7 @@ fn resolve(conn: &Connection, id: String, quality: Quality) -> Result<StreamSour
     let cdn: StorageResolve = json(conn.fetch(&get(format!(
         "https://spclient.wg.spotify.com/storage-resolve/v2/files/audio/interactive/11/{}?alt=json", file.hex()))
         .header("Authorization", format!("Bearer {}", playback.access_token)))?)?;
-    let key = audio_key(conn, &playback, &meta.gid, &file.id)?;    // storage first, then the access point
+    let key = audio_key(conn, &playback, &meta.gid, &file.id)?;    // instance memory, then the access point
     Ok(StreamSource {
         location: Location::Progressive(Progressive {
             url: cdn.cdnurl[0].clone(), headers: vec![],
@@ -1292,11 +1292,10 @@ fn resolve(conn: &Connection, id: String, quality: Quality) -> Result<StreamSour
 }
 
 fn audio_key(conn: &Connection, playback: &Token, gid: &[u8], file: &[u8]) -> Result<Vec<u8>, Error> {
-    let cache_key = format!("key:{}", hex(file));
-    if let Some(key) = storage::get(&cache_key) { return Ok(key); }
-    let mut ap = access_point(playback)?;          // socket::Tcp, kept in instance memory
+    let ap = access_point(conn, playback)?;        // socket::Tcp per connection, in instance memory
+    if let Some(key) = ap.keys.get(file) { return Ok(key.clone()); }
     let key = ap.request_key(gid, file)?;          // one packet out, one in
-    storage::set(&cache_key, &key, None)?;
+    ap.keys.insert(file.to_vec(), key.clone());    // lives and dies with the socket
     Ok(key)
 }
 ```
@@ -1320,9 +1319,13 @@ audio key needs a new connection. That costs:
 - **Time, not a sign-in.** Reconnecting is a TCP and crypto handshake plus a
   login with the stored playback token, about 0.3–1 s. The user is not asked
   for anything, and no credential is lost.
-- **No cache.** Audio keys are in `storage`, not in the instance, so they
-  survive. Only Tracks never played before need the access point at all, and
-  the key for the next Track is fetched while the current one plays.
+- **No lasting key cache.** Audio keys are playback material obtained with
+  the account, so they stay in the instance next to the socket they came
+  from and go when it closes: on sign-out or a new authorization, and when
+  the instance is discarded. They are not put in `storage`, which outlives
+  both and which the core cannot scope. A Track therefore needs the access
+  point once per instance, and the key for the next Track is fetched while
+  the current one plays, so the cost does not reach the user.
 - **Some extra logins.** Each reconnection is a login from Spotify's point of
   view. The host limits this by keeping an instance alive while it is in use
   (during playback, and for a few minutes after the last call) instead of

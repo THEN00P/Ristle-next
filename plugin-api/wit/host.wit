@@ -114,17 +114,28 @@ interface http {
         timeout-ms: option<u32>,
     }
 
+    /// Response headers are bounded like bodies: at most 64 KiB and 200
+    /// headers per response, enforced while parsing, before they are kept or
+    /// copied into the Plugin. A Provider that sends more fails the request
+    /// with `error.transient`.
     record response {
         status: u16,
+        /// All headers of the response as the Plugin should read it; for a
+        /// cached or revalidated response, the stored ones merged with any
+        /// new ones.
         headers: list<header>,
         body: list<u8>,
         /// Any part of the response came from the cache: served without
         /// reaching the Provider, or revalidated with a 304 and merged with
-        /// the stored headers. Such headers may be historical, so a Plugin
-        /// takes credential changes, such as a rotated cookie, only from
-        /// responses where this is false. A rotation carried by a 304 is
-        /// picked up from the next full response.
+        /// the stored headers.
         cached: bool,
+        /// Only the headers that arrived from the Provider for this request:
+        /// all of them for a full response, the 304's own for a revalidated
+        /// one, none when served from the cache. A Plugin takes credential
+        /// changes, such as a rotated cookie, from these alone, so a
+        /// rotation sent with a 304 is kept and a stored header is never
+        /// mistaken for a new one.
+        received: list<header>,
         /// Where this response stands in the order responses from the
         /// Provider arrived for this Provider Connection. It grows with every
         /// response that reached the Provider and never repeats or goes back
@@ -370,17 +381,24 @@ interface live {
 /// manifest's `sockets`, which the consent screen lists separately, and only
 /// to public addresses (see `http`).
 ///
-/// A socket belongs to one Plugin instance and closes when it is dropped or
-/// the instance is discarded, so Plugins reconnect lazily. A Plugin may hold
-/// at most four open sockets across all its instances; `connect` fails with
-/// `error.internal` beyond that.
+/// A socket belongs to one Plugin instance and one Provider Connection, and
+/// closes when it is dropped or the instance is discarded, so Plugins
+/// reconnect lazily. It is bound to the generation of its connection (see
+/// `http`): when that generation ends, by sign-out, removal or any accepted
+/// authorization, the host closes the socket, and later `send` and
+/// `receive` fail with `error.unauthorized`. Only calls for the same
+/// connection may use it; from any other call they fail with
+/// `error.internal`, so an account's socket never serves another. A Plugin
+/// may hold at most four open sockets across all its instances; `connect`
+/// fails with `error.internal` beyond that.
 interface socket {
     use types.{error};
+    use connection.{connection};
 
     resource tcp {
         /// Connecting, including the TLS handshake, takes at most 15 s;
         /// after that it fails with `error.transient`.
-        connect: static func(host: string, port: u16, tls: bool) -> result<tcp, error>;
+        connect: static func(conn: borrow<connection>, host: string, port: u16, tls: bool) -> result<tcp, error>;
 
         /// Sends all of `data` within 30 s. If the peer stops reading and the
         /// deadline passes, it fails with `error.transient` and the host

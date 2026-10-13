@@ -122,13 +122,17 @@ Projection in `docs/plugin-api/walkthrough.md`. It decides whether the
    bytes, and decode the Ogg Vorbis with Symphonia. Seek once with a Range
    request and a computed counter.
 4. Run step 2's handshake as a component under Pulley and time it.
-5. Spotify Connect for the Queue Projection: open the dealer WebSocket, get the
+5. The catalog reads Spotify's February 2026 changes took away from
+   Development Mode apps: several Tracks at once, artist top Tracks, user
+   profiles and playlists, and items of other users' playlists, all from
+   spclient (see the walkthrough's Development Mode section).
+6. Spotify Connect for the Queue Projection: open the dealer WebSocket, get the
    connection id, announce a device through spclient's connect-state, and
    receive pause, skip, seek and add-to-queue commands from the Spotify app.
 
 The playback client is rate-limited hard. On 429 or an access point refusal,
 wait for the returned `Retry-After` or back-off and try again; a refusal is
-not a failure of the spike. Native Rust is fine for steps 1–3 and 5.
+not a failure of the spike. Native Rust is fine for steps 1–3, 5 and 6.
 
 ## Cost guardrails
 

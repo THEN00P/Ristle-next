@@ -54,7 +54,7 @@ Lessons from Ristle legacy that the API must encode:
 | Service | Requirements |
 |---|---|
 | HTTP | HTTPS only, hosts declared in the manifest, bounded size and time, concurrency limit per Plugin, redirects allowed only within declared hosts |
-| HTTP cache | The host honors `Cache-Control` and lets the Plugin override TTLs and set cache keys per request. Stale-while-revalidate for browse data |
+| HTTP cache | The host honors `Cache-Control` and lets the Plugin override TTLs and set cache keys per request. No background refetch: data is fetched again only on a user action or when nothing usable is cached. Stale data is served only while the Provider is unreachable or rate-limiting (stale-if-error) |
 | Rate limiting | The host parses `Retry-After` and 429/503, backs the Plugin off, and reports it in the UI. Plugins never sleep-loop |
 | Storage | Per-Plugin key-value store with a quota, and a separate encrypted Credential Record per Provider Connection |
 | Time, randomness, logging | Standard, with a bounded log volume |

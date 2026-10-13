@@ -74,8 +74,10 @@ name = "SoundCloud"
 [permissions]
 hosts = ["api-v2.soundcloud.com", "api.soundcloud.com", "secure.soundcloud.com"]
 media-hosts = ["*.sndcdn.com"]         # stream URLs the host fetches for the Plugin
+image-hosts = ["*.sndcdn.com"]         # artwork and avatars the host fetches
 sockets = []                           # "host:port", for the socket import
-web-capture = true
+# Hosts the sign-in window may show. Omitted or empty: no web capture.
+web-capture = ["soundcloud.com", "*.soundcloud.com"]
 storage-mib = 5
 
 [auth]
@@ -85,13 +87,14 @@ redirects = ["loopback:8990/login", "scheme", "remote"]
 tracks = 50
 liked-states = 40
 playlist-add = 100
+playlist-remove = 100
 
 [party]
-# Fields a Party Host may relay to guests besides the Track reference, which is
-# always relayed. Omitted means every field of track, album, profile and
-# playlist; empty means the reference only (ADR 0012). Never credentials or
-# stream sources.
-share = ["title", "artists", "album", "artwork", "duration"]
+# Track fields a Party Host may relay to guests besides the Track reference,
+# which is always relayed. Names are the WIT field names of `track`, checked
+# by `ristle-plugin pack`. Omitted means every field; empty means the
+# reference only (ADR 0012). Never credentials or stream sources.
+share = ["title", "artists", "album", "artwork", "duration-ms"]
 
 [playback]
 # false: no crossfade or other overlap into or out of this Provider's Tracks
@@ -126,19 +129,30 @@ signs.
 
 The consent screen at install lists, in plain words:
 
-- "Connects to" the `hosts` and `media-hosts`.
+- "Connects to" the `hosts`, `media-hosts` and `image-hosts`.
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
-- "Can see pages and traffic inside its own sign-in window" if `web-capture`
-  is set.
-- "Stores your sign-in" if the component exports `accounts`.
+- "Can see pages and traffic of these sites inside its own sign-in window"
+  for the `web-capture` hosts.
+- What it can do with an account, from its exports: "Stores your sign-in"
+  (`accounts`), "Can like, save and follow for you" (`likes`), "Can repost
+  for you" (`reposts`), "Can create, change and delete your playlists"
+  (`playlist-editing`), "Can show Ristle in the service's own apps and take
+  commands from them" (`queue-projection`). Exports that only read
+  (`catalog`, `like-lookup`, `feed`, `comments`, `settings`, `byte-source`)
+  add no line, because everything they read is already covered by the
+  sign-in.
 
 It does not repeat what the Provider's own authorization page shows (scopes),
 following legacy ADR 0009.
 
-The host enforces each grant at the import: an undeclared host fails with
-`error.internal` and is logged, a `socket` connect outside `sockets` fails,
-and `web-capture` challenges are refused without the grant.
+The host enforces each grant where it is used: an undeclared HTTP host fails
+with `error.internal` and is logged, a `socket` connect outside `sockets`
+fails, a stream URL outside `media-hosts` does not play, an image outside
+`image-hosts` (or not HTTPS) shows as a placeholder, and a web-capture
+challenge whose start URL, observed hosts or script prefixes fall outside
+`web-capture` is refused before any window opens. The sign-in window also
+refuses top-level navigation to hosts outside the list.
 
 ## Installing
 
@@ -163,8 +177,9 @@ key, with a higher `version`.
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must
   accept it. Until then the old version keeps running.
-- **New optional exports** that need no permission (for example
-  `playlist-editing`) do not ask.
+- **New exports** that add a consent line (for example `playlist-editing`
+  or `queue-projection`) are permissions like any other: the difference is
+  shown and must be accepted. New read-only exports do not ask.
 - **Lower version:** refused, unless the user installs it by hand, with a
   warning. A downgrade still needs the same key.
 
@@ -172,10 +187,17 @@ Credential Records, storage and Provider Connections carry over unchanged.
 
 ### Key rotation
 
-A Publisher who changes keys signs the new package with both the old and
-the new key. The host accepts it through the old key and records the new key
-as the Publisher key. No warning is needed, because the old key vouched for
-the change inside the signature itself.
+A Publisher who changes keys ships a package that
+
+1. is signed by the old key, so it is an ordinary update, and
+2. carries a `ristle-handover` section naming the new key, which the old key's
+   signature covers like every other section.
+
+Only then does the host record the new key as the Publisher key, without a
+warning. The handover is what binds the successor: a second signature on its
+own never changes the Publisher key. Because the `signature` section is not
+part of the signed bytes, anyone can append a valid signature of their own
+to a genuine update; that signature is ignored.
 
 ## Takeovers
 
@@ -206,7 +228,8 @@ Developer has handed SoundCloud over to Other Person." A handover is a
 `ristle-handover` section that the *old* key signed over
 `id ‖ new public key ‖ issued-at`, for example when a project changes
 maintainers who cannot share a key. It does not remove the question, because
-a stolen old key can also sign handovers.
+a stolen old key can also sign handovers. A handover from a revoked key is
+never honoured (see Revocation).
 
 After acceptance the new key is the Publisher key, and "Replaced by Other
 Person on 12 Oct" appears in the Plugin's history in settings.
@@ -262,13 +285,17 @@ The revocation is signed by the revoked key itself. Anyone holding the key
 can revoke it, which is harmless: revoking only ever removes trust.
 
 When a check finds the installed Publisher key revoked, the host stops
-accepting packages signed by it, including through handovers it signed after
-`at`, and shows on the Plugin, in plain words: "The maker of SoundCloud
-reports that their signing was compromised. Updates are paused until you
-install a version they publish again." The installed version keeps running,
-because it was installed before the leak was reported. The next package from
-the Publisher's new key is a takeover with a handover dated before `at`, or a
-plain takeover.
+accepting anything signed by it, and shows on the Plugin, in plain words:
+"The maker of SoundCloud reports that their signing was compromised. Updates
+are paused until you install a version they publish again." The installed
+version keeps running, because it was installed before the leak was
+reported.
+
+Handovers signed by a revoked key are ignored, whatever their `issued-at`
+says: the date is signed by the same key, so a thief could backdate it. The
+next package from the Publisher's new key is therefore a plain takeover, with
+the full wording. That is the price of a leaked key, and it falls on the
+case where caution is most warranted.
 
 ## Not covered here
 

@@ -23,9 +23,12 @@ interface types {
     /// report a network failure as `unavailable`.
     variant error {
         /// Credentials are missing, expired or rejected. The host refreshes the
-        /// Credential Record once (`accounts.refresh-credential`) and retries
-        /// the call. If that fails too, it asks the user to sign in again and
-        /// keeps the Provider Connection and everything stored for it.
+        /// Credential Record once (`accounts.refresh-credential`). It then
+        /// repeats the call by itself only if the export is a retry-safe one
+        /// (see `catalog`); any other call fails and the user decides whether
+        /// to try again. If the refresh fails too, the host asks the user to
+        /// sign in again and keeps the Provider Connection and everything
+        /// stored for it.
         unauthorized(string),
         /// This item cannot be served: removed, region-locked, or offered only
         /// in a form Ristle cannot play (DRM). Retrying will not help.
@@ -49,7 +52,9 @@ interface types {
     // Media items
 
     /// One rendition of an image. Give several sizes when the Provider has
-    /// them; the host picks.
+    /// them; the host picks. The host fetches images itself, so `url` must be
+    /// HTTPS on a host in the manifest's `image-hosts`; any other image is
+    /// not fetched and shows as a placeholder.
     record image {
         url: string,
         width: option<u32>,

@@ -13,8 +13,16 @@ package ristle:plugin@0.1.0;
 /// - Every call names a Provider Connection. For a public item the host
 ///   passes the connection it came from, or any connected one.
 /// - The host batches. It never asks for more ids in one `tracks` call, or
-///   more items in one `likes.liked-states` call, than the manifest's
-///   `limits` allow, and it chunks large playlist adds the same way.
+///   more items in one `like-lookup.liked-states` call, than the manifest's
+///   `limits` allow, and it chunks large playlist adds and removals the same
+///   way (see `playlist-editing`).
+/// - Retry-safe exports are the ones the host repeats by itself after a
+///   credential refresh: everything in `catalog`, `like-lookup`, `feed`,
+///   `comments` and `byte-source`, `settings.describe`, `likes.set-liked`
+///   and `reposts.set-reposted` (they set a state), and
+///   `queue-projection.update`. Nothing else is ever repeated automatically:
+///   authorization steps may have spent a one-time code, and writes may have
+///   partly happened.
 /// - The host caches page and listing results. It fetches again only when the
 ///   user asks (pull to refresh, a refresh button), when nothing is cached,
 ///   or when the cache has expired as the user navigates. It never replaces
@@ -43,16 +51,31 @@ interface catalog {
         kinds: kinds,
         /// Per group.
         limit: u32,
-        /// A `next` token from a previous single-group search.
+        /// A group's `next` token. Set only together with that group's kind.
         cursor: option<string>,
     }
 
-    record search-results {
-        /// Best match first within each group. The host groups by item kind
-        /// and interleaves Providers. Never contains `track-id` items.
+    enum search-kind {
+        tracks,
+        albums,
+        artists,
+        users,
+        playlists,
+    }
+
+    /// The results of one kind.
+    record search-group {
+        kind: search-kind,
+        /// Best match first. Never contains `track-id` items.
         items: list<item>,
-        /// Only for single-group requests.
+        /// Continues this group: pass it as `cursor` with only this kind.
         next: option<string>,
+    }
+
+    record search-results {
+        /// One group per kind requested. The host interleaves Providers
+        /// within each group.
+        groups: list<search-group>,
     }
 
     enum quality {
@@ -209,7 +232,8 @@ interface accounts {
     }
 
     /// JavaScript the host runs at document end on every main-frame load whose
-    /// URL starts with `url-prefix`. Only the first matching script runs, so
+    /// URL starts with `url-prefix`, which must be an HTTPS URL on an `observe`
+    /// host. Only the first matching script runs, so
     /// list specific prefixes first. Scripts may call
     /// `ristle.capture(name, value)`.
     record page-script {
@@ -221,10 +245,21 @@ interface accounts {
     /// web view. When every required value has been seen, the host closes the
     /// window and calls `continue-authorization` with the values. The Plugin
     /// declares what to capture; the host does the watching.
+    ///
+    /// Everything is bound to the manifest's `web-capture` host list, which
+    /// the user consented to: the start URL must be HTTPS on one of those
+    /// hosts, `observe` must be a subset of them, page scripts only run on
+    /// them, and the window refuses top-level navigation to any other host.
+    /// A Provider whose sign-in passes through an identity provider (such as
+    /// a Google account page) lists that host too. The host rejects a
+    /// challenge that breaks these rules before opening anything.
     record web-capture {
+        /// HTTPS, on a `web-capture` host.
         start-url: string,
         user-agent: user-agent,
-        /// Exact hosts, or `*.example.com` for subdomains.
+        /// Hosts whose traffic, cookies and pages the host watches. Exact
+        /// hosts, or `*.example.com` for subdomains; each must be covered by
+        /// the manifest's `web-capture` list.
         observe: list<string>,
         values: list<capture>,
         scripts: list<page-script>,
@@ -313,6 +348,17 @@ interface like-lookup {
 }
 
 /// Creating, changing and deleting Provider Playlists.
+///
+/// Large changes are split by the host, never by the Plugin:
+///
+/// - Adds are chunked by `limits.playlist-add`. With an explicit `at`, each
+///   chunk is inserted after the previous one: `at` advances by the number
+///   of Tracks the previous chunk actually inserted.
+/// - Removals are chunked by `limits.playlist-remove`, highest positions
+///   first, so the positions of the remaining occurrences stay valid.
+/// - Each chunk gets the `revision` the previous chunk returned. If a chunk
+///   fails, the chunks before it stay applied, and the host reports how much
+///   was done.
 interface playlist-editing {
     use types.{error, playlist};
     use connection.{connection};

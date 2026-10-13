@@ -81,7 +81,10 @@ described in `packaging.md`. The parts that matter here:
 [permissions]
 hosts = ["api-v2.soundcloud.com", "api.soundcloud.com", "secure.soundcloud.com"]
 media-hosts = ["*.sndcdn.com", "*.media-streaming.soundcloud.cloud"]
-web-capture = true
+image-hosts = ["*.sndcdn.com"]
+# The sign-in window may show these. Google and Apple are there for
+# "Continue with Google/Apple"; only SoundCloud hosts are observed.
+web-capture = ["soundcloud.com", "*.soundcloud.com", "accounts.google.com", "appleid.apple.com"]
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
 [limits]
@@ -92,6 +95,7 @@ tracks = 50
 hosts = ["api.spotify.com", "accounts.spotify.com", "spclient.wg.spotify.com",
          "apresolve.spotify.com", "clienttoken.spotify.com"]
 media-hosts = ["*.scdn.co", "*.spotifycdn.com", "audio-ak-spotify-com.akamaized.net"]
+image-hosts = ["i.scdn.co", "*.spotifycdn.com"]
 sockets = ["*.spotify.com:4070", "*.spotify.com:443"]
 [auth]
 redirects = ["loopback:8989/login", "scheme"]
@@ -99,6 +103,7 @@ redirects = ["loopback:8989/login", "scheme"]
 tracks = 50
 liked-states = 40
 playlist-add = 100
+playlist-remove = 100
 [party]
 share = []          # only the Track reference reaches Party guests (ADR 0012)
 [playback]
@@ -355,35 +360,35 @@ as `fallback_url`; the callback still comes back through the redirect target.
 ## Search
 
 Both Plugins answer one call per connection. The host asks for every group at
-once, then for one group with a cursor for "Show more".
+once and gets each group back with its own `next`. "Show more" on one group
+passes that group's `next` as `cursor`, with only that kind, so it continues
+the same search instead of starting over.
 
 SoundCloud has one endpoint per group, so it fans out with `fetch_all`, like
 legacy's `send_batch`:
 
 ```rust
 fn search(conn: &Connection, req: SearchRequest) -> Result<SearchResults, Error> {
-    if let Some(next) = req.cursor {                       // one group, next page
-        let page: Collection<Any> = json(sc(conn, get(checked_v2_url(&next)?))?)?;
-        return Ok(SearchResults { items: page.items(), next: page.next_href });
-    }
-    let groups = [(Kinds::TRACKS, "tracks"), (Kinds::ARTISTS, "users"), (Kinds::PLAYLISTS, "playlists")];
-    let asked: Vec<_> = groups.iter().filter(|(k, _)| req.kinds.contains(*k)).collect();
-    let requests = asked.iter().map(|(_, path)| get(format!(
-        "https://api-v2.soundcloud.com/search/{path}?q={}&limit={}&linked_partitioning=1",
-        enc(&req.query), req.limit)).ttl(60)).collect::<Vec<_>>();
-    let mut items = Vec::new();
-    let mut next = None;
-    for response in conn.fetch_all(&requests) {
+    let paths = [(SearchKind::Tracks, Kinds::TRACKS, "tracks"),
+                 (SearchKind::Artists, Kinds::ARTISTS, "users"),
+                 (SearchKind::Playlists, Kinds::PLAYLISTS, "playlists")];
+    let asked: Vec<_> = paths.iter().filter(|(_, k, _)| req.kinds.contains(*k)).collect();
+    let requests = asked.iter().map(|(_, _, path)| match &req.cursor {
+        Some(next) => checked_v2_url(next).map(get),                 // one kind, next page
+        None => Ok(get(format!("{V2}/search/{path}?q={}&limit={}&linked_partitioning=1",
+                                enc(&req.query), req.limit)).ttl(60)),
+    }).collect::<Result<Vec<_>, _>>()?;
+    let groups = conn.fetch_all(&requests).into_iter().zip(&asked).map(|(response, (kind, _, _))| {
         let page: Collection<Any> = json(response?)?;
-        if asked.len() == 1 { next = page.next_href.clone(); }
-        items.extend(page.items());
-    }
-    Ok(SearchResults { items, next })
+        Ok(SearchGroup { kind: *kind, items: page.items(), next: page.next_href })
+    }).collect::<Result<Vec<_>, Error>>()?;
+    Ok(SearchResults { groups })
 }
 ```
 
-Spotify has one endpoint with `type=track,album,artist,playlist`. Its
-`next` URLs are the cursor. The one-hour search cache in legacy becomes
+Spotify has one endpoint with `type=track,album,artist,playlist`, which
+returns a separate pager per type; each pager's `next` URL becomes that
+group's `next`. The one-hour search cache in legacy becomes
 `.ttl(3600)` on the request. Spotify playlist owners map to `Item::User`.
 
 Legacy's `SearchScope::MyLibrary` is gone. Both Plugins answered it by
@@ -405,8 +410,10 @@ fn tracks(conn: &Connection, ids: Vec<String>) -> Result<Vec<Result<Track, Error
 }
 ```
 
-Spotify's is the same against `/v1/tracks?ids=`, which answers `null` for a
-missing id. Neither Plugin chunks: the host never sends more than 50.
+Legacy Spotify used `/v1/tracks?ids=`, which Development Mode apps lost in
+2026; the port reads the same batch from spclient (see
+[Spotify's Web API in Development Mode](#spotifys-web-api-in-development-mode)).
+Neither Plugin chunks: the host never sends more than 50.
 
 The mapping function is where most of a Plugin's lines go, and it is no
 longer than legacy's `track_value`:
@@ -591,7 +598,9 @@ enumeration; the Plugin no longer invents entry ids such as
 `playlist:42@17`.
 
 **Spotify** playlists are offset-addressed and carry a `snapshot_id`, which
-is an exact revision:
+is an exact revision. The Web API sketch below serves the user's own
+playlists; since 2026 others' playlist items come from spclient, with the
+same addressing and revision:
 
 ```rust
 fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listing, Error> {
@@ -601,7 +610,7 @@ fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listin
         Detail::Items => "",
     };
     let page: PlaylistTracks = json(conn.fetch(&get(format!(
-        "https://api.spotify.com/v1/playlists/{id}/tracks?offset={offset}&limit=100{fields}")))?)?;
+        "https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=100{fields}")))?)?;
     Ok(Listing {
         entries: page.items.into_iter().map(|i| match i.track {
             Some(t) if req.detail == Detail::Ids => Item::TrackId(t.id).into(),
@@ -634,7 +643,7 @@ Spotify maps one-to-one:
 
 ```rust
 fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change) -> Result<Outcome, Error> {
-    let url = format!("https://api.spotify.com/v1/playlists/{id}/tracks");
+    let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
     let body = match change {
         Change::Add(i) => json!({ "uris": uris(&i.tracks), "position": i.at }),
         Change::Remove(o) => json!({ "snapshot_id": revision,
@@ -649,10 +658,20 @@ fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change)
 }
 ```
 
-The host splits a 250-Track Playlist Add into chunks of `limits.playlist-add`
-(100), calls `edit` three times, and reports "Added 200 of 250" if the third
-chunk fails. `rejected` is for Providers that refuse individual items inside
-a request that otherwise succeeded.
+The host splits large changes, so `edit` always fits in one request:
+
+- A 250-Track Playlist Add becomes three chunks of `limits.playlist-add`
+  (100). With an explicit `at`, the second chunk goes to `at + 100` and the
+  third to `at + 200` (less any Tracks the earlier chunks rejected), so the
+  order is kept.
+- Removing 250 occurrences becomes three chunks of `limits.playlist-remove`
+  (100, Spotify's maximum), highest positions first, so the positions in the
+  later chunks are still right after the earlier ones.
+- Each chunk carries the `revision` the previous one returned. If the third
+  chunk fails, the host reports "Added 200 of 250"; the first two stay.
+
+`rejected` is for Providers that refuse individual items inside a request
+that otherwise succeeded.
 
 SoundCloud's API replaces a playlist's whole Track list in one `PUT`, so its
 `edit` reads the current list, applies the change, and writes it back. If
@@ -790,13 +809,15 @@ Liking is one function on both services:
 ```rust
 // Spotify
 fn set_liked(conn: &Connection, item: ItemRef, liked: bool) -> Result<(), Error> {
-    let url = match &item {
-        ItemRef::Track(id) => format!("https://api.spotify.com/v1/me/library?uris=spotify:track:{id}"),
-        ItemRef::Album(id) => format!("https://api.spotify.com/v1/me/library?uris=spotify:album:{id}"),
-        ItemRef::Artist(id) => format!("https://api.spotify.com/v1/me/following?type=artist&ids={id}"),
-        ItemRef::Playlist(id) => format!("https://api.spotify.com/v1/playlists/{id}/followers"),
-        ItemRef::User(id) => format!("https://api.spotify.com/v1/me/following?type=user&ids={id}"),
+    // Since February 2026 every save and follow goes through /me/library with a URI.
+    let uri = match &item {
+        ItemRef::Track(id) => format!("spotify:track:{id}"),
+        ItemRef::Album(id) => format!("spotify:album:{id}"),
+        ItemRef::Artist(id) => format!("spotify:artist:{id}"),
+        ItemRef::User(id) => format!("spotify:user:{id}"),
+        ItemRef::Playlist(id) => format!("spotify:playlist:{id}"),
     };
+    let url = format!("https://api.spotify.com/v1/me/library?uris={}", enc(&uri));
     let method = if liked { Method::Put } else { Method::Delete };
     expect_2xx(conn.fetch(&with_empty_body(method, url))?)
 }
@@ -1207,6 +1228,30 @@ into chunks that are each fetched separately, or a cipher the host does not
 offer. The Plugin then returns `Location::Bytes` with a handle that encodes
 everything needed (for example the chunk URL template and key), and the host
 calls `read(handle, offset, length)` ahead of the playhead.
+
+## Spotify's Web API in Development Mode
+
+The Spotify sketches above use the Web API as legacy did. Since Spotify's
+February 2026 changes (applied to existing Development Mode apps on 9 March
+2026), an app without extended quota, which is what a third-party Publisher's
+catalog client is, lost several endpoints the legacy Plugin relied on:
+
+| Removed for Development Mode | Used here for | Where it goes instead |
+|---|---|---|
+| `GET /tracks?ids=` (several Tracks) | `tracks` | spclient metadata through the playback client, or `GET /tracks/{id}` per id with `fetch_all` |
+| `GET /artists/{id}/top-tracks` | artist `top-tracks` | spclient artist metadata |
+| `GET /users/{id}`, `GET /users/{id}/playlists` | user pages | spclient (user profile and rootlist) |
+| Items of other users' playlists (`/playlists/{id}/items` now only for owned playlists) | playlist pages | spclient `playlist/v2` |
+| `PUT/DELETE /me/following`, `/playlists/{id}/followers`, `/me/tracks`, `/me/albums` | `set-liked` | `PUT/DELETE /me/library?uris=` (done above) |
+| `GET /me/tracks/contains` and other `contains` | `like-lookup` | `GET /me/library/contains?uris=` (already used) |
+| Search `limit` above 10 | `search` | The Plugin clamps to 10 per group |
+| `/playlists/{id}/tracks` | playlist reads and edits | renamed `/playlists/{id}/items` (done above) |
+
+Nothing here changes the WIT: the exports stay the same, and only where the
+Spotify Plugin gets its data moves to spclient, which it already needs for
+playback. Which spclient endpoints serve these, and at what batch sizes, is
+part of spike E. Sources: [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026),
+[migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide).
 
 ## Errors and rate limits
 

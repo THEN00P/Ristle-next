@@ -229,6 +229,10 @@ interface accounts {
         response-header(string),
         query-param(query-param),
         /// A page script called `ristle.capture(name, value)` for this value.
+        /// The bridge accepts at most 16 KiB per value and 64 KiB for all
+        /// values of a challenge, checked in the page before anything crosses
+        /// to native code and again when the answer is built; a larger value
+        /// is dropped and counts as not seen.
         script,
     }
 

@@ -128,8 +128,17 @@ interface connection {
         /// has replaced the record since, nothing is written and it fails
         /// with `error.conflict`, so a stale read-modify-write never undoes a
         /// newer refresh. The Plugin reads again and reapplies its change, or
-        /// drops it. The host also runs `refresh-credential` at most once at a
-        /// time per connection.
+        /// drops it.
+        ///
+        /// All writes to one connection's record are serialized: a
+        /// `set-credential` and the storing of a `refresh-credential` result
+        /// never interleave, and a refresh result is stored by the same
+        /// compare-and-set against the record the refresh started from. A
+        /// `set-credential` made while a refresh runs waits for it and then
+        /// fails with `error.conflict`, because the refreshed record is newer.
+        /// Two writes from the same base keep the first; the second learns
+        /// so by `error.conflict`. The host runs `refresh-credential` at most
+        /// once at a time per connection.
         ///
         /// During `begin-authorization` and `continue-authorization` the
         /// credential set here is only a candidate: it signs this session's
@@ -260,6 +269,8 @@ interface live {
         /// At least 5000; a smaller value fails `open` or `reopen` with
         /// `error.internal`.
         every-ms: u32,
+        /// At most 4 KiB; a longer message fails `open` or `reopen` with
+        /// `error.internal`.
         message: string,
     }
 
@@ -284,6 +295,8 @@ interface live {
     }
 
     /// Returns the channel id, which stays the same across reconnections.
+    /// Connecting, including TLS and the WebSocket upgrade, takes at most
+    /// 15 s; after that `open` and `reopen` fail with `error.transient`.
     open: func(request: channel-request) -> result<string, error>;
 
     /// Connects a closed channel again with a fresh request, keeping its id.

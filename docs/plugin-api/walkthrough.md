@@ -690,9 +690,15 @@ February 2026). Two gaps in that endpoint need care:
   snapshot and total fresh, and moves the new range to `at` with a reorder
   sent with that snapshot, which Spotify applies against the snapshot it
   names (spike E confirms this). The user's `revision` is still checked
-  first. If the read shows another change or the reorder fails, the Tracks
-  stay at the end and the Plugin returns `error.conflict`, so the host reads
-  the playlist again and shows where they are.
+  first, and the total after the append must be the total before plus the
+  added Tracks. If either read shows another change or the reorder fails,
+  the Tracks stay at the end and the Plugin returns `error.conflict`, so the
+  host reads the playlist again and shows where they are. What remains is a
+  change in the moment between the first read and the append that leaves
+  the total unchanged, such as another client's reorder; the Tracks then
+  land at `at` of the reordered list. Spotify offers no conditional add, so
+  this window is accepted, as for SoundCloud, rather than giving up
+  positional adds.
 - **Removals take only URIs.** Each entry is `{ "uri": ... }`; there is no
   position, so a Track that appears more than once cannot be removed one
   occurrence at a time. When the playlist holds a removed Track only once
@@ -726,14 +732,17 @@ fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change)
 
 fn add_at(conn: &Connection, id: &str, revision: Option<String>, i: Insert) -> Result<Outcome, Error> {
     let moved = || Error::Conflict("Playlist changed; the Tracks were added at the end".into());
-    if revision.is_some() && current(conn, id)?.snapshot_id != revision.unwrap() {   // `.fresh()` read
+    let before = current(conn, id)?;                  // `.fresh()` read
+    if revision.is_some_and(|r| r != before.snapshot_id) {
         return Err(Error::Conflict("Playlist changed since it was shown".into()));
     }
     let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
     let appended: Snapshot = json(conn.fetch(&with_json(Method::Post, &url, json!({ "uris": uris(&i.tracks) })))?)?;
     let now = current(conn, id)?;                     // snapshot_id and items.total, `.fresh()`
-    if now.snapshot_id != appended.snapshot_id { return Err(moved()); }
     let n = i.tracks.len() as u32;
+    if now.snapshot_id != appended.snapshot_id || now.total != before.total + n {
+        return Err(moved());                          // someone else changed it around the append
+    }
     let r: Snapshot = json(conn.fetch(&with_json(Method::Put, &url, json!({
         "snapshot_id": now.snapshot_id, "range_start": now.total - n,
         "range_length": n, "insert_before": i.at })))?).map_err(|_| moved())?;

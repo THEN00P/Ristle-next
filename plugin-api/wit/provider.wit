@@ -264,7 +264,10 @@ interface accounts {
     /// platform's request interception and add a host-written
     /// Content-Security-Policy for what interception cannot see (WebSockets
     /// on Android). A platform that cannot enforce this does not offer
-    /// `web-capture` at all. The list therefore names every host the sign-in
+    /// `web-capture` at all. Page scripts run with the user's fresh session
+    /// and can act on the account like any page; that is no more than the
+    /// captured credential allows through `connection.fetch`, and the
+    /// `accounts` consent line says so. The list therefore names every host the sign-in
     /// pages load from, including identity providers (such as a Google
     /// account page), CDNs and bot checks. The host rejects a challenge that
     /// breaks these rules before opening anything.

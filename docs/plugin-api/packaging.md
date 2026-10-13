@@ -138,15 +138,21 @@ The consent screen at install lists, in plain words:
 - "Shares Track details with Party guests" unless `[party] share` is empty,
   naming the details when the list is short. Omitting `share` grants every
   field, and the screen says so.
+- "Stores up to N MB on this device" when `storage-mib` is above the
+  default of 5. The host refuses a manifest above 64.
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
   for the `web-capture` hosts.
 - "Can open these apps to sign in" for `[auth] app-schemes`, naming the
   apps the system resolves the schemes to, or the schemes when it cannot.
-- What it can do with an account, from its exports: "Stores your sign-in"
-  (`accounts`), "Can like, save and follow for you" (`likes`), "Can repost
-  for you" (`reposts`), "Can create, change and delete your playlists"
+- What it can do with an account, from its exports: "Signs in as you and
+  can do anything your account can on the service" (`accounts`). That line
+  is the real authority: whoever holds a sign-in can call the service's API
+  with it, and a web-capture sign-in page can do the same, so the host cannot
+  confine a signed-in Plugin to what its exports name. The export lines say
+  which of those things Ristle will ask the Plugin to do: "Can like, save
+  and follow for you" (`likes`), "Can repost for you" (`reposts`), "Can create, change and delete your playlists"
   (`playlist-editing`), "Can show Ristle in the service's own apps and take
   commands from them" (`queue-projection`). Exports that only read
   (`catalog`, `like-lookup`, `feed`, `comments`, `settings`, `byte-source`)
@@ -195,7 +201,8 @@ key, with a higher `version`.
 - **Loosened restrictions count as new permissions.** Sharing more Track
   fields with Party guests (`[party] share` gains fields, or is removed and
   falls back to every field), allowing overlap (`[playback] overlap` from
-  `false` to `true`) and new `[auth] app-schemes` are shown as a difference, such as "now shares Track
+  `false` to `true`), new `[auth] app-schemes` and a larger `storage-mib`
+  are shown as a difference, such as "now shares Track
   details with Party guests", and need consent like a new host.
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must
@@ -216,8 +223,14 @@ A Publisher who changes keys ships a package that
 2. carries a `ristle-handover` section naming the new key, which the old key's
    signature covers like every other section.
 
-Only then does the host record the new key as the Publisher key, without a
-warning. The handover is what binds the successor: a second signature on its
+The update installs like any other, but the host records the new key as
+the Publisher key only after the user accepts the handover screen (see
+Takeovers), worded for the same maker: "Example Developer now signs
+SoundCloud differently. Accept only if you expect this from them." Until
+then the old key stays the Publisher key and later packages signed by the new
+key are takeovers. A rotation is never silent, because a stolen old key could
+otherwise name its thief's key and outlive its own revocation. The handover
+is what binds the successor: a second signature on its
 own never changes the Publisher key. Because the `signature` section is not
 part of the signed bytes, anyone can append a valid signature of their own
 to a genuine update; that signature is ignored.

@@ -404,7 +404,8 @@ interface live {
 ///
 /// A socket belongs to one Plugin instance and one Provider Connection, and
 /// closes when it is dropped or the instance is discarded, so Plugins
-/// reconnect lazily. It is bound to the generation of its connection (see
+/// reconnect lazily. Disabling the Plugin or installing any version of it
+/// discards every instance and so closes every socket (see packaging). It is bound to the generation of its connection (see
 /// `http`): when that generation ends, by sign-out, removal or any accepted
 /// authorization, the host closes the socket, and later `send` and
 /// `receive` fail with `error.unauthorized`. Only calls for the same

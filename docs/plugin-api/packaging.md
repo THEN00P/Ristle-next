@@ -266,6 +266,13 @@ Provider ids, so every version must keep accepting the ids earlier versions
 returned. Active Stream Sources and live channels are retired too (see
 `stream-source` in `types.wit` and `live` in `host.wit`).
 
+Calls still running on the old code may finish, but like calls from a
+retired connection generation, their results, cache writes, storage writes
+and `set-credential` are discarded, so nothing produced by the old mapping
+reappears under the new version. Installing and disabling both discard every
+instance of the Plugin once its running call ends, which closes its sockets;
+a disabled Plugin keeps no instance, socket or channel open.
+
 ### Key rotation
 
 A Publisher who changes keys ships a package that

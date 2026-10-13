@@ -240,7 +240,11 @@ interface connection {
         /// requests (such as a `/me` lookup) and is stored only when the step
         /// returns `done`, the host has checked the account and, for a
         /// different account, the user has accepted it. A failed or declined
-        /// authorization leaves the stored record untouched. Until the
+        /// authorization leaves the stored record untouched. However a
+        /// session ends (accepted, declined, failed, cancelled or expired),
+        /// every instance that ran one of its steps is discarded once its
+        /// running call ends, so no candidate or other state from the
+        /// session survives in guest memory. Until the
         /// session sets a candidate, its requests carry no credential at
         /// all: the stored record's `attach` rules never apply during
         /// authorization, so re-signing in to a different server on the

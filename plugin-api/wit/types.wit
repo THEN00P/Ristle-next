@@ -562,6 +562,15 @@ interface types {
         duration-ms: option<u32>,
         /// The location stops working after this. The host resolves again
         /// shortly before it, and after a 401, 403 or 410 mid-Track.
+        ///
+        /// A Stream Source belongs to the connection generation that
+        /// resolved it (see `http`). When that generation ends, the host
+        /// stops using it at once: no further request to its location, no
+        /// further `byte-source.read` on its handle, and its decryption key
+        /// is dropped. On sign-out or removal the Track stops; after an
+        /// accepted authorization the host resolves it again with the new
+        /// credential and continues at the same position, or stops if that
+        /// fails.
         expires-at: option<instant>,
     }
 

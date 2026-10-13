@@ -322,11 +322,14 @@ interface system {
 /// during `queue-projection.start` or while that Provider Connection's
 /// projection runs, and fails otherwise. A connection may hold at most two
 /// channels. When the projection stops, the user signs out, the
-/// connection's generation changes (a different account or Server Grant, see
-/// `http`), or the Plugin is disabled, the host closes every channel of that
+/// connection's generation changes (any accepted authorization, see `http`),
+/// the Plugin is disabled, or any version of it is installed (an update, a
+/// downgrade or a takeover), the host closes every channel of that
 /// connection. After a generation change it starts the projection again with
-/// the new credential, so no channel outlives the account or server it was
-/// opened for.
+/// the new credential; after an install, only if the new version still
+/// exports `queue-projection` and its manifest still permits the channel's
+/// host, through `start` on the new code. No channel outlives the account,
+/// server or code it was opened for.
 interface live {
     use types.{error, header};
 

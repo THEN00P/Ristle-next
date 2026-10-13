@@ -40,12 +40,15 @@ package ristle:plugin@0.1.0;
 ///   answered with a response cached for the previous one. A Provider
 ///   Connection's generation changes when the user accepts a different
 ///   account for it or a different Server Grant (another server, or other
-///   origins). On a change the host drops that connection's cached HTTP
+///   origins), and ends for good when the user signs out or removes the
+///   connection. On a change the host drops that connection's cached HTTP
 ///   responses and page and listing results before the next call, so
 ///   nothing read as the old account or from the old server is shown or
 ///   acted on as the new one. Every call is tagged with the generation it
 ///   started under; a call still running from before the change can finish,
-///   but its cache writes, results and `set-credential` are discarded.
+///   but its cache writes, results and `set-credential` are discarded. After
+///   a sign-out or removal no request of the old generation is sent any
+///   more: its `fetch` fails with `error.unauthorized`.
 ///   The HTTP cache and the page and listing results together take at most
 ///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
 ///   used entries first. An evicted entry is simply fetched again, so the
@@ -106,6 +109,14 @@ interface http {
         /// responses where this is false. A rotation carried by a 304 is
         /// picked up from the next full response.
         cached: bool,
+        /// Where this response stands in the order responses from the
+        /// Provider arrived for this Provider Connection. It grows with every
+        /// response that reached the Provider and never repeats or goes back
+        /// for a connection, across restarts too. Concurrent calls finish in
+        /// any order, so a Plugin that keeps a value from responses, such as
+        /// a rotated cookie, stores the sequence with it and keeps the value
+        /// only when its sequence is higher.
+        sequence: u64,
     }
 
     /// Reports a rate limit the Provider signalled in some other way, such as

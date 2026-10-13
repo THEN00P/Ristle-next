@@ -246,13 +246,14 @@ cursors for an existing `client_id`.
 **DataDome rotation.** SoundCloud refreshes its DataDome value in an
 `x-set-cookie` response header and expects it on the next request. The Plugin
 keeps one wrapper for that. Like a browser's cookie jar, the value from the
-response that arrived last wins. The wrapper changes only that header, on
-the newest record: when the compare-and-set in `set-credential` fails
-because another call stored a record in the meantime (another rotation, or a
-refresh), it reads again and reapplies its value until it is stored, so
-neither a refresh nor a later rotation is lost. The loop always ends: every
-conflict means another write landed, and writes to one connection are
-finite:
+response that arrived last wins. Calls finish in any order, so the wrapper
+stores `response.sequence` next to the value and writes only when its
+response is newer than the one stored. It changes only that header, on the
+newest record: when the compare-and-set in `set-credential` fails because
+another call stored a record in the meantime (another rotation, or a
+refresh), it reads again and decides again, so neither a refresh nor a later
+rotation is lost. The loop always ends: every conflict means another write
+landed, and writes to one connection are finite:
 
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
@@ -261,7 +262,9 @@ fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
         loop {
             let mut c = conn.credential().ok_or_else(unauthorized)?;   // the CAS base
+            if rotation_sequence(&c) >= response.sequence { break; }   // a later response won
             set_attached_header(&mut c, "x-datadome-clientid", fresh.clone());
+            set_rotation_sequence(&mut c, response.sequence);           // kept in `custom`
             match conn.set_credential(&c) {
                 Err(Error::Conflict(_)) => continue,  // a record was stored meanwhile; reapply on it
                 r => { r?; break; }
@@ -837,7 +840,7 @@ fn list_likes(conn: &Connection, req: ListRequest) -> Result<Listing, Error> {
             Like::Full { track: t, created_at } => Entry { item: Item::Track(track(t)),
                 added: instant(created_at), added_by: None },
         }).collect(),
-        next: page.next_href,       // a repeated cursor is the host's problem now
+        next: page.next_href,       // a repeated cursor ends the traversal (see `listing`)
         total: None, revision: None,
     })
 }

@@ -34,10 +34,10 @@ package ristle:plugin@0.1.0;
 ///   content the user is looking at by itself. Plugins keep no result caches.
 ///   After every write (`set-liked`, `set-reposted`, a playlist `create`,
 ///   `edit` or `delete`), whether it succeeded or failed, since a failed
-///   write may have partly happened, the host marks the results it affects
-///   as stale: for a playlist, its pages and the library's playlists; for a
-///   like or repost, the library listings of that kind and the item's
-///   like or repost state. A successful write's result is shown at once;
+///   write may have partly happened, the host marks every cached result of
+///   that Provider Connection stale: an item shows up in pages, profiles,
+///   search results and listings alike, and the host cannot tell which of
+///   them embed it. A successful write's result is shown at once;
 ///   the next read of a stale result runs as a refresh, revalidating the
 ///   cached HTTP responses it would reuse, so a reopened playlist never
 ///   shows its contents from before the write.
@@ -534,7 +534,12 @@ interface reposts {
 /// Connection into it by `post.at`, so posts must come newest first. When
 /// the merged feed needs more, it reads the next page of the Provider whose
 /// oldest post so far is the newest; on a tie, of every tied Provider, so
-/// equal timestamps never stall the feed. It groups reposts of the same item. The
+/// equal timestamps never stall the feed. A Provider with no post loaded
+/// yet but a `next` (its pages so far held only entries the Plugin
+/// skipped) counts as the newest, so it is read first; the host follows up
+/// to ten empty pages in a row for one Provider per load, and stops at a
+/// repeated cursor, before waiting for the user to scroll again. It groups
+/// reposts of the same item. The
 /// feed is refreshed only when the user asks.
 interface feed {
     use types.{error, instant, item, person};

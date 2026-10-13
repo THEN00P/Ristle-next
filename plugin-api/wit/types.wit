@@ -344,7 +344,13 @@ interface types {
 
     record listing {
         entries: list<entry>,
-        /// `none` at the end. Ignored for `offset` collections.
+        /// `none` at the end. Ignored for `offset` collections. The host
+        /// remembers every cursor of one traversal (one view's scrolling, one
+        /// full enumeration); a `next` it has already followed ends the
+        /// traversal there, as if it were `none`, and is logged, so a
+        /// Provider that repeats a token never makes the host loop or
+        /// duplicate entries. A full enumeration that ends this way is
+        /// treated as incomplete, like one that failed.
         next: option<string>,
         total: option<count>,
         revision: option<string>,

@@ -1486,14 +1486,17 @@ fn continue_authorization(_: &Connection, _: SessionContext, _: String, answer: 
 }
 ```
 
-Scanning walks `files::list` from each of `conn.folders()`, reads tags with
-`files::read` (the first and last few hundred KiB are enough for ID3, Vorbis
-comments and MP4 atoms), and identifies each Local Track by
-`files::digest` over its audio frames, skipping tags, so retagging a file
-keeps its identity and a copy in another folder is recognised as the same
-Track. `resolve` returns `Location::File(path)` and the host reads and decodes
-the file natively, as it does any stream. The Plugin never touches audio
-bytes, which matters most on iOS.
+Scanning walks `files::list` from each of `conn.folders()` and reads tags
+and the stream header with `files::read` (the first and last few hundred
+KiB are enough for ID3, Vorbis comments and MP4 atoms). Each audio file
+becomes a Track with `file` set to its path, format and bitrate. The Plugin
+stops there: deciding that a FLAC and an MP3 are the same recording needs an
+acoustic fingerprint of the decoded audio, and decoding is the host's (ADR
+0004). So the core fingerprints the files, groups them into Local Tracks,
+keeps every file as a hidden candidate, plays the best one (FLAC first,
+then the higher bitrate) through `Location::File` and falls back to the next
+when one fails. Neither scanning nor playback moves audio bytes through the
+Plugin, which matters most on iOS.
 
 ## Errors and rate limits
 

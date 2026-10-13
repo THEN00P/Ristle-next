@@ -443,12 +443,6 @@ interface files {
     /// the end of the file. For tags and headers: audio is read by the host
     /// itself through `location.file`.
     read: func(conn: borrow<connection>, file: file-path, offset: u64, length: u32) -> result<list<u8>, error>;
-
-    /// The SHA-256 of `length` bytes from `offset` (to the end of the file
-    /// when `none`), computed natively. Lets a Plugin identify a Local
-    /// Track by its audio content, skipping tags, without reading the file
-    /// through the instance.
-    digest: func(conn: borrow<connection>, file: file-path, offset: u64, length: option<u64>) -> result<list<u8>, error>;
 }
 
 /// Raw TCP, optionally with TLS, for Providers whose protocol is not HTTP,

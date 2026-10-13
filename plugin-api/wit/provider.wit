@@ -16,8 +16,9 @@ package ristle:plugin@0.1.0;
 ///   connection it came from, as CONTEXT.md requires: playlists, a user's
 ///   own uploads and profile, and every write, so a playlist found through
 ///   one account is never edited or checked through another. Items that
-///   come through a Provider Connection holding a Server Grant are never
-///   treated as public: different servers issue unrelated ids, so the host
+///   come through a Provider Connection holding a Server Grant or a Folder
+///   Grant are never treated as public: different servers and libraries
+///   issue unrelated ids and paths, so the host
 ///   records that connection with each such item when it arrives, Tracks in
 ///   the queue included, and calls only that connection for it, whatever a
 ///   later manifest says. Without it the item is unavailable.

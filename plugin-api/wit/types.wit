@@ -133,6 +133,28 @@ interface types {
         /// only, like every link the user follows (see `url-rules`).
         url: option<string>,
         attributes: list<attribute>,
+        /// Only for a Track that is a file in the connection's Folder Grant.
+        /// The Plugin reports every audio file it finds as its own Track
+        /// with this set; it does not decide which files are the same song.
+        /// The core does: it groups files into Local Tracks by an acoustic
+        /// fingerprint of the decoded audio, which only the host can compute
+        /// (ADR 0004), so encoding and tags do not matter. Every file stays
+        /// a hidden playback candidate of its Local Track; the core prefers
+        /// FLAC over other formats, then the higher bitrate, plays the chosen
+        /// one itself through its `path`, and falls back to the next
+        /// candidate when one fails (CONTEXT.md, Local Track).
+        file: option<local-file>,
+    }
+
+    /// One audio file behind a Track (see `track.file`).
+    record local-file {
+        path: file-path,
+        /// The container or codec as the Plugin read it from the header,
+        /// such as `flac`, `mp3`, `aac` or `opus`.
+        format: string,
+        bitrate-kbps: option<u32>,
+        size: u64,
+        modified: option<instant>,
     }
 
     enum release-type {

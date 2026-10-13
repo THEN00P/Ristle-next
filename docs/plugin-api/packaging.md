@@ -90,10 +90,12 @@ playlist-add = 100
 playlist-remove = 100
 
 [party]
-# Track fields a Party Host may relay to guests besides the Track reference,
-# which is always relayed. Names are the WIT field names of `track`, checked
-# by `ristle-plugin pack`. Omitted means every field; empty means the
-# reference only (ADR 0012). Never credentials or stream sources.
+# Fields a Party Host may relay to guests besides an item's reference, which
+# is always relayed. Names are WIT field names of `track`, `album`, `profile`
+# or `playlist`, checked by `ristle-plugin pack`; a name covers that field in
+# every one of the four that has it, including guest search results. Omitted
+# means every field; empty means references only (ADR 0012). Never
+# credentials or stream sources.
 share = ["title", "artists", "album", "artwork", "duration-ms"]
 
 [playback]
@@ -281,6 +283,11 @@ by installing a newer file by hand.
   that needs new permissions shows the diff; one that would be a takeover
   shows the takeover screen. The feed adds no trust of its own, so a
   compromised feed can at worst offer a package the user then refuses.
+- **Download URLs** must be HTTPS on the same host as `updates`, and
+  redirects are followed only within it. A release whose `url` points
+  elsewhere is ignored, so a feed cannot send the host to a destination the
+  user never consented to. Publishers who serve files from a CDN put the
+  feed there too.
 - **`api`** is the `ristle:plugin` version the release needs. The host offers
   the newest release it can run and says when a newer one needs a newer
   Ristle.

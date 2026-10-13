@@ -527,7 +527,8 @@ interface types {
 
     record account {
         /// The Provider's account id. A re-authorization that returns a
-        /// different id is a different account, and the host asks the user.
+        /// different id is a different account: the host asks the user, and
+        /// on acceptance drops the connection's cached responses and results.
         id: string,
         name: string,
         avatar: list<image>,

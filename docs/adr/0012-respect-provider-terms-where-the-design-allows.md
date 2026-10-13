@@ -43,15 +43,16 @@ Ristle's reading of the Spotify rules, which the measures below implement:
   and that decision is not to be reversed without asking. `track.url` stays
   in the data, so a link can be added later without an API change.
 - **Third parties (IV.2.5)** are kept from Spotify metadata in a Ristle Party
-  by relaying only the Track reference. A guest whose own Ristle has a Spotify
-  Provider Connection resolves the metadata with their own account. Any other
-  guest sees that a Spotify Track is queued, without its metadata.
+  by relaying only references, for queued Tracks and for the albums, artists
+  and playlists a guest's search returns. A guest whose own Ristle has a
+  Spotify Provider Connection resolves the metadata with their own account.
+  Any other guest sees that a Spotify item is there, without its metadata.
 
 These are generic mechanisms in the host, switched on by the Plugin's
 manifest, never Spotify-specific host code:
 
-- `[party] share` lists the fields a Party Host may relay. An empty list
-  relays only the Track reference.
+- `[party] share` lists the fields a Party Host may relay, for Tracks,
+  albums, profiles and playlists alike. An empty list relays only references.
 - `[playback] overlap = false` forbids crossfades and any other overlap at the
   boundaries of that Provider's Tracks.
 

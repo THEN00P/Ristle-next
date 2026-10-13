@@ -246,6 +246,7 @@ keeps one wrapper for that:
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
     let response = conn.fetch(&req)?;
+    if response.cached { return Ok(response); }    // a cached header is stale
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
         let mut c = conn.credential().ok_or_else(unauthorized)?;
         set_attached_header(&mut c, "x-datadome-clientid", fresh);
@@ -269,7 +270,8 @@ calls `refresh-credential`, gets `unauthorized` again, marks the connection as
 needing sign-in, and later calls `begin-authorization` with
 `reason: reauthorize`. The connection, its library cache and its Ristle
 Playlist references survive. If the new account id differs, the host asks the
-user before replacing anything.
+user before replacing anything, and on acceptance drops the connection's cached
+responses and results.
 
 **OAuth with registered application credentials** is the same as Spotify's
 first step below and is not repeated.
@@ -1123,11 +1125,13 @@ of spike E.
 
 ## Party and Provider terms
 
-Party State relays Track metadata to guests. By default every field of
-`track`, `album`, `profile` and `playlist` may be relayed; nothing from a
-Credential Record, a Stream Source or `storage` ever is. A Plugin narrows
-this with `[party] share` in its manifest; the Track reference is always
-relayed.
+Party State relays Track metadata to guests, and a guest's search or browse
+relays albums, profiles and playlists. By default every field of `track`,
+`album`, `profile` and `playlist` may be relayed; nothing from a Credential
+Record, a Stream Source or `storage` ever is. A Plugin narrows this with
+`[party] share` in its manifest, which applies to all four: a listed name
+covers that field in every one of them that has it, and an item's reference
+is always relayed.
 
 Spotify's Developer Terms and Developer Policy restrict sharing content with
 third parties, playing to several listeners, and mixing Spotify with other
@@ -1141,9 +1145,10 @@ services. ADR 0012 records how Ristle reads them and what it does, in short:
   the Provider icon or text badge Ristle's UI rules already put on every
   Track; nothing extra is added.
 - **Third parties.** The Spotify manifest sets `[party] share = []`, so the
-  Party Host relays only the Track reference. A guest whose Ristle has a
-  Spotify Provider Connection resolves the metadata with their own account;
-  any other guest sees that a Spotify Track is queued, without its details.
+  Party Host relays only references, for Tracks and for any album, artist or
+  playlist a guest's search returns. A guest whose Ristle has a Spotify
+  Provider Connection resolves the metadata with their own account; any other
+  guest sees that a Spotify item is there, without its details.
 - **Storage.** The host's cache of Provider data is bounded and refreshed by
   user action, never kept indefinitely.
 
@@ -1429,9 +1434,9 @@ Settled in review (2026-10-12):
   world side by side and keeps the previous major for 12 months.
 - **Party metadata:** `track`, `album`, `profile` and `playlist` fields may
   be relayed to guests, never anything from `credential`, `stream-source` or
-  `storage`. A Plugin narrows this in its manifest (`[party] share`). The
-  Spotify Plugin relays only the Track reference, and guests resolve it with
-  their own Spotify account. ADR 0012 records Ristle's reading of Spotify's
+  `storage`. A Plugin narrows this in its manifest (`[party] share`, which
+  covers all four item types). The Spotify Plugin relays only references,
+  and guests resolve them with their own Spotify account. ADR 0012 records Ristle's reading of Spotify's
   terms, including no crossfade at Spotify boundaries.
 - **A Spotify spike** confirms the access point and spclient paths before the
   WIT is final. Its brief is in `HANDOFF.md`.

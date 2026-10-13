@@ -65,7 +65,7 @@ publisher-key = "ed25519:3fa1…"         # the key that signs this package
 description = "Search, browse and play SoundCloud."
 homepage = "https://github.com/example/ristle-soundcloud"
 license = "MIT"
-updates = "https://example.com/ristle/soundcloud.json"   # optional update feed
+updates = "https://example.com/ristle/soundcloud.json"   # optional update feed, HTTPS
 
 [provider]
 id = "soundcloud"                      # several Plugins may serve one Provider
@@ -129,7 +129,11 @@ signs.
 
 The consent screen at install lists, in plain words:
 
-- "Connects to" the `hosts`, `media-hosts` and `image-hosts`.
+- "Connects to" the `hosts`, `media-hosts` and `image-hosts`, and "Checks
+  for updates at" the host of `updates`.
+- "Shares Track details with Party guests" unless `[party] share` is empty,
+  naming the details when the list is short. Omitting `share` grants every
+  field, and the screen says so.
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
@@ -175,6 +179,8 @@ key, with a higher `version`.
 
 - **No new permissions:** installed without asking. Removed permissions and
   narrower limits never ask.
+- **A new update-feed host** (`updates` moving to another host, or being
+  added) is a new network destination and needs consent like a new host.
 - **Loosened restrictions count as new permissions.** Sharing more Track
   fields with Party guests (`[party] share` gains fields, or is removed and
   falls back to every field) and allowing overlap (`[playback] overlap` from

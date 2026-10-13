@@ -382,7 +382,7 @@ fn search(conn: &Connection, req: SearchRequest) -> Result<SearchResults, Error>
         None => Ok(get(format!("{V2}/search/{path}?q={}&limit={}&linked_partitioning=1",
                                 enc(&req.query), req.limit)).ttl(60)),
     }).collect::<Result<Vec<_>, _>>()?;
-    let groups = conn.fetch_all(&requests).into_iter().zip(&asked).map(|(response, (kind, _, _))| {
+    let groups = conn.fetch_all(&requests)?.into_iter().zip(&asked).map(|(response, (kind, _, _))| {
         let page: Collection<Any> = json(response?)?;
         Ok(SearchGroup { kind: *kind, items: page.items(), next: page.next_href })
     }).collect::<Result<Vec<_>, Error>>()?;

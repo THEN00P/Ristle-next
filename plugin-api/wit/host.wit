@@ -113,11 +113,12 @@ interface connection {
         fetch: func(request: request) -> result<response, error>;
 
         /// Sends independent requests concurrently and returns the results in
-        /// the same order. At most 16 requests per call, or the whole call
-        /// fails with `error.internal`. Response bodies in one call add up to
-        /// at most 32 MiB; once that is reached, the remaining requests fail
-        /// with `error.internal` instead of being kept in memory.
-        fetch-all: func(requests: list<request>) -> list<result<response, error>>;
+        /// the same order. More than 16 requests fail the whole call with
+        /// `error.internal` (the outer error). Response bodies in one call
+        /// add up to at most 32 MiB; once that is reached, the remaining
+        /// requests fail individually with `error.internal` instead of being
+        /// kept in memory.
+        fetch-all: func(requests: list<request>) -> result<list<result<response, error>>, error>;
 
         /// The user's value for a setting from `settings.describe`, or its
         /// initial value. Plugin-wide and per-connection settings are both
@@ -255,7 +256,9 @@ interface live {
 /// manifest's `sockets`, which the consent screen lists separately.
 ///
 /// A socket belongs to one Plugin instance and closes when it is dropped or
-/// the instance is discarded, so Plugins reconnect lazily.
+/// the instance is discarded, so Plugins reconnect lazily. A Plugin may hold
+/// at most four open sockets across all its instances; `connect` fails with
+/// `error.internal` beyond that.
 interface socket {
     use types.{error};
 

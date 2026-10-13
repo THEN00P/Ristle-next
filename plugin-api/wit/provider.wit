@@ -32,7 +32,13 @@ package ristle:plugin@0.1.0;
 ///   `queue-projection.update`. Nothing else is ever repeated automatically:
 ///   authorization steps may have spent a one-time code, and writes may have
 ///   partly happened.
-/// - The host caches page and listing results. It fetches again only when the
+/// - The host caches what exports return: pages, listings, search results,
+///   Feed pages and comments. Together with cached HTTP responses these are
+///   the "cached results" that every rule about caching refers to. Every
+///   cursor a Plugin returns (`listing.next`, `search-group.next`, the
+///   Feed's and comments' `next`) is followed once per traversal: a cursor
+///   the host has already followed ends that traversal there and is
+///   logged. The host fetches again only when the
 ///   user asks (pull to refresh, a refresh button), when nothing is cached,
 ///   or when the cache has expired as the user navigates. It never replaces
 ///   content the user is looking at by itself. Plugins keep no result caches.
@@ -693,8 +699,8 @@ interface settings {
     /// The user changed a setting or pressed a button. The host stores the
     /// value only if this succeeds; an `error` is shown next to the setting.
     /// Returns a short confirmation to show, if any. After a success the host
-    /// marks every cached result of the Plugin stale (pages, listings, loaded
-    /// Feed pages, comments), for this connection or, for a Plugin-wide
+    /// marks every cached result of the Plugin stale (see `catalog`), for
+    /// this connection or, for a Plugin-wide
     /// setting, for all of them, since it cannot tell which results a
     /// setting shapes. The next read of each runs as a refresh; a Feed or
     /// page the user is looking at reloads when the settings page closes,

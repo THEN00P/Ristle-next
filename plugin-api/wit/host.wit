@@ -58,8 +58,7 @@ package ristle:plugin@0.1.0;
 ///   less than the old ones (a routine `refresh-credential` does not change
 ///   it), and ends for good when the user signs out or removes the
 ///   connection. On a change the host drops every cached result of that
-///   connection before the next call (HTTP responses, pages, listings,
-///   loaded Feed pages, comments and search results) and reloads whatever
+///   connection (see `catalog`) before the next call and reloads whatever
 ///   is on screen, so
 ///   nothing read as the old account or from the old server is shown or
 ///   acted on as the new one. Every call is tagged with the generation it
@@ -70,7 +69,7 @@ package ristle:plugin@0.1.0;
 ///   instance that served a call for the old generation is discarded once
 ///   its running call ends, so nothing a Plugin kept in memory for one
 ///   account, such as audio keys, ever serves the next.
-///   The HTTP cache and the page and listing results together take at most
+///   All cached results (see `catalog`) together take at most
 ///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
 ///   used entries first. An evicted entry is simply fetched again, so the
 ///   bound costs only stale-if-error coverage, never correctness; a Plugin

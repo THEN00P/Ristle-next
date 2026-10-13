@@ -259,9 +259,9 @@ with one exception: an update that drops `servers = true` ends every Server
 Grant of the Plugin, and those connections need signing in again. Items they
 returned stay bound to their connection (see `catalog` in `provider.wit`).
 
-Installing any version (an update, a downgrade or a takeover) drops the
-Plugin's cached HTTP responses and page, listing and Feed results before
-the new code runs, since a new version may map them differently. What the
+Installing any version (an update, a downgrade or a takeover) drops every
+cached result of the Plugin (see `catalog` in `provider.wit`) before the
+new code runs, since a new version may map them differently. What the
 user saved, such as Ristle Playlist entries and the library, keeps its
 Provider ids, so every version must keep accepting the ids earlier versions
 returned. Active Stream Sources and live channels are retired too (see

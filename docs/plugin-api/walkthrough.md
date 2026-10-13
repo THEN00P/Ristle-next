@@ -963,9 +963,11 @@ Liking a post is the standard like control (`likes`). Reposting is
 Comments are read through `comments` (see [Comments](#comments)).
 
 **Merging.** The host asks each Provider Connection that exports `feed` for its
-first page and merges by `at`, newest first. It reads a Provider's next page
-only when that Provider's oldest post so far is newer than everyone else's, so
-a busy SoundCloud feed does not make Ristle page through Spotify needlessly.
+first page and merges by `at`, newest first. When the user scrolls past what
+is loaded, it reads the next page of the Provider whose oldest post so far is
+the newest, so a busy SoundCloud feed does not make Ristle page through
+another Provider needlessly. Tied Providers all read their next page, since
+second-resolution times and releases dated at midnight tie often.
 Reposts of the same item by several accounts are grouped ("Reposted by A and
 B"). Post ids keep refreshed posts in place.
 

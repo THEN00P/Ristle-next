@@ -460,9 +460,10 @@ interface reposts {
 /// The user's feed: what the accounts they follow published or reposted.
 ///
 /// Ristle has one feed. The host merges the feeds of every Provider
-/// Connection into it by `post.at`, so posts must come newest first. It reads
-/// the next page of a Provider only when that Provider's oldest post so far
-/// is newer than the others', and it groups reposts of the same item. The
+/// Connection into it by `post.at`, so posts must come newest first. When
+/// the merged feed needs more, it reads the next page of the Provider whose
+/// oldest post so far is the newest; on a tie, of every tied Provider, so
+/// equal timestamps never stall the feed. It groups reposts of the same item. The
 /// feed is refreshed only when the user asks.
 interface feed {
     use types.{error, instant, item, person};

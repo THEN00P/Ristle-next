@@ -32,6 +32,11 @@ package ristle:plugin@0.1.0;
 ///   acted on as the new one. Every call is tagged with the account it
 ///   started under; a call still running from before the switch can finish,
 ///   but its cache writes, results and `set-credential` are discarded.
+///   The HTTP cache and the page and listing results together take at most
+///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
+///   used entries first. An evicted entry is simply fetched again, so the
+///   bound costs only stale-if-error coverage, never correctness; a Plugin
+///   cannot grow the cache by varying URLs or `cache-override.key`.
 ///   During a call the user asked to refresh, the host revalidates every
 ///   cached response it would otherwise reuse (conditional requests where the
 ///   server supports them), so a Plugin never needs a "refresh" flag.

@@ -273,11 +273,14 @@ Provider ids, so every version must keep accepting the ids earlier versions
 returned. Active Stream Sources and live channels are retired too (see
 `stream-source` in `types.wit` and `live` in `host.wit`).
 
-Calls still running on the old code may finish, but like calls from a
-retired connection generation, their results, cache writes, storage writes
-and `set-credential` are discarded, so nothing produced by the old mapping
-reappears under the new version. Installing and disabling both discard every
-instance of the Plugin once its running call ends, which closes its sockets;
+Installing any version and disabling the Plugin both retire every call
+still running, as a connection generation change does. Such a call may
+finish, but its results, cache writes, storage writes and `set-credential`
+are discarded, and from that moment every import it makes that reaches the
+network, a socket, a live channel or the files fails with `error.unavailable`
+without doing anything. So nothing produced by the old mapping reappears
+under a new version, and a disabled Plugin publishes nothing. Both also
+discard every instance once its running call ends, which closes its sockets;
 a disabled Plugin keeps no instance, socket or channel open.
 
 ### Key rotation

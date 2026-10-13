@@ -153,7 +153,7 @@ interface catalog {
 /// the `state` string a Plugin returns between steps. The Plugin turns
 /// answers into a Credential Record. It stores nothing itself.
 interface accounts {
-    use types.{error, credential, account, media-server};
+    use types.{error, credential, account, media-server, music-folder};
     use connection.{connection};
 
     enum reason {
@@ -169,6 +169,7 @@ interface accounts {
         web-capture,
         device-code,
         server,
+        folders,
     }
 
     /// The callback the host prepared for this step. Put `uri` in the
@@ -355,6 +356,17 @@ interface accounts {
         placeholder: option<string>,
     }
 
+    /// Ask the user for music folders on this device. Only for Plugins whose
+    /// manifest sets `folders = true`. The host opens the platform's own
+    /// folder picker (Android's Storage Access Framework, the iOS document
+    /// picker, a desktop dialog) with `prompt` as its title; with
+    /// `multiple`, the user may pick several. The picked folders become the
+    /// connection's Folder Grant and `answer.folders` names them.
+    record folder-choice {
+        prompt: option<string>,
+        multiple: bool,
+    }
+
     variant challenge {
         redirect(redirect-challenge),
         form(form),
@@ -362,6 +374,7 @@ interface accounts {
         /// The host shows the code and keeps polling with `answer.poll`.
         device-code(device-code),
         server(server-choice),
+        folders(folder-choice),
     }
 
     record ask {
@@ -382,8 +395,11 @@ interface accounts {
         state: string,
     }
 
+    /// The stored Credential Record is the session's candidate as last set
+    /// with `connection.set-credential`, so there is one source for it and a
+    /// rotation during the session (such as on a `/me` lookup) is kept. A
+    /// Plugin that needs no credential, such as Local Files, sets none.
     record authorized {
-        credential: credential,
         account: account,
     }
 
@@ -417,6 +433,10 @@ interface accounts {
         /// session's requests may reach its origins; the grant is stored
         /// with the credential when the authorization is accepted.
         server(media-server),
+        /// The folders the user picked. From here on the session may read
+        /// them through `files`; the grant is stored when the authorization
+        /// is accepted.
+        folders(list<music-folder>),
     }
 
     /// `connection.set-credential` inside these two calls sets a candidate
@@ -698,8 +718,10 @@ interface settings {
 
     /// The user changed a setting or pressed a button. The host stores the
     /// value only if this succeeds; an `error` is shown next to the setting.
-    /// Returns a short confirmation to show, if any. After a success the host
-    /// marks every cached result of the Plugin stale (see `catalog`), for
+    /// Returns a short confirmation to show, if any. After every call,
+    /// whether it succeeded or failed, since an action such as a button may
+    /// have partly happened, the host marks every cached result of the
+    /// Plugin stale (see `catalog`), for
     /// this connection or, for a Plugin-wide
     /// setting, for all of them, since it cannot tell which results a
     /// setting shapes. The next read of each runs as a refresh; a Feed or

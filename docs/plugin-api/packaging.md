@@ -90,6 +90,7 @@ web-capture = ["soundcloud.com", "*.soundcloud.com", "accounts.google.com"]
 web-capture-observe = ["soundcloud.com", "*.soundcloud.com"]
 storage-mib = 5
 # servers = true                       # self-hosted: may ask the user for a server
+# folders = true                       # local music: may ask the user for folders
 
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
@@ -163,6 +164,9 @@ The consent screen at install lists, in plain words:
   when `servers = true`. Nothing is granted at install: each server is
   granted to one Provider Connection when the user picks and confirms it
   during sign-in.
+- "Reads music folders you choose" when `folders = true`. As with
+  servers, nothing is granted at install: the user picks folders with the
+  system's own picker when setting up a Provider Connection.
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
@@ -241,8 +245,8 @@ key, with a higher `version`.
 - **Loosened restrictions count as new permissions.** Sharing more fields
   with Party guests (`[party] share` gains fields, or is removed and falls
   back to every field), allowing overlap (`[playback] overlap` from `false`
-  to `true`), new `[auth] app-schemes`, a larger `storage-mib` and `servers`
-  turning on are shown as a difference and need consent like a new host.
+  to `true`), new `[auth] app-schemes`, a larger `storage-mib`, and `servers`
+  or `folders` turning on are shown as a difference and need consent like a new host.
   A Party difference names every item type that gains a field, such as
   "now shares Track details and playlist descriptions with Party guests".
 - **New permissions:** the user sees only the difference ("now also connects
@@ -255,8 +259,9 @@ key, with a higher `version`.
   warning. A downgrade still needs the same key.
 
 Credential Records, storage and Provider Connections carry over unchanged,
-with one exception: an update that drops `servers = true` ends every Server
-Grant of the Plugin, and those connections need signing in again. Items they
+with one exception: an update that drops `servers = true` or `folders = true`
+ends every Server or Folder Grant of the Plugin, and those connections need
+signing in again. Items they
 returned stay bound to their connection (see `catalog` in `provider.wit`).
 
 Installing any version (an update, a downgrade or a takeover) drops every

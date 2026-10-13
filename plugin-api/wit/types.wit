@@ -541,6 +541,9 @@ interface types {
         progressive(progressive),
         hls(hls),
         bytes(plugin-bytes),
+        /// A file in the connection's Folder Grant, which the host reads
+        /// itself, natively, like any other stream.
+        file(file-path),
     }
 
     /// Where a Track's encoded audio comes from. The host fetches, decrypts,
@@ -588,6 +591,30 @@ interface types {
         number(f64),
         /// A button was pressed. Never stored.
         pressed,
+    }
+
+    // ---------------------------------------------------------------------
+    // Music folders
+
+    /// A folder on this device that the user granted one Provider Connection
+    /// (a Folder Grant), such as their "Music" folder. Only the user grants
+    /// one, through the platform's own folder picker; never a manifest.
+    record music-folder {
+        /// Host-assigned and stable for as long as the grant lasts. Every
+        /// `file-path` names it.
+        id: string,
+        /// The folder's name as the system shows it.
+        name: string,
+    }
+
+    /// A file or folder inside a granted folder.
+    record file-path {
+        /// A `music-folder.id` of the connection's Folder Grant.
+        folder: string,
+        /// `/`-separated and relative to that folder; empty for the folder
+        /// itself. `.` and `..` segments, absolute paths, and links that
+        /// lead outside the granted folder are refused.
+        path: string,
     }
 
     // ---------------------------------------------------------------------

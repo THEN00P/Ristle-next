@@ -11,6 +11,7 @@ world imports {
     import system;
     import socket;
     import live;
+    import files;
 }
 
 /// The smallest Provider Plugin: search, browse and play, no accounts.

@@ -235,7 +235,7 @@ fn continue_authorization(conn: &Connection, _cx: SessionContext, _state: String
     };
     conn.set_credential(&credential)?;                // so the next fetch is signed
     let me: V2Me = json(conn.fetch(&get("https://api-v2.soundcloud.com/me"))?)?;
-    Ok(Step::Done(Authorized { credential, account: me.into() }))
+    Ok(Step::Done(Authorized { account: me.into() }))
 }
 ```
 
@@ -336,7 +336,7 @@ fn continue_authorization(conn: &Connection, cx: SessionContext, state: String,
     let credential = credential(&catalog, &playback);
     conn.set_credential(&credential)?;         // a candidate until the host accepts `done`
     let me: SpotifyUser = json(conn.fetch(&get("https://api.spotify.com/v1/me"))?)?;
-    Ok(Step::Done(Authorized { credential, account: me.into() }))
+    Ok(Step::Done(Authorized { account: me.into() }))
 }
 
 fn exchange(conn: &Connection, client: &str, code: &str, cb: &Callback) -> Result<Token, Error> {
@@ -1411,7 +1411,7 @@ fn continue_authorization(conn: &Connection, _: SessionContext, state: String, a
                 format!("{base}/Users/AuthenticateByName"), login_body(&values)))?)?;
             let credential = token_credential(&server, &auth.access_token);
             conn.set_credential(&credential)?;
-            Ok(Step::Done(Authorized { credential, account: auth.user.into() }))
+            Ok(Step::Done(Authorized { account: auth.user.into() }))
         }
         _ => Err(Error::Internal("unexpected step".into())),
     }
@@ -1462,6 +1462,38 @@ Plugin's manifest hosts resolve to local addresses and use HTTP, so a Plugin
 can be tested against a server on the developer's machine. Ristle shows a
 banner while it is on, and it never applies to Plugins installed from a
 feed.
+
+## Local files
+
+The built-in Local Files Plugin is a Plugin like any other (ADR 0003, ADR
+0010), so it reaches the file system only through a **Folder Grant**, the
+counterpart of a Server Grant: its manifest sets `folders = true`, and the
+user picks folders with the system's own picker when setting up the
+connection.
+
+```rust
+fn begin_authorization(_: &Connection, _: SessionContext) -> Result<Step, Error> {
+    Ok(ask(Challenge::Folders(FolderChoice {
+        prompt: Some("Choose your music folders".into()), multiple: true }), "folders"))
+}
+
+fn continue_authorization(_: &Connection, _: SessionContext, _: String, answer: Answer)
+        -> Result<Step, Error> {
+    match answer {
+        Answer::Folders(_) => Ok(Step::Done(Authorized { account: this_device() })),  // no credential
+        _ => Err(Error::Internal("unexpected step".into())),
+    }
+}
+```
+
+Scanning walks `files::list` from each of `conn.folders()`, reads tags with
+`files::read` (the first and last few hundred KiB are enough for ID3, Vorbis
+comments and MP4 atoms), and identifies each Local Track by
+`files::digest` over its audio frames, skipping tags, so retagging a file
+keeps its identity and a copy in another folder is recognised as the same
+Track. `resolve` returns `Location::File(path)` and the host reads and decodes
+the file natively, as it does any stream. The Plugin never touches audio
+bytes, which matters most on iOS.
 
 ## Errors and rate limits
 

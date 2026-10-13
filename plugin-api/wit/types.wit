@@ -55,7 +55,11 @@ interface types {
     /// One rendition of an image. Give several sizes when the Provider has
     /// them; the host picks. The host fetches images itself, so `url` must be
     /// HTTPS on a host in the manifest's `image-hosts`; any other image is
-    /// not fetched and shows as a placeholder.
+    /// not fetched and shows as a placeholder. `width` and `height` are hints
+    /// for choosing a rendition and are never trusted: before decoding, the
+    /// host reads the real dimensions from the image header and shows a
+    /// placeholder for anything over 4096 pixels on a side or 16 megapixels,
+    /// or in a format other than JPEG, PNG or WebP.
     record image {
         url: string,
         width: option<u32>,

@@ -230,7 +230,7 @@ fn continue_authorization(conn: &Connection, _cx: SessionContext, _state: String
                         ("app_locale".into(), v("app_locale"))],
         }],
     };
-    conn.set_credential(&credential);                 // so the next fetch is signed
+    conn.set_credential(&credential)?;                // so the next fetch is signed
     let me: V2Me = json(conn.fetch(&get("https://api-v2.soundcloud.com/me"))?)?;
     Ok(Step::Done(Authorized { credential, account: me.into() }))
 }
@@ -251,7 +251,10 @@ fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
         let mut c = conn.credential().ok_or_else(unauthorized)?;
         set_attached_header(&mut c, "x-datadome-clientid", fresh);
-        conn.set_credential(&c);
+        match conn.set_credential(&c) {
+            Err(Error::Conflict(_)) => {}           // another call stored a newer record; keep it
+            r => r?,
+        }
     }
     Ok(response)
 }
@@ -315,7 +318,7 @@ fn continue_authorization(conn: &Connection, cx: SessionContext, state: String,
     let playback: Token = serde_json::from_str(&state).map_err(|_| unexpected())?;
     let catalog = exchange(conn, CATALOG_CLIENT, code, &cb)?;
     let credential = credential(&catalog, &playback);
-    conn.set_credential(&credential);          // a candidate until the host accepts `done`
+    conn.set_credential(&credential)?;         // a candidate until the host accepts `done`
     let me: SpotifyUser = json(conn.fetch(&get("https://api.spotify.com/v1/me"))?)?;
     Ok(Step::Done(Authorized { credential, account: me.into() }))
 }

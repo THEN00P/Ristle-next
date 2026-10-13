@@ -629,6 +629,9 @@ interface queue-projection {
         /// Otherwise the Plugin shows a Projection Marker in its place, or
         /// leaves the entry out if the Provider cannot show markers.
         track: option<string>,
+        /// Only for this Provider's own Tracks; empty for every other entry,
+        /// so no Plugin learns what other Providers or the local library are
+        /// playing. Markers need only `provider`.
         title: string,
         artists: list<string>,
         /// The Provider the entry comes from, for marker text such as

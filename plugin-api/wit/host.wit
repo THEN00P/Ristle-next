@@ -29,7 +29,9 @@ package ristle:plugin@0.1.0;
 ///   accepts a different account for a Provider Connection, the host drops
 ///   that connection's cached HTTP responses and page and listing results
 ///   before the next call, so nothing read as the old account is shown or
-///   acted on as the new one.
+///   acted on as the new one. Every call is tagged with the account it
+///   started under; a call still running from before the switch can finish,
+///   but its cache writes, results and `set-credential` are discarded.
 ///   During a call the user asked to refresh, the host revalidates every
 ///   cached response it would otherwise reuse (conditional requests where the
 ///   server supports them), so a Plugin never needs a "refresh" flag.
@@ -116,13 +118,21 @@ interface connection {
         /// Provider rotates a cookie in a response. Takes effect for the next
         /// request.
         ///
+        /// It is a compare-and-set against the record this call last read
+        /// with `credential` (or the one it started with): if another call
+        /// has replaced the record since, nothing is written and it fails
+        /// with `error.conflict`, so a stale read-modify-write never undoes a
+        /// newer refresh. The Plugin reads again and reapplies its change, or
+        /// drops it. The host also runs `refresh-credential` at most once at a
+        /// time per connection.
+        ///
         /// During `begin-authorization` and `continue-authorization` the
         /// credential set here is only a candidate: it signs this session's
         /// requests (such as a `/me` lookup) and is stored only when the step
         /// returns `done`, the host has checked the account and, for a
         /// different account, the user has accepted it. A failed or declined
         /// authorization leaves the stored record untouched.
-        set-credential: func(credential: credential);
+        set-credential: func(credential: credential) -> result<_, error>;
 
         /// Sends one request. The credential's `attach` rules are applied to
         /// matching hosts. A 401 from such a host fails with

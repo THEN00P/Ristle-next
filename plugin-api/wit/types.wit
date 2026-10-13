@@ -469,7 +469,8 @@ interface types {
 
     record hls {
         url: string,
-        /// Sent with the playlist, segment and key requests.
+        /// Sent with the playlist, segment and key requests, and only to
+        /// `media-hosts`.
         headers: list<header>,
     }
 
@@ -490,6 +491,13 @@ interface types {
 
     /// Where a Track's encoded audio comes from. The host fetches, decrypts,
     /// demuxes and decodes it. Plugins never deliver PCM.
+    ///
+    /// Every request the host makes for a stream must be HTTPS to a host in
+    /// the manifest's `media-hosts`: the first URL, every redirect, and for
+    /// HLS every variant playlist, segment and key URI the playlists name.
+    /// A request that would leave that list is not made, and the Track fails
+    /// as `error.unavailable`. This keeps a playlist from steering the host,
+    /// and the Plugin's headers, to an undeclared or local address.
     record stream-source {
         location: location,
         /// MIME type with codecs when known, such as `audio/ogg; codecs=vorbis`.

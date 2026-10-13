@@ -16,6 +16,9 @@ package ristle:plugin@0.1.0;
 ///   It does not retry.
 /// - Caching. The host honors `Cache-Control` unless `cache` says otherwise.
 ///   Cache keys always include the Plugin and the Provider Connection.
+///   Requests made during `begin-authorization` or `continue-authorization`
+///   never read or write the cache, so a candidate credential is never
+///   answered with a response cached for the previous one.
 ///   During a call the user asked to refresh, the host revalidates every
 ///   cached response it would otherwise reuse (conditional requests where the
 ///   server supports them), so a Plugin never needs a "refresh" flag.
@@ -205,6 +208,12 @@ interface system {
 /// from the current credential. If the Plugin does not, or `reopen` fails,
 /// the host delivers `closed` again later, with back-off, while the
 /// projection runs.
+///
+/// Channels exist only inside a running projection: `open` succeeds only
+/// during `queue-projection.start` or while that Provider Connection's
+/// projection runs, and fails otherwise. A connection may hold at most two
+/// channels. When the projection stops, the user signs out, or the Plugin is
+/// disabled, the host closes every channel of that connection.
 interface live {
     use types.{error, header};
 

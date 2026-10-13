@@ -175,6 +175,11 @@ key, with a higher `version`.
 
 - **No new permissions:** installed without asking. Removed permissions and
   narrower limits never ask.
+- **Loosened restrictions count as new permissions.** Sharing more Track
+  fields with Party guests (`[party] share` gains fields, or is removed and
+  falls back to every field) and allowing overlap (`[playback] overlap` from
+  `false` to `true`) are shown as a difference, such as "now shares Track
+  details with Party guests", and need consent like a new host.
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must
   accept it. Until then the old version keeps running.

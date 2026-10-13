@@ -47,12 +47,14 @@ package ristle:plugin@0.1.0;
 /// - Never sleep, retry or poll inside a call. Return an `error` and let the
 ///   host decide.
 /// - Results are bounded. Every string a Plugin returns is at most 64 KiB,
-///   and a whole result at most 4 MiB, serialized; the host checks the
-///   lifted result and fails the call with
-///   `error.internal` otherwise, before anything is cached or shown. Lifting
-///   copies at most what the instance's 64 MiB memory holds, and the host
-///   runs at most four Plugin calls at once across all Plugins on phones
-///   (eight on desktop), so no combination of results can exhaust the app.
+///   and a whole result at most 4 MiB, serialized. The host enforces this
+///   while lifting: it reads each string's and list's length from the
+///   instance's memory before copying it, keeps a running total, and stops
+///   at the first value over a limit, failing the call with `error.internal`
+///   before anything is cached or shown. So a call never costs the host more
+///   than 4 MiB of copies, whatever the instance holds. The host runs at
+///   most four Plugin calls at once across all Plugins on phones (eight on
+///   desktop).
 interface catalog {
     use types.{error, item, track, page, target, library, listing, list-request, stream-source};
     use connection.{connection};
@@ -670,10 +672,12 @@ interface settings {
     /// The user changed a setting or pressed a button. The host stores the
     /// value only if this succeeds; an `error` is shown next to the setting.
     /// Returns a short confirmation to show, if any. After a success the host
-    /// marks every cached page and listing result of the Plugin stale, for
-    /// this connection or, for a Plugin-wide setting, for all of them, since
-    /// it cannot tell which results a setting shapes; the next read of each
-    /// runs as a refresh.
+    /// marks every cached result of the Plugin stale (pages, listings, loaded
+    /// Feed pages, comments), for this connection or, for a Plugin-wide
+    /// setting, for all of them, since it cannot tell which results a
+    /// setting shapes. The next read of each runs as a refresh; a Feed or
+    /// page the user is looking at reloads when the settings page closes,
+    /// so turning reposts off removes them from the Feed.
     apply: func(conn: borrow<connection>, key: string, value: setting-value) -> result<option<string>, error>;
 }
 

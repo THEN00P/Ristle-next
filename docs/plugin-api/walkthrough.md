@@ -249,15 +249,17 @@ keeps one wrapper for that. Like a browser's cookie jar, the value from the
 response that arrived last wins. The wrapper changes only that header, on
 the newest record: when the compare-and-set in `set-credential` fails
 because another call stored a record in the meantime (another rotation, or a
-refresh), it reads again and reapplies its value, so neither a refresh nor a
-later rotation is lost:
+refresh), it reads again and reapplies its value until it is stored, so
+neither a refresh nor a later rotation is lost. The loop always ends: every
+conflict means another write landed, and writes to one connection are
+finite:
 
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
     let response = conn.fetch(&req)?;
     if response.cached { return Ok(response); }    // a cached header is stale
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
-        for _ in 0..3 {
+        loop {
             let mut c = conn.credential().ok_or_else(unauthorized)?;   // the CAS base
             set_attached_header(&mut c, "x-datadome-clientid", fresh.clone());
             match conn.set_credential(&c) {

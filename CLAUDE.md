@@ -66,5 +66,8 @@ before relying on it, and update it when you learn something new.
   instead: wait until `pulls/1/reviews` has a review by
   `chatgpt-codex-connector[bot]` whose `commit_id` is the head, or a `+1`
   reaction on the PR. Use `gh api --paginate` for both: PR #1 has more
-  than 100 reviews, and a single page silently misses new ones. Resolve threads with the GraphQL `resolveReviewThread`
+  than 100 reviews, and a single page silently misses new ones. The same
+  goes for `reviewThreads` in GraphQL: page with `after:$endCursor` and
+  `gh api graphql --paginate`, or the newest threads stay unseen and
+  unresolved. Resolve threads with the GraphQL `resolveReviewThread`
   mutation after replying.

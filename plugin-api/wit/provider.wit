@@ -784,7 +784,12 @@ interface queue-projection {
     /// refreshes the credential and then delivers `closed` for that channel;
     /// the Plugin reopens it and receives a fresh session, such as a new
     /// Spotify connection id, instead of losing the frame silently.
-    receive: func(conn: borrow<connection>, channel: string, frame: frame) -> result<mutations, error>;
+    ///
+    /// `state` is the current queue state, as `update` would get it, so a
+    /// frame that needs it (such as the connection id that lets the Plugin
+    /// announce its device) can be answered on any instance. Projection
+    /// state is the core's: a Plugin never keeps it in `storage`.
+    receive: func(conn: borrow<connection>, channel: string, frame: frame, state: queue-state) -> result<mutations, error>;
 
     /// The user turned the projection off, signed out, or Ristle is closing.
     stop: func(conn: borrow<connection>) -> result<_, error>;

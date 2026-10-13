@@ -210,6 +210,10 @@ interface types {
         track-count: option<u32>,
         created: option<media-date>,
         updated: option<media-date>,
+        /// Whether the playlist is public on the Provider, as it is now.
+        /// `none` when the Provider does not say. The editing screen shows
+        /// it, so a visibility changed elsewhere is never overwritten.
+        public: option<bool>,
         /// The connected account may change this playlist's Tracks and details.
         editable: bool,
         /// The Provider folder that holds this playlist in the owner's library.

@@ -1137,21 +1137,21 @@ phone ──▶ Spotify ──dealer WebSocket──▶ host ──receive(frame
 ```
 
 ```rust
-fn start(conn: &Connection, state: QueueState) -> Result<(), Error> {
+fn start(conn: &Connection, _state: QueueState) -> Result<(), Error> {
     let token = playback_token(conn)?;
     live::open(&ChannelRequest {
         url: format!("wss://dealer.spotify.com/?access_token={}", token.access_token),
         headers: vec![],
         keepalive: Some(Keepalive { every_ms: 30_000, message: r#"{"type":"ping"}"#.into() }),
     })?;
-    // The device is announced once the dealer reports its connection id (`receive`).
-    storage::set(&format!("{}:projection", conn.id()), &encode(&state), None)?;
+    // The device is announced once the dealer reports its connection id
+    // (`receive`), which gets the current state from the core.
     Ok(())
 }
 
-fn receive(conn: &Connection, channel: String, frame: Frame) -> Result<Mutations, Error> {
+fn receive(conn: &Connection, channel: String, frame: Frame, state: QueueState) -> Result<Mutations, Error> {
     match dealer_message(frame)? {
-        Dealer::ConnectionId(id) => { announce_device(conn, &id)?; Ok(no_changes()) }
+        Dealer::ConnectionId(id) => { announce_device(conn, &id, &projected(&state))?; Ok(no_changes()) }
         // The host never reconnects with the old URL: its token may have expired.
         Dealer::Closed => { live::reopen(&channel, &dealer_request(conn)?)?; Ok(no_changes()) }
         Dealer::Command { revision, command } => Ok(Mutations { revision, changes: match command {

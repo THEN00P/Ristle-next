@@ -294,8 +294,12 @@ The screen says, in this spirit:
 > [Keep the current version] [Replace and sign out] [Replace]
 
 - The default button keeps what is installed.
-- "Replace and sign out" removes every stored sign-in for the Plugin first, so
-  the new maker starts without the user's accounts.
+- "Replace and sign out" removes every stored sign-in for the Plugin first,
+  and with it everything the old Plugin kept that the host cannot vouch
+  for: its whole `storage` namespace, its Plugin settings, its Server
+  Grants and every cached response and result. The new maker starts with
+  nothing of the user's accounts. Provider Connections stay as entries
+  that need signing in, so Ristle Playlist references survive.
 - The names come from the manifests and are shown as text, never as proof.
   Keys and fingerprints are not shown.
 

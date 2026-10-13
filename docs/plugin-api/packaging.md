@@ -276,9 +276,9 @@ returned. Active Stream Sources and live channels are retired too (see
 Installing any version and disabling the Plugin both retire every call
 still running, as a connection generation change does. Such a call may
 finish, but its results, cache writes, storage writes and `set-credential`
-are discarded, and from that moment every import it makes that reaches the
-network, a socket, a live channel or the files fails with `error.unavailable`
-without doing anything. So nothing produced by the old mapping reappears
+are discarded, and from that moment it is retired as described under
+`http` in `host.wit`: every import other than `crypto` and `system` fails
+or returns nothing. So nothing produced by the old mapping reappears
 under a new version, and a disabled Plugin publishes nothing. Both also
 end every pending Authorization Session of the Plugin, whatever step it
 waits on (a browser, a form, a web capture, a device code), and discard its

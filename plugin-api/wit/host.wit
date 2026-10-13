@@ -65,10 +65,13 @@ package ristle:plugin@0.1.0;
 ///   started under; a call still running from before the change can finish,
 ///   but its cache writes, results and `set-credential` are discarded. From
 ///   the moment of any change, sign-out and removal included, such a call
-///   can no longer reach anything: every import it makes that touches the
-///   network, a socket, a live channel, the files or the connection's data
-///   fails with `error.unauthorized` without doing anything, so it neither
-///   uses the old account or grant nor sees the new one. Every Plugin
+///   is retired and can reach nothing outside its own instance. Every
+///   import other than `crypto` and `system` fails with
+///   `error.unauthorized` without doing anything, or, where it has no error
+///   result, returns nothing (`credential`, `account`, `server` and
+///   `get-data` return `none`, `folders` is empty, `storage.get` returns
+///   `none` and `storage.delete` does nothing). So it neither uses the old
+///   account or grant, nor sees or stores the new one. Every Plugin
 ///   instance that served a call for the old generation is discarded once
 ///   its running call ends, so nothing a Plugin kept in memory for one
 ///   account, such as audio keys, ever serves the next.

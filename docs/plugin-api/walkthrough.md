@@ -1321,8 +1321,9 @@ audio key needs a new connection. That costs:
   for anything, and no credential is lost.
 - **No lasting key cache.** Audio keys are playback material obtained with
   the account, so they stay in the instance next to the socket they came
-  from and go when it closes: on sign-out or a new authorization, and when
-  the instance is discarded. They are not put in `storage`, which outlives
+  from and go with the instance. The host discards every instance that
+  served a connection when its generation ends (sign-out, a new
+  authorization), so they never outlive the account. They are not put in `storage`, which outlives
   both and which the core cannot scope. A Track therefore needs the access
   point once per instance, and the key for the next Track is fetched while
   the current one plays, so the cost does not reach the user.

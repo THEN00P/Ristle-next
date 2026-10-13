@@ -393,6 +393,11 @@ interface accounts {
         code-verifier: string,
     }
 
+    /// Answers are bounded like captured values: at most 16 KiB per name or
+    /// value and 64 KiB for one answer, enforced while the host parses the
+    /// callback URL or reads the form, before anything reaches the Plugin.
+    /// A larger answer ends the session with `error.internal`, as if the
+    /// sign-in failed.
     variant answer {
         redirect(callback),
         form(list<tuple<string, string>>),

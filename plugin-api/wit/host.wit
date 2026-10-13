@@ -64,7 +64,10 @@ package ristle:plugin@0.1.0;
 ///   started under; a call still running from before the change can finish,
 ///   but its cache writes, results and `set-credential` are discarded. After
 ///   a sign-out or removal no request of the old generation is sent any
-///   more: its `fetch` fails with `error.unauthorized`.
+///   more: its `fetch` fails with `error.unauthorized`. Every Plugin
+///   instance that served a call for the old generation is discarded once
+///   its running call ends, so nothing a Plugin kept in memory for one
+///   account, such as audio keys, ever serves the next.
 ///   The HTTP cache and the page and listing results together take at most
 ///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
 ///   used entries first. An evicted entry is simply fetched again, so the

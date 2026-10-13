@@ -96,7 +96,8 @@ playlist-remove = 100
 # or `playlist`, checked by `ristle-plugin pack`; a name covers that field in
 # every one of the four that has it, including guest search results. Omitted
 # means every field; empty means references only (ADR 0012). Never
-# credentials or stream sources.
+# credentials, stream sources, or anything outside those four records, such
+# as a listing entry's `added-by`.
 share = ["title", "artists", "album", "artwork", "duration-ms"]
 
 [playback]

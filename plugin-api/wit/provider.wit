@@ -302,6 +302,9 @@ interface accounts {
         state: string,
     }
 
+    /// The host waits at least 2 s whatever `after-ms` says, and ends every
+    /// authorization session 30 minutes after `begin-authorization` at the
+    /// latest, whatever a challenge's expiry says.
     record wait {
         after-ms: u32,
         state: string,

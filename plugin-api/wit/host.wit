@@ -232,8 +232,11 @@ interface system {
 /// Channels exist only inside a running projection: `open` succeeds only
 /// during `queue-projection.start` or while that Provider Connection's
 /// projection runs, and fails otherwise. A connection may hold at most two
-/// channels. When the projection stops, the user signs out, or the Plugin is
-/// disabled, the host closes every channel of that connection.
+/// channels. When the projection stops, the user signs out, the user accepts
+/// a different account for the connection, or the Plugin is disabled, the
+/// host closes every channel of that connection. After an account change it
+/// starts the projection again with the new credential, so no channel
+/// outlives the account it was opened for.
 interface live {
     use types.{error, header};
 
@@ -288,8 +291,13 @@ interface socket {
     use types.{error};
 
     resource tcp {
+        /// Connecting, including the TLS handshake, takes at most 15 s;
+        /// after that it fails with `error.transient`.
         connect: static func(host: string, port: u16, tls: bool) -> result<tcp, error>;
 
+        /// Sends all of `data` within 30 s. If the peer stops reading and the
+        /// deadline passes, it fails with `error.transient` and the host
+        /// closes the socket, since how much was sent is unknown.
         send: func(data: list<u8>) -> result<_, error>;
 
         /// Waits at most `timeout-ms` (capped at 10 s) for up to `max` bytes,

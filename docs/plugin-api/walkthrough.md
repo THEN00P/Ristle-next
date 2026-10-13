@@ -1147,7 +1147,9 @@ relays albums, profiles and playlists. By default every field of `track`,
 Record, a Stream Source or `storage` ever is. A Plugin narrows this with
 `[party] share` in its manifest, which applies to all four: a listed name
 covers that field in every one of them that has it, and an item's reference
-is always relayed.
+is always relayed. Only those four records are relayed. What wraps them
+(a listing entry's `added` and `added-by`, a page's parts and totals, a feed
+post's author and time) never reaches guests, whatever `share` says.
 
 Spotify's Developer Terms and Developer Policy restrict sharing content with
 third parties, playing to several listeners, and mixing Spotify with other

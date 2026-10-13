@@ -190,7 +190,16 @@ every request to hosts outside the list, from navigation to subresources,
    tell an update from a takeover in step 6.
 4. Parse and validate the whole manifest. Check `id` and `version`.
 5. Load the component with wasmtime and check its imports and exports
-   against the `ristle:plugin` versions the host implements.
+   against the `ristle:plugin` versions the host implements. A component
+   whose declared minimum memory or table size exceeds the instance limits
+   below is refused here.
+
+Every instance runs under a wasmtime resource limiter that refuses growth
+beyond 64 MiB of linear memory and 10 000 table elements; the Plugin then
+gets an allocation failure or a trap, never more memory. Memories are
+configured with small reservations, so a limit holds on devices with a
+tight address space too (iOS). These limits are fixed by the host, not
+chosen by the manifest.
 6. Decide new install, update or takeover (below) and show the matching
    screen.
 7. Store the package, then compile it once (Cranelift, or Pulley bytecode on

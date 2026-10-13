@@ -693,7 +693,11 @@ interface queue-projection {
     /// state matters.
     update: func(conn: borrow<connection>, state: queue-state) -> result<_, error>;
 
-    /// A frame arrived on one of the Plugin's live channels.
+    /// A frame arrived on one of the Plugin's live channels. It is not
+    /// retry-safe, so when it fails with `error.unauthorized` the host
+    /// refreshes the credential and then delivers `closed` for that channel;
+    /// the Plugin reopens it and receives a fresh session, such as a new
+    /// Spotify connection id, instead of losing the frame silently.
     receive: func(conn: borrow<connection>, channel: string, frame: frame) -> result<mutations, error>;
 
     /// The user turned the projection off, signed out, or Ristle is closing.

@@ -242,14 +242,17 @@ cursors for an existing `client_id`.
 
 **DataDome rotation.** SoundCloud refreshes its DataDome value in an
 `x-set-cookie` response header and expects it on the next request. The Plugin
-keeps one wrapper for that:
+keeps one wrapper for that. It reads the record before sending, so the
+compare-and-set in `set-credential` fails if another response rotated the
+value in the meantime, and an older rotation never overwrites a newer one:
 
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
+    let sent_with = conn.credential();               // read before sending: the CAS base
     let response = conn.fetch(&req)?;
     if response.cached { return Ok(response); }    // a cached header is stale
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
-        let mut c = conn.credential().ok_or_else(unauthorized)?;
+        let mut c = sent_with.ok_or_else(unauthorized)?;
         set_attached_header(&mut c, "x-datadome-clientid", fresh);
         match conn.set_credential(&c) {
             Err(Error::Conflict(_)) => {}           // another call stored a newer record; keep it
@@ -680,10 +683,16 @@ revision changes.
 Spotify maps onto `/playlists/{id}/items` (renamed from `/tracks` in
 February 2026). Two gaps in that endpoint need care:
 
-- **Adds take no snapshot.** A positional add would land at the wrong place
-  if the playlist changed since the user's view, so the Plugin compares the
-  current snapshot with `revision` first and returns `error.conflict` when
-  they differ.
+- **Adds take no snapshot.** A position sent with the add is applied to
+  whatever the playlist is at that moment, so a change in between would
+  misplace it. A positional add is therefore two steps. The Plugin appends at
+  the end, which no concurrent change can misplace. It then reads the
+  snapshot and total fresh, and moves the new range to `at` with a reorder
+  sent with that snapshot, which Spotify applies against the snapshot it
+  names (spike E confirms this). The user's `revision` is still checked
+  first. If the read shows another change or the reorder fails, the Tracks
+  stay at the end and the Plugin returns `error.conflict`, so the host reads
+  the playlist again and shows where they are.
 - **Removals take only URIs.** Each entry is `{ "uri": ... }`; there is no
   position, so a Track that appears more than once cannot be removed one
   occurrence at a time. When the playlist holds a removed Track only once
@@ -697,13 +706,8 @@ February 2026). Two gaps in that endpoint need care:
 fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change) -> Result<Outcome, Error> {
     let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
     let body = match change {
-        Change::Add(i) => {
-            // current_snapshot reads `?fields=snapshot_id` with `.fresh()`
-            if i.at.is_some() && revision.is_some() && current_snapshot(conn, &id)? != revision {
-                return Err(Error::Conflict("Playlist changed since it was shown".into()));
-            }
-            json!({ "uris": uris(&i.tracks), "position": i.at })
-        }
+        Change::Add(i) if i.at.is_some() => return add_at(conn, &id, revision, i),
+        Change::Add(i) => json!({ "uris": uris(&i.tracks) }),
         Change::Remove(o) => {
             if has_duplicates(conn, &id, &o)? {
                 return spclient_remove_occurrences(conn, &id, revision, &o);
@@ -717,6 +721,22 @@ fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change)
     };
     let method = match change { Change::Add(_) => Method::Post, Change::Remove(_) => Method::Delete, _ => Method::Put };
     let r: Snapshot = json(conn.fetch(&with_json(method, url, body))?)?;
+    Ok(Outcome { revision: Some(r.snapshot_id), rejected: vec![] })
+}
+
+fn add_at(conn: &Connection, id: &str, revision: Option<String>, i: Insert) -> Result<Outcome, Error> {
+    let moved = || Error::Conflict("Playlist changed; the Tracks were added at the end".into());
+    if revision.is_some() && current(conn, id)?.snapshot_id != revision.unwrap() {   // `.fresh()` read
+        return Err(Error::Conflict("Playlist changed since it was shown".into()));
+    }
+    let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
+    let appended: Snapshot = json(conn.fetch(&with_json(Method::Post, &url, json!({ "uris": uris(&i.tracks) })))?)?;
+    let now = current(conn, id)?;                     // snapshot_id and items.total, `.fresh()`
+    if now.snapshot_id != appended.snapshot_id { return Err(moved()); }
+    let n = i.tracks.len() as u32;
+    let r: Snapshot = json(conn.fetch(&with_json(Method::Put, &url, json!({
+        "snapshot_id": now.snapshot_id, "range_start": now.total - n,
+        "range_length": n, "insert_before": i.at })))?).map_err(|_| moved())?;
     Ok(Outcome { revision: Some(r.snapshot_id), rejected: vec![] })
 }
 ```

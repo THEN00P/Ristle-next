@@ -8,6 +8,13 @@ package ristle:plugin@0.1.0;
 ///
 /// - HTTPS only, to hosts declared in the manifest's `hosts`. Redirects are
 ///   followed only within those hosts.
+/// - Public addresses only. The host resolves every name itself and refuses
+///   loopback, link-local, private, unique-local, multicast and unspecified
+///   addresses, checking again for every new connection so DNS rebinding
+///   gains nothing. This applies to every connection the host makes for a
+///   Plugin: `http`, `live`, `socket`, Stream Sources and images.
+///   A self-hosted Provider on the user's network would need an explicit
+///   grant of its own, which this version does not define.
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.
 /// - Rate limiting. A 429, or a 503 with `Retry-After`, never reaches the
@@ -231,6 +238,8 @@ interface live {
     use types.{error, header};
 
     record keepalive {
+        /// At least 5000; a smaller value fails `open` or `reopen` with
+        /// `error.internal`.
         every-ms: u32,
         message: string,
     }
@@ -268,7 +277,8 @@ interface live {
 
 /// Raw TCP, optionally with TLS, for Providers whose protocol is not HTTP,
 /// such as Spotify's access points. Only to `host:port` pairs declared in the
-/// manifest's `sockets`, which the consent screen lists separately.
+/// manifest's `sockets`, which the consent screen lists separately, and only
+/// to public addresses (see `http`).
 ///
 /// A socket belongs to one Plugin instance and closes when it is dropped or
 /// the instance is discarded, so Plugins reconnect lazily. A Plugin may hold

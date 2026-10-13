@@ -141,6 +141,8 @@ The consent screen at install lists, in plain words:
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
   for the `web-capture` hosts.
+- "Can open these apps to sign in" for `[auth] app-schemes`, naming the
+  apps the system resolves the schemes to, or the schemes when it cannot.
 - What it can do with an account, from its exports: "Stores your sign-in"
   (`accounts`), "Can like, save and follow for you" (`likes`), "Can repost
   for you" (`reposts`), "Can create, change and delete your playlists"
@@ -191,8 +193,8 @@ key, with a higher `version`.
   added) is a new network destination and needs consent like a new host.
 - **Loosened restrictions count as new permissions.** Sharing more Track
   fields with Party guests (`[party] share` gains fields, or is removed and
-  falls back to every field) and allowing overlap (`[playback] overlap` from
-  `false` to `true`) are shown as a difference, such as "now shares Track
+  falls back to every field), allowing overlap (`[playback] overlap` from
+  `false` to `true`) and new `[auth] app-schemes` are shown as a difference, such as "now shares Track
   details with Party guests", and need consent like a new host.
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must

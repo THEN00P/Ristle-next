@@ -280,6 +280,10 @@ are discarded, and from that moment every import it makes that reaches the
 network, a socket, a live channel or the files fails with `error.unavailable`
 without doing anything. So nothing produced by the old mapping reappears
 under a new version, and a disabled Plugin publishes nothing. Both also
+end every pending Authorization Session of the Plugin, whatever step it
+waits on (a browser, a form, a web capture, a device code), and discard its
+state and candidate credential, so nothing from the old code's sign-in
+reaches the new code; the user starts the sign-in again. Both also
 discard every instance once its running call ends, which closes its sockets;
 a disabled Plugin keeps no instance, socket or channel open.
 

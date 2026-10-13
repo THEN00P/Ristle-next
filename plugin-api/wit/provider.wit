@@ -279,11 +279,15 @@ interface accounts {
         required: bool,
     }
 
-    /// JavaScript the host runs at document end on every main-frame load whose
-    /// URL starts with `url-prefix`, which must be an HTTPS URL on an `observe`
-    /// host, and so on the manifest's `web-capture-observe` list.
-    /// Never on a host that is only loaded, such as an identity provider. Only the first matching script runs, so
-    /// list specific prefixes first. Scripts may call
+    /// JavaScript the host runs at document end on main-frame loads, never on
+    /// a host that is only loaded, such as an identity provider. `url-prefix`
+    /// must be an HTTPS URL on an `observe` host, and so on the manifest's
+    /// `web-capture-observe` list. Matching works on parsed URLs, not text:
+    /// the loaded page's origin (scheme, host and port) must equal the
+    /// prefix's origin exactly, and only then must its path and query start
+    /// with the prefix's. So `https://login.example.com` never matches
+    /// `https://login.example.com.attacker.tld`. Only the first matching
+    /// script runs, so list specific prefixes first. Scripts may call
     /// `ristle.capture(name, value)`.
     record page-script {
         url-prefix: string,

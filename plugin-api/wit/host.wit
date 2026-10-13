@@ -8,7 +8,13 @@ package ristle:plugin@0.1.0;
 ///
 /// - HTTPS only, to hosts declared in the manifest's `hosts`, or to the
 ///   origins of the connection's Server Grant (`connection.server`, the
-///   origins of its `urls`), which may also be plain HTTP. Redirects are followed only within those.
+///   origins of its `urls`), which may also be plain HTTP. Redirects are
+///   followed only within those. Within one origin a redirect keeps the
+///   request as browsers do. Across origins the host drops the Plugin's
+///   headers and applies the credential's `attach` rules for the new host
+///   alone, and a redirect that would resend the body (307, 308) is not
+///   followed: the Plugin gets the 3xx response and decides. So nothing
+///   meant for one origin is replayed to another.
 /// - Public addresses only. The host resolves every name itself and refuses
 ///   loopback, link-local, private, unique-local, multicast and unspecified
 ///   addresses, checking again for every new connection so DNS rebinding
@@ -47,9 +53,10 @@ package ristle:plugin@0.1.0;
 ///   Requests made during `begin-authorization` or `continue-authorization`
 ///   never read or write the cache, so a candidate credential is never
 ///   answered with a response cached for the previous one. A Provider
-///   Connection's generation changes when the user accepts a different
-///   account for it or a different Server Grant (another server, or other
-///   origins), and ends for good when the user signs out or removes the
+///   Connection's generation changes with every accepted authorization,
+///   even for the same account and server, since new credentials may reach
+///   less than the old ones (a routine `refresh-credential` does not change
+///   it), and ends for good when the user signs out or removes the
 ///   connection. On a change the host drops that connection's cached HTTP
 ///   responses and page and listing results before the next call, so
 ///   nothing read as the old account or from the old server is shown or

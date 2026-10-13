@@ -103,7 +103,10 @@ interface connection {
         fetch: func(request: request) -> result<response, error>;
 
         /// Sends independent requests concurrently and returns the results in
-        /// the same order.
+        /// the same order. At most 16 requests per call, or the whole call
+        /// fails with `error.internal`. Response bodies in one call add up to
+        /// at most 32 MiB; once that is reached, the remaining requests fail
+        /// with `error.internal` instead of being kept in memory.
         fetch-all: func(requests: list<request>) -> list<result<response, error>>;
 
         /// The user's value for a setting from `settings.describe`, or its
@@ -188,6 +191,13 @@ interface system {
 /// owns the connection, so it outlives Plugin instances: incoming frames
 /// arrive through `queue-projection.receive`, which any instance can handle.
 /// Only `wss://` URLs to hosts declared in the manifest's `hosts`.
+///
+/// The host never reconnects with an old request, because a request usually
+/// carries a token that expires. When a channel closes, it delivers `closed`
+/// to `receive`; the Plugin answers by calling `reopen` with a request built
+/// from the current credential. If the Plugin does not, or `reopen` fails,
+/// the host delivers `closed` again later, with back-off, while the
+/// projection runs.
 interface live {
     use types.{error, header};
 
@@ -209,13 +219,15 @@ interface live {
         binary(list<u8>),
         /// The host (re)connected the channel.
         opened,
-        /// The channel closed. While the projection runs, the host reconnects
-        /// with back-off and reports `opened` again.
+        /// The channel closed. Call `reopen` to connect it again.
         closed(string),
     }
 
     /// Returns the channel id, which stays the same across reconnections.
     open: func(request: channel-request) -> result<string, error>;
+
+    /// Connects a closed channel again with a fresh request, keeping its id.
+    reopen: func(channel: string, request: channel-request) -> result<_, error>;
 
     send: func(channel: string, frame: frame) -> result<_, error>;
 

@@ -82,9 +82,13 @@ described in `packaging.md`. The parts that matter here:
 hosts = ["api-v2.soundcloud.com", "api.soundcloud.com", "secure.soundcloud.com"]
 media-hosts = ["*.sndcdn.com", "*.media-streaming.soundcloud.cloud"]
 image-hosts = ["*.sndcdn.com"]
-# The sign-in window may show these. Google and Apple are there for
-# "Continue with Google/Apple"; only SoundCloud hosts are observed.
-web-capture = ["soundcloud.com", "*.soundcloud.com", "accounts.google.com", "appleid.apple.com"]
+# Every host the sign-in window may contact; all others are blocked. Google
+# and Apple are there for "Continue with Google/Apple", DataDome for its bot
+# check. Only SoundCloud hosts are observed. The exact list is to be recorded
+# from real sign-in traffic, as the favorites requests were.
+web-capture = ["soundcloud.com", "*.soundcloud.com", "*.sndcdn.com",
+               "accounts.google.com", "*.gstatic.com", "appleid.apple.com",
+               "*.captcha-delivery.com", "*.datadome.co"]
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
 [limits]
@@ -93,7 +97,7 @@ tracks = 50
 # Spotify
 [permissions]
 hosts = ["api.spotify.com", "accounts.spotify.com", "spclient.wg.spotify.com",
-         "apresolve.spotify.com", "clienttoken.spotify.com"]
+         "apresolve.spotify.com", "clienttoken.spotify.com", "dealer.spotify.com"]
 media-hosts = ["*.scdn.co", "*.spotifycdn.com", "audio-ak-spotify-com.akamaized.net"]
 image-hosts = ["i.scdn.co", "*.spotifycdn.com"]
 sockets = ["*.spotify.com:4070", "*.spotify.com:443"]
@@ -609,7 +613,10 @@ playlists the user owns or collaborates on (others answer 403), at most 50
 per page, with each entry's Track in `item`. The sketch below covers those;
 for any other playlist the Plugin reads `playlist/v2` from spclient, with the
 same addressing and revision. The items response has no `snapshot_id`, so the
-Plugin fetches it from the playlist itself in the same `fetch_all`:
+Plugin reads the snapshot before and after the page. If they differ, the
+playlist changed during the read, and the page could pair old positions with
+the new snapshot; the Plugin returns `error.conflict` and the host reads the
+page again:
 
 ```rust
 fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listing, Error> {
@@ -618,15 +625,18 @@ fn list_playlist(conn: &Connection, id: &str, req: ListRequest) -> Result<Listin
         Detail::Ids => "&fields=total,items(item(id))",
         Detail::Items => "",
     };
-    let [items, meta] = fetch2(conn, [
-        get(format!("https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=50{fields}")),
-        get(format!("https://api.spotify.com/v1/playlists/{id}?fields=snapshot_id")),
-    ])?;
+    let snapshot_url = format!("https://api.spotify.com/v1/playlists/{id}?fields=snapshot_id");
+    let before: Snapshot = json(conn.fetch(&get(&snapshot_url))?)?;
+    let items = conn.fetch(&get(format!(
+        "https://api.spotify.com/v1/playlists/{id}/items?offset={offset}&limit=50{fields}")))?;
     if items.status == 403 {                     // someone else's playlist
         return spclient_playlist(conn, id, req);
     }
     let page: PlaylistItems = json(items)?;
-    let snapshot: Snapshot = json(meta)?;
+    let snapshot: Snapshot = json(conn.fetch(&get(&snapshot_url))?)?;
+    if snapshot.snapshot_id != before.snapshot_id {
+        return Err(Error::Conflict("Playlist changed while it was read".into()));
+    }
     Ok(Listing {
         entries: page.items.into_iter().map(|i| match i.item {
             Some(t) if req.detail == Detail::Ids => Item::TrackId(t.id).into(),
@@ -1050,9 +1060,11 @@ fn start(conn: &Connection, state: QueueState) -> Result<(), Error> {
     Ok(())
 }
 
-fn receive(conn: &Connection, _channel: String, frame: Frame) -> Result<Mutations, Error> {
+fn receive(conn: &Connection, channel: String, frame: Frame) -> Result<Mutations, Error> {
     match dealer_message(frame)? {
         Dealer::ConnectionId(id) => { announce_device(conn, &id)?; Ok(no_changes()) }
+        // The host never reconnects with the old URL: its token may have expired.
+        Dealer::Closed => { live::reopen(&channel, &dealer_request(conn)?)?; Ok(no_changes()) }
         Dealer::Command { revision, command } => Ok(Mutations { revision, changes: match command {
             Command::Pause => vec![Mutation::Pause],
             Command::SkipNext => vec![Mutation::Next],
@@ -1074,7 +1086,9 @@ fn update(conn: &Connection, state: QueueState) -> Result<(), Error> {
 The live channel is a host import (`live`) rather than a socket in the
 Plugin, because a phone can send a command at any moment, also while no
 Plugin call is running. The host keeps the WebSocket open, sends the
-keep-alive, reconnects, and hands each frame to whichever instance it calls.
+keep-alive, and hands each frame to whichever instance it calls. Reconnecting
+goes through the Plugin (`live.reopen`), so a refreshed token is used instead
+of the one the channel was first opened with.
 
 The `mutations.revision` is the queue revision the phone was looking at. If
 the queue has moved on since, the core applies a mutation only where it still

@@ -4,8 +4,8 @@ A Plugin Package is one `.wasm` file: a WebAssembly component built against
 `ristle:plugin` (`plugin-api/wit/`). There is no archive. The manifest, the
 icon and the Publisher signature travel in custom sections of the component.
 
-Status: draft. Embedding and verifying the signature in a component is item 4
-of spike C and has not been run yet.
+Status: draft. Spike C (item 4, `docs/research/plugin-host-spike.md`)
+signed and verified components with `wasmsign2` 0.2.8.
 
 ## Layout
 
@@ -39,14 +39,13 @@ The signature follows the WebAssembly tool-conventions signature format that
   installed Publisher key is among them, which is also how a key rotation
   without takeover works (see below).
 
-**Components.** The format names only core modules (content type `0x01`). A
-component has the same preamble length and the same section framing, so the
-hashing applies unchanged, but `wasmsign2` may reject the component's version
-and layer bytes. Spike C item 4 decides between two outcomes: `wasmsign2`
-works on components as is, or Ristle's packer implements the same format for
-components (about 200 lines over `ed25519-dalek` and `sha2`) and the content
-type is proposed upstream. Either way the bytes on disk follow the published
-format.
+**Components.** `wasmsign2` 0.2.8 accepts components as they are: it puts
+its section first, hashes every section after it (so the manifest is
+covered), rejects a tampered copy and a foreign key, adds about 120 bytes and
+verifies in under a millisecond, and wasmtime loads the signed component
+unchanged (spike C). Its signatures carry no public key, only an optional key
+id, so the manifest names the Publisher key (`publisher-key`), and the host
+verifies against that key and checks it against the installed one.
 
 The Publisher is identified by its public key, and continuity of that key is
 what Ristle checks. Users never see keys or fingerprints: the screens speak of
@@ -62,6 +61,7 @@ id = "dev.example.soundcloud"         # reverse DNS, stable forever
 name = "SoundCloud"
 version = "1.4.0"                      # semver, must grow with every update
 publisher = "Example Developer"
+publisher-key = "ed25519:3fa1…"         # the key that signs this package
 description = "Search, browse and play SoundCloud."
 homepage = "https://github.com/example/ristle-soundcloud"
 license = "MIT"
@@ -151,8 +151,9 @@ with `error.internal` and is logged, a `socket` connect outside `sockets`
 fails, a stream URL outside `media-hosts` does not play, an image outside
 `image-hosts` (or not HTTPS) shows as a placeholder, and a web-capture
 challenge whose start URL, observed hosts or script prefixes fall outside
-`web-capture` is refused before any window opens. The sign-in window also
-refuses top-level navigation to hosts outside the list.
+`web-capture` is refused before any window opens. The sign-in window blocks
+every request to hosts outside the list, from navigation to subresources,
+`fetch`, beacons, frames and WebSockets.
 
 ## Installing
 

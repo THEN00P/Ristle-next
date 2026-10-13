@@ -248,11 +248,18 @@ interface accounts {
     ///
     /// Everything is bound to the manifest's `web-capture` host list, which
     /// the user consented to: the start URL must be HTTPS on one of those
-    /// hosts, `observe` must be a subset of them, page scripts only run on
-    /// them, and the window refuses top-level navigation to any other host.
-    /// A Provider whose sign-in passes through an identity provider (such as
-    /// a Google account page) lists that host too. The host rejects a
-    /// challenge that breaks these rules before opening anything.
+    /// hosts, `observe` must be a subset of them, and page scripts only run
+    /// on them. The list also bounds the network: the window blocks every
+    /// request to any other host, not only navigation but also subresources,
+    /// `fetch`, XHR, beacons, forms, frames and WebSockets, so a page script
+    /// cannot send what it sees anywhere else. Adapters block through the
+    /// platform's request interception and add a host-written
+    /// Content-Security-Policy for what interception cannot see (WebSockets
+    /// on Android). A platform that cannot enforce this does not offer
+    /// `web-capture` at all. The list therefore names every host the sign-in
+    /// pages load from, including identity providers (such as a Google
+    /// account page), CDNs and bot checks. The host rejects a challenge that
+    /// breaks these rules before opening anything.
     record web-capture {
         /// HTTPS, on a `web-capture` host.
         start-url: string,

@@ -39,8 +39,9 @@ interface types {
         /// No network, a timeout, or a server error. The same call may succeed
         /// later.
         transient(string),
-        /// A write lost a race: the target changed after the revision the host
-        /// passed. The host reloads and asks the user again.
+        /// The target changed under the call: a write's `revision` is stale,
+        /// or a list changed while one page of it was read. The host reloads;
+        /// for a write it asks the user again.
         conflict(string),
         /// The Plugin does not offer this for this item or Provider Connection.
         unsupported(string),

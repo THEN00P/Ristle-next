@@ -224,8 +224,19 @@ Every instance runs under a wasmtime resource limiter that refuses growth
 beyond 64 MiB of linear memory and 10 000 table elements; the Plugin then
 gets an allocation failure or a trap, never more memory. Memories are
 configured with small reservations, so a limit holds on devices with a
-tight address space too (iOS). These limits are fixed by the host, not
-chosen by the manifest.
+tight address space too (iOS).
+
+Every call also runs under a time budget, enforced with wasmtime's epoch
+interruption, which works the same under Cranelift and Pulley. A call may
+spend at most 2 s executing guest code, counted only while the Plugin runs
+(time spent waiting inside a host import, such as a `fetch`, does not
+count), and at most 60 s in total including imports; `byte-source.read`,
+which playback waits on, gets 250 ms of guest time. Under Pulley (iOS) the
+guest-time budgets are ten times larger, since interpretation is that much
+slower. A call over budget traps, fails with `error.internal`, and its
+instance is discarded, so a Plugin stuck in a loop frees its slot among
+the concurrent calls (see `catalog`) instead of holding it. These limits are
+fixed by the host, not chosen by the manifest.
 6. Decide new install, update or takeover (below) and show the matching
    screen.
 7. Store the package, then compile it once (Cranelift, or Pulley bytecode on

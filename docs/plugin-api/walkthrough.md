@@ -86,11 +86,13 @@ media-hosts = ["*.sndcdn.com", "*.media-streaming.soundcloud.cloud"]
 image-hosts = ["*.sndcdn.com"]
 # Every host the sign-in window may contact; all others are blocked. Google
 # and Apple are there for "Continue with Google/Apple", DataDome for its bot
-# check. Only SoundCloud hosts are observed. The exact list is to be recorded
-# from real sign-in traffic, as the favorites requests were.
+# check. Only SoundCloud hosts are observed and scripted, so the Plugin never
+# sees what the user types on Google's or Apple's page. The exact list is to
+# be recorded from real sign-in traffic, as the favorites requests were.
 web-capture = ["soundcloud.com", "*.soundcloud.com", "*.sndcdn.com",
                "accounts.google.com", "*.gstatic.com", "appleid.apple.com",
                "*.captcha-delivery.com", "*.datadome.co"]
+web-capture-observe = ["soundcloud.com", "*.soundcloud.com"]
 [auth]
 redirects = ["loopback:8990/login", "scheme", "remote"]
 [limits]
@@ -243,21 +245,25 @@ cursors for an existing `client_id`.
 
 **DataDome rotation.** SoundCloud refreshes its DataDome value in an
 `x-set-cookie` response header and expects it on the next request. The Plugin
-keeps one wrapper for that. It reads the record before sending, so the
-compare-and-set in `set-credential` fails if another response rotated the
-value in the meantime, and an older rotation never overwrites a newer one:
+keeps one wrapper for that. Like a browser's cookie jar, the value from the
+response that arrived last wins. The wrapper changes only that header, on
+the newest record: when the compare-and-set in `set-credential` fails
+because another call stored a record in the meantime (another rotation, or a
+refresh), it reads again and reapplies its value, so neither a refresh nor a
+later rotation is lost:
 
 ```rust
 fn sc(conn: &Connection, req: Request) -> Result<Response, Error> {
-    let sent_with = conn.credential();               // read before sending: the CAS base
     let response = conn.fetch(&req)?;
     if response.cached { return Ok(response); }    // a cached header is stale
     if let Some(fresh) = datadome_from_x_set_cookie(&response.headers) {
-        let mut c = sent_with.ok_or_else(unauthorized)?;
-        set_attached_header(&mut c, "x-datadome-clientid", fresh);
-        match conn.set_credential(&c) {
-            Err(Error::Conflict(_)) => {}           // another call stored a newer record; keep it
-            r => r?,
+        for _ in 0..3 {
+            let mut c = conn.credential().ok_or_else(unauthorized)?;   // the CAS base
+            set_attached_header(&mut c, "x-datadome-clientid", fresh.clone());
+            match conn.set_credential(&c) {
+                Err(Error::Conflict(_)) => continue,  // a record was stored meanwhile; reapply on it
+                r => { r?; break; }
+            }
         }
     }
     Ok(response)

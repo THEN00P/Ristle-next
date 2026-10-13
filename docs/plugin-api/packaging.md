@@ -82,8 +82,11 @@ hosts = ["api-v2.soundcloud.com", "api.soundcloud.com", "secure.soundcloud.com"]
 media-hosts = ["*.sndcdn.com"]         # stream URLs the host fetches for the Plugin
 image-hosts = ["*.sndcdn.com"]         # artwork and avatars the host fetches
 sockets = []                           # "host:port", for the socket import
-# Hosts the sign-in window may show. Omitted or empty: no web capture.
-web-capture = ["soundcloud.com", "*.soundcloud.com"]
+# Hosts the sign-in window may load. Omitted or empty: no web capture.
+web-capture = ["soundcloud.com", "*.soundcloud.com", "accounts.google.com"]
+# The subset whose traffic, cookies and pages may be watched and scripted:
+# the Provider's own hosts, never an identity provider.
+web-capture-observe = ["soundcloud.com", "*.soundcloud.com"]
 storage-mib = 5
 # servers = true                       # self-hosted: may ask the user for a server
 
@@ -159,7 +162,9 @@ The consent screen at install lists, in plain words:
 - "Opens direct connections to" the `sockets`, separately and with a stronger
   wording, because they are not HTTPS.
 - "Can see pages and traffic of these sites inside its own sign-in window"
-  for the `web-capture` hosts.
+  for the `web-capture-observe` hosts. Hosts only in `web-capture` are
+  listed under "Technical details": the window may load them, nothing on
+  them is watched.
 - "Can open these apps to sign in" for `[auth] app-schemes`, naming the
   apps the system resolves the schemes to, or the schemes when it cannot.
 - What it can do with an account, from its exports: "Signs in as you and
@@ -224,6 +229,9 @@ key, with a higher `version`.
 
 - **No new permissions:** installed without asking. Removed permissions and
   narrower limits never ask.
+- **A new `web-capture-observe` host** is a new permission even when it
+  was already in `web-capture`, since watching a site is more than loading
+  it.
 - **A new update-feed host** (`updates` moving to another host, or being
   added) is a new network destination and needs consent like a new host.
 - **Loosened restrictions count as new permissions.** Sharing more fields

@@ -46,6 +46,13 @@ package ristle:plugin@0.1.0;
 ///   Party guest's search. They are ordinary calls.
 /// - Never sleep, retry or poll inside a call. Return an `error` and let the
 ///   host decide.
+/// - Results are bounded. Every string a Plugin returns is at most 64 KiB,
+///   and a whole result at most 4 MiB, serialized; the host checks the
+///   lifted result and fails the call with
+///   `error.internal` otherwise, before anything is cached or shown. Lifting
+///   copies at most what the instance's 64 MiB memory holds, and the host
+///   runs at most four Plugin calls at once across all Plugins on phones
+///   (eight on desktop), so no combination of results can exhaust the app.
 interface catalog {
     use types.{error, item, track, page, target, library, listing, list-request, stream-source};
     use connection.{connection};
@@ -260,7 +267,8 @@ interface accounts {
 
     /// JavaScript the host runs at document end on every main-frame load whose
     /// URL starts with `url-prefix`, which must be an HTTPS URL on an `observe`
-    /// host. Only the first matching script runs, so
+    /// host, and so on the manifest's `web-capture-observe` list.
+    /// Never on a host that is only loaded, such as an identity provider. Only the first matching script runs, so
     /// list specific prefixes first. Scripts may call
     /// `ristle.capture(name, value)`.
     record page-script {
@@ -273,10 +281,17 @@ interface accounts {
     /// window and calls `continue-authorization` with the values. The Plugin
     /// declares what to capture; the host does the watching.
     ///
-    /// Everything is bound to the manifest's `web-capture` host list, which
-    /// the user consented to: the start URL must be HTTPS on one of those
-    /// hosts, `observe` must be a subset of them, and page scripts only run
-    /// on them. The list also bounds the network: the window blocks every
+    /// Everything is bound to two manifest lists the user consented to.
+    /// `web-capture` names every host the window may load; `web-capture-observe`,
+    /// a subset, names the Provider's own hosts, the only ones whose
+    /// traffic, cookies and pages may be watched and the only ones page
+    /// scripts run on. Identity providers (such as a Google account page),
+    /// CDNs and bot checks belong only in `web-capture`: they load and work,
+    /// but nothing on them is observed or scripted, so a Plugin cannot read
+    /// what the user types into another company's sign-in page. The start
+    /// URL must be HTTPS on a `web-capture` host and `observe` must be a
+    /// subset of `web-capture-observe`. The `web-capture` list also bounds
+    /// the network: the window blocks every
     /// request to any other host, not only navigation but also subresources,
     /// `fetch`, XHR, beacons, forms, frames and WebSockets, so a page script
     /// cannot send what it sees anywhere else. Adapters block through the
@@ -286,9 +301,8 @@ interface accounts {
     /// `web-capture` at all. Page scripts run with the user's fresh session
     /// and can act on the account like any page; that is no more than the
     /// captured credential allows through `connection.fetch`, and the
-    /// `accounts` consent line says so. The list therefore names every host the sign-in
-    /// pages load from, including identity providers (such as a Google
-    /// account page), CDNs and bot checks. The host rejects a challenge that
+    /// `accounts` consent line says so. `web-capture` therefore names every
+    /// host the sign-in pages load from. The host rejects a challenge that
     /// breaks these rules before opening anything.
     record web-capture {
         /// HTTPS, on a `web-capture` host.
@@ -296,7 +310,7 @@ interface accounts {
         user-agent: user-agent,
         /// Hosts whose traffic, cookies and pages the host watches. Exact
         /// hosts, or `*.example.com` for subdomains; each must be covered by
-        /// the manifest's `web-capture` list.
+        /// the manifest's `web-capture-observe` list.
         observe: list<string>,
         values: list<capture>,
         scripts: list<page-script>,
@@ -459,6 +473,14 @@ interface playlist-editing {
         position: u32,
     }
 
+    /// Moves `count` entries starting at `from` so that they come right
+    /// before the entry at `to`, with every position counted in the list as
+    /// it is before the move (Spotify's `insert_before`). `to` equal to the
+    /// length moves the range to the end. `to` must lie outside the range
+    /// and not right after it: `to < from` or `to > from + count`, and the
+    /// host never sends anything else. Moving forward, the range's first
+    /// entry ends at `to - count`. A Plugin translates to its Provider's
+    /// convention.
     record moving {
         %from: u32,
         count: u32,
@@ -647,7 +669,11 @@ interface settings {
 
     /// The user changed a setting or pressed a button. The host stores the
     /// value only if this succeeds; an `error` is shown next to the setting.
-    /// Returns a short confirmation to show, if any.
+    /// Returns a short confirmation to show, if any. After a success the host
+    /// marks every cached page and listing result of the Plugin stale, for
+    /// this connection or, for a Plugin-wide setting, for all of them, since
+    /// it cannot tell which results a setting shapes; the next read of each
+    /// runs as a refresh.
     apply: func(conn: borrow<connection>, key: string, value: setting-value) -> result<option<string>, error>;
 }
 

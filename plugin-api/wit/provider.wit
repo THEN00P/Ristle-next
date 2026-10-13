@@ -27,6 +27,15 @@ package ristle:plugin@0.1.0;
 ///   user asks (pull to refresh, a refresh button), when nothing is cached,
 ///   or when the cache has expired as the user navigates. It never replaces
 ///   content the user is looking at by itself. Plugins keep no result caches.
+///   After every write (`set-liked`, `set-reposted`, a playlist `create`,
+///   `edit` or `delete`), whether it succeeded or failed, since a failed
+///   write may have partly happened, the host marks the results it affects
+///   as stale: for a playlist, its pages and the library's playlists; for a
+///   like or repost, the library listings of that kind and the item's
+///   like or repost state. A successful write's result is shown at once;
+///   the next read of a stale result runs as a refresh, revalidating the
+///   cached HTTP responses it would reuse, so a reopened playlist never
+///   shows its contents from before the write.
 /// - Calls also come while the app is in the background, on behalf of the
 ///   user: a like from the lock screen, Android Auto browsing the library, a
 ///   Party guest's search. They are ordinary calls.
@@ -333,6 +342,10 @@ interface accounts {
     /// The host waits at least 2 s whatever `after-ms` says, and ends every
     /// authorization session 30 minutes after `begin-authorization` at the
     /// latest, whatever a challenge's expiry says.
+    ///
+    /// `state` here and in `ask` takes at most 64 KiB. The host checks it
+    /// before keeping it; a larger state ends the session with
+    /// `error.internal`.
     record wait {
         after-ms: u32,
         state: string,

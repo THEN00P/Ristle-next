@@ -54,8 +54,9 @@ interface types {
 
     /// One rendition of an image. Give several sizes when the Provider has
     /// them; the host picks. The host fetches images itself, so `url` must be
-    /// HTTPS on a host in the manifest's `image-hosts`; any other image is
-    /// not fetched and shows as a placeholder. `width` and `height` are hints
+    /// HTTPS on a host in the manifest's `image-hosts`, or on an origin of
+    /// the connection's Server Grant, which may be plain HTTP; any other
+    /// image is not fetched and shows as a placeholder. `width` and `height` are hints
     /// for choosing a rendition and are never trusted: before decoding, the
     /// host reads the real dimensions from the image header and shows a
     /// placeholder for anything over 4096 pixels on a side or 16 megapixels,
@@ -139,7 +140,9 @@ interface types {
     // - Links the user follows (`url` on items, a form's `help-url`) must be
     //   HTTPS. They open in a browser only when the user taps them, are never
     //   handed to the operating system as an app link, and may point to any
-    //   host, like a link on a web page. Anything else is dropped.
+    //   host, like a link on a web page. Anything else is dropped. The
+    //   manifest's `homepage` is such a link too; install refuses a package
+    //   whose `homepage` is not HTTPS.
     // - URLs the host opens or fetches by itself (authorization challenges,
     //   stream and image URLs, update downloads) are confined to the hosts
     //   the manifest declares, as documented where each is defined.
@@ -508,8 +511,10 @@ interface types {
     /// demuxes and decodes it. Plugins never deliver PCM.
     ///
     /// Every request the host makes for a stream must be HTTPS to a host in
-    /// the manifest's `media-hosts`: the first URL, every redirect, and for
-    /// HLS every variant playlist, segment and key URI the playlists name.
+    /// the manifest's `media-hosts`, or go to an origin of the connection's
+    /// Server Grant, which may be plain HTTP: the first URL, every redirect,
+    /// and for HLS every variant playlist, segment and key URI the playlists
+    /// name.
     /// A request that would leave that list is not made, and the Track fails
     /// as `error.unavailable`. This keeps a playlist from steering the host,
     /// and the Plugin's headers, to an undeclared or local address.
@@ -558,7 +563,8 @@ interface types {
     record account {
         /// The Provider's account id. A re-authorization that returns a
         /// different id is a different account: the host asks the user, and
-        /// on acceptance drops the connection's cached responses and results.
+        /// on acceptance drops the connection's cached responses and results
+        /// (a generation change, see `http`).
         id: string,
         name: string,
         avatar: list<image>,
@@ -579,6 +585,13 @@ interface types {
     /// The Credential Record of one Provider Connection. Ristle stores it
     /// encrypted in the platform credential store and gives it only to the
     /// Plugin that created it.
+    ///
+    /// Serialized, a record takes at most 64 KiB, which holds a full browser
+    /// cookie jar for a site. The host checks the size before keeping
+    /// anything: an oversized `set-credential` fails with `error.internal`,
+    /// and an oversized record in `authorized` or from `refresh-credential`
+    /// fails that authorization or refresh with `error.internal`, leaving
+    /// the stored record untouched.
     record credential {
         /// Plugin-defined and versioned, such as `oauth/1` or `web-session/2`.
         /// Lets a newer Plugin read records written by an older one.

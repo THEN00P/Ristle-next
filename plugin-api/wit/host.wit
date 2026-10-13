@@ -14,9 +14,14 @@ package ristle:plugin@0.1.0;
 ///   addresses, checking again for every new connection so DNS rebinding
 ///   gains nothing. This applies to every connection the host makes for a
 ///   Plugin: `http`, `live`, `socket`, Stream Sources and images.
-///   The one exception is a Server Grant: its origins may resolve to any
-///   unicast address, including the local network and, on desktop, this
-///   device, because the user chose that server and confirmed it. The
+///   The one exception is a Server Grant: its origins may resolve to the
+///   local network or, on desktop, to this device, because the user chose
+///   that server and confirmed it. The grant records, per origin, the
+///   address class the user confirmed (public, local network, this device).
+///   Every new connection resolves again, and one that reaches a class the
+///   user did not confirm, such as a public name rebound to a private
+///   address, is refused with `error.transient` and the Provider Connection
+///   shows "Server address changed; sign in again to confirm it". The
 ///   exception holds only for that connection and only for those origins.
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.
@@ -28,12 +33,14 @@ package ristle:plugin@0.1.0;
 ///   Cache keys always include the Plugin and the Provider Connection.
 ///   Requests made during `begin-authorization` or `continue-authorization`
 ///   never read or write the cache, so a candidate credential is never
-///   answered with a response cached for the previous one. When the user
-///   accepts a different account for a Provider Connection, the host drops
-///   that connection's cached HTTP responses and page and listing results
-///   before the next call, so nothing read as the old account is shown or
-///   acted on as the new one. Every call is tagged with the account it
-///   started under; a call still running from before the switch can finish,
+///   answered with a response cached for the previous one. A Provider
+///   Connection's generation changes when the user accepts a different
+///   account for it or a different Server Grant (another server, or other
+///   origins). On a change the host drops that connection's cached HTTP
+///   responses and page and listing results before the next call, so
+///   nothing read as the old account or from the old server is shown or
+///   acted on as the new one. Every call is tagged with the generation it
+///   started under; a call still running from before the change can finish,
 ///   but its cache writes, results and `set-credential` are discarded.
 ///   The HTTP cache and the page and listing results together take at most
 ///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
@@ -147,6 +154,9 @@ interface connection {
         /// Two writes from the same base keep the first; the second learns
         /// so by `error.conflict`. The host runs `refresh-credential` at most
         /// once at a time per connection.
+        ///
+        /// A record larger than 64 KiB, serialized, fails with
+        /// `error.internal` and is not stored (see `types.credential`).
         ///
         /// During `begin-authorization` and `continue-authorization` the
         /// credential set here is only a candidate: it signs this session's
@@ -265,11 +275,12 @@ interface system {
 /// Channels exist only inside a running projection: `open` succeeds only
 /// during `queue-projection.start` or while that Provider Connection's
 /// projection runs, and fails otherwise. A connection may hold at most two
-/// channels. When the projection stops, the user signs out, the user accepts
-/// a different account for the connection, or the Plugin is disabled, the
-/// host closes every channel of that connection. After an account change it
-/// starts the projection again with the new credential, so no channel
-/// outlives the account it was opened for.
+/// channels. When the projection stops, the user signs out, the
+/// connection's generation changes (a different account or Server Grant, see
+/// `http`), or the Plugin is disabled, the host closes every channel of that
+/// connection. After a generation change it starts the projection again with
+/// the new credential, so no channel outlives the account or server it was
+/// opened for.
 interface live {
     use types.{error, header};
 

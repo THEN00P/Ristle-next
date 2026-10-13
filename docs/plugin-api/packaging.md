@@ -69,7 +69,7 @@ version = "1.4.0"                      # semver, must grow with every update
 publisher = "Example Developer"
 publisher-key = "ed25519:3fa1…"         # the key that signs this package
 description = "Search, browse and play SoundCloud."
-homepage = "https://github.com/example/ristle-soundcloud"
+homepage = "https://github.com/example/ristle-soundcloud"   # HTTPS, opens in a browser
 license = "MIT"
 updates = "https://example.com/ristle/soundcloud.json"   # optional update feed, HTTPS
 
@@ -177,7 +177,8 @@ following legacy ADR 0009.
 The host enforces each grant where it is used: an undeclared HTTP host fails
 with `error.internal` and is logged, a `socket` connect outside `sockets`
 fails, a stream URL outside `media-hosts` does not play, an image outside
-`image-hosts` (or not HTTPS) shows as a placeholder, and a web-capture
+`image-hosts` (or not HTTPS) shows as a placeholder (both unless it is on
+a Server Grant origin), and a web-capture
 challenge whose start URL, observed hosts or script prefixes fall outside
 `web-capture` is refused before any window opens. The sign-in window blocks
 every request to hosts outside the list, from navigation to subresources,
@@ -193,7 +194,9 @@ every request to hosts outside the list, from navigation to subresources,
    `publisher-key`. If that `id` is installed, the result is then compared
    with the installed Publisher key (or the key a valid handover names) to
    tell an update from a takeover in step 6.
-4. Parse and validate the whole manifest. Check `id` and `version`.
+4. Parse and validate the whole manifest. Check `id` and `version`, and
+   refuse a `homepage` that is not HTTPS; it is shown as a link that opens
+   in a browser, never handed to the operating system.
 5. Load the component with wasmtime and check its imports and exports
    against the `ristle:plugin` versions the host implements. A component
    whose declared minimum memory or table size exceeds the instance limits

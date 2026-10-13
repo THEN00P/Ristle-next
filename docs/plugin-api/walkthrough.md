@@ -279,7 +279,8 @@ needing sign-in, and later calls `begin-authorization` with
 `reason: reauthorize`. The connection, its library cache and its Ristle
 Playlist references survive. If the new account id differs, the host asks the
 user before replacing anything, and on acceptance drops the connection's cached
-responses and results.
+responses and results. Choosing a different server for a self-hosted Provider
+does the same.
 
 **OAuth with registered application credentials** is the same as Spotify's
 first step below and is not repeated.
@@ -1411,14 +1412,22 @@ What the user sees and what the host enforces:
 - **At install**, one line: "Connects to servers you choose, including ones
   on your home network". Nothing is reachable yet.
 - **At sign-in**, the server and every origin it would grant. A local
-  origin adds "This server is on your home network" and an `http` origin
-  adds "Traffic to this server is not encrypted", each as a confirmation the
-  user must accept. A Plugin cannot add origins later; changing servers is
-  signing in again, which asks again.
+  origin adds "This server is on your home network" (or "This server runs
+  on this device") and an `http` origin adds "Traffic to this server is not
+  encrypted", each as a confirmation the user must accept. A Plugin cannot
+  add origins later; changing servers is signing in again, which asks
+  again, and like a different account it drops everything cached for the
+  connection.
+- **The confirmed address class sticks.** The grant remembers whether each
+  origin resolved to a public address, the home network or this device.
+  If a name later resolves to a class the user did not confirm, for example
+  a public name rebound to a home address, the host refuses the connection
+  and asks the user to sign in again, so DNS rebinding cannot skip the
+  warning.
 - **The grant** belongs to that Provider Connection. Its origins count as
-  `hosts`, `media-hosts` and `image-hosts` for that connection only, may be
-  plain HTTP, and may resolve to local addresses, and on desktop to this
-  device. Every other destination keeps the public-HTTPS rule. Removing the
+  `hosts`, `media-hosts` and `image-hosts` for that connection only, so
+  streams and artwork from the server may be plain HTTP too, and may resolve
+  to local addresses, and on desktop to this device. Every other destination keeps the public-HTTPS rule. Removing the
   connection removes the grant.
 - **Platforms.** iOS shows its Local Network permission the first time a
   granted origin is local, so the app declares

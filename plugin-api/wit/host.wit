@@ -220,8 +220,14 @@ interface connection {
         /// `set-credential` and the storing of a `refresh-credential` result
         /// never interleave, and a refresh result is stored by the same
         /// compare-and-set against the record the refresh started from. A
-        /// `set-credential` made while a refresh runs waits for it and then
-        /// fails with `error.conflict`, because the refreshed record is newer.
+        /// `set-credential` made by another call while a refresh runs waits
+        /// for it and then fails with `error.conflict`, because the
+        /// refreshed record is newer. Inside `refresh-credential` itself it
+        /// never waits: as during authorization, it sets the refresh's
+        /// candidate, which signs the refresh's own requests and which
+        /// `credential` then returns, so a shared wrapper that rotates a
+        /// cookie works there too. What is stored is the record
+        /// `refresh-credential` returns.
         /// Two writes from the same base keep the first; the second learns
         /// so by `error.conflict`. The host runs `refresh-credential` at most
         /// once at a time per connection.

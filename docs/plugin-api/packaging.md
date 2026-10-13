@@ -108,8 +108,9 @@ playlist-remove = 100
 # or `playlist`, checked by `ristle-plugin pack`; a name covers that field in
 # every one of the four that has it, including guest search results. Omitted
 # means every field; empty means references only (ADR 0012). Never
-# credentials, stream sources, or anything outside those four records, such
-# as a listing entry's `added-by`. `artwork` is relayed as URLs only for
+# credentials, stream sources, `track.file` (a path on this device, whatever
+# `share` says), or anything outside those four records, such as a listing
+# entry's `added-by`. `artwork` is relayed as URLs only for
 # images on public HTTPS hosts that no `attach` rule covers, and whose URL
 # has no query string, userinfo or fragment, which could carry a signature or
 # token. Any other image, such as one from a Server Grant origin or a

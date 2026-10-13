@@ -142,7 +142,11 @@ interface types {
         /// a hidden playback candidate of its Local Track; the core prefers
         /// FLAC over other formats, then the higher bitrate, plays the chosen
         /// one itself through its `path`, and falls back to the next
-        /// candidate when one fails (CONTEXT.md, Local Track).
+        /// candidate when one fails (CONTEXT.md, Local Track). The core also
+        /// takes the artwork of such Tracks from the files itself, while it
+        /// reads them anyway: embedded cover art first, then a `cover`,
+        /// `folder` or `front` image (JPEG or PNG) in the same folder.
+        /// `artwork` stays empty, since a local image has no URL.
         file: option<local-file>,
     }
 

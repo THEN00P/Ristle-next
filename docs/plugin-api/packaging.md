@@ -222,12 +222,13 @@ key, with a higher `version`.
   narrower limits never ask.
 - **A new update-feed host** (`updates` moving to another host, or being
   added) is a new network destination and needs consent like a new host.
-- **Loosened restrictions count as new permissions.** Sharing more Track
-  fields with Party guests (`[party] share` gains fields, or is removed and
-  falls back to every field), allowing overlap (`[playback] overlap` from
-  `false` to `true`), new `[auth] app-schemes`, a larger `storage-mib` and
-  `servers` turning on are shown as a difference, such as "now shares Track
-  details with Party guests", and need consent like a new host.
+- **Loosened restrictions count as new permissions.** Sharing more fields
+  with Party guests (`[party] share` gains fields, or is removed and falls
+  back to every field), allowing overlap (`[playback] overlap` from `false`
+  to `true`), new `[auth] app-schemes`, a larger `storage-mib` and `servers`
+  turning on are shown as a difference and need consent like a new host.
+  A Party difference names every item type that gains a field, such as
+  "now shares Track details and playlist descriptions with Party guests".
 - **New permissions:** the user sees only the difference ("now also connects
   to `api.example.com`", "now opens direct connections to ...") and must
   accept it. Until then the old version keeps running.
@@ -237,7 +238,10 @@ key, with a higher `version`.
 - **Lower version:** refused, unless the user installs it by hand, with a
   warning. A downgrade still needs the same key.
 
-Credential Records, storage and Provider Connections carry over unchanged.
+Credential Records, storage and Provider Connections carry over unchanged,
+with one exception: an update that drops `servers = true` ends every Server
+Grant of the Plugin, and those connections need signing in again. Items they
+returned stay bound to their connection (see `catalog` in `provider.wit`).
 
 ### Key rotation
 

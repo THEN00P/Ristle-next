@@ -1427,9 +1427,10 @@ What the user sees and what the host enforces:
   cannot skip the warning or steer requests to another device; the cost is
   one confirmation when a home server's address really changes.
 - **Items stay with their server.** Two Jellyfin servers can issue the
-  same id for different Tracks, so the host keeps the Provider Connection
-  with every item of a `servers = true` Plugin and never resolves it
-  through another connection.
+  same id for different Tracks, so the host records the Provider
+  Connection with every item that comes through a Server Grant and never
+  resolves it through another connection, even after an update drops
+  `servers`.
 - **The grant** belongs to that Provider Connection. Its origins count as
   `hosts`, `media-hosts` and `image-hosts` for that connection only, so
   streams and artwork from the server may be plain HTTP too, and may resolve

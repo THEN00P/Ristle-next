@@ -104,7 +104,11 @@ playlist-remove = 100
 # every one of the four that has it, including guest search results. Omitted
 # means every field; empty means references only (ADR 0012). Never
 # credentials, stream sources, or anything outside those four records, such
-# as a listing entry's `added-by`.
+# as a listing entry's `added-by`. `artwork` is relayed as URLs only for
+# images on public HTTPS hosts that no `attach` rule covers; any other image,
+# such as one from a Server Grant origin, is fetched by the Party Host and
+# relayed as the image itself, scaled down, so guests never learn a private
+# address or receive a credential.
 share = ["title", "artists", "album", "artwork", "duration-ms"]
 
 [playback]

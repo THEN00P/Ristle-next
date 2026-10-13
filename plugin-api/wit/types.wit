@@ -61,6 +61,12 @@ interface types {
     /// host reads the real dimensions from the image header and shows a
     /// placeholder for anything over 4096 pixels on a side or 16 megapixels,
     /// or in a format other than JPEG, PNG or WebP.
+    ///
+    /// The host fetches an image for the Provider Connection the item came
+    /// from and applies that connection's `attach` rules, so artwork that
+    /// needs authentication works without a token in `url`. Put none there:
+    /// the URL is cached with Provider data and may be relayed to Party
+    /// guests (see `[party]` in packaging).
     record image {
         url: string,
         width: option<u32>,
@@ -481,14 +487,20 @@ interface types {
 
     record progressive {
         url: string,
+        /// Sent only to the origin of `url`, including redirects within it.
+        /// A redirect to another origin carries none of them.
         headers: list<header>,
         decrypt: option<decryption>,
     }
 
     record hls {
         url: string,
-        /// Sent with the playlist, segment and key requests, and only to
-        /// `media-hosts`.
+        /// Sent only to the origin of `url`: the playlist, and variant
+        /// playlists, segments and keys on that same origin. A request to any
+        /// other origin, such as a CDN the playlist names, carries none of
+        /// them, so a token meant for the playlist server never leaves it.
+        /// Credentials a request elsewhere needs come from the connection's
+        /// `attach` rules for that host.
         headers: list<header>,
     }
 
@@ -574,9 +586,11 @@ interface types {
         avatar: list<image>,
     }
 
-    /// Where the host adds the credential to requests made through
-    /// `connection.fetch`. The Plugin never adds tokens by hand for these
-    /// hosts, and refreshing replaces the values.
+    /// Where the host adds the credential to requests it makes for this
+    /// Provider Connection: `connection.fetch`, and its own stream and image
+    /// requests. Each rule applies only to its `hosts`. The Plugin never
+    /// adds tokens by hand for these hosts, and refreshing replaces the
+    /// values.
     record attach {
         /// Exact hosts, or `*.example.com` for subdomains.
         hosts: list<string>,

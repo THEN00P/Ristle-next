@@ -29,6 +29,14 @@ package ristle:plugin@0.1.0;
 ///   exception holds only for that connection and only for those origins.
 /// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
 ///   lower), and a per-Plugin concurrency limit.
+/// - Bounded arguments, for every import in this package, not only `http`:
+///   each string a Plugin passes is at most 64 KiB, a byte payload (a
+///   request body, live frame, socket data or storage value) at most 16 MiB
+///   or its interface's lower limit, and everything else in one call at
+///   most 1 MiB. The host reads the lengths from the instance's memory
+///   before copying anything and fails the call with `error.internal` (or
+///   traps, for an import without an error result) at the first value over
+///   a limit, as it does for exported results (see `catalog`).
 /// - Rate limiting. A 429, or a 503 with `Retry-After`, never reaches the
 ///   Plugin as a response: the call fails with `error.rate-limited`, and the
 ///   host holds back further requests to that host until the wait is over.
@@ -178,7 +186,11 @@ interface connection {
         /// requests (such as a `/me` lookup) and is stored only when the step
         /// returns `done`, the host has checked the account and, for a
         /// different account, the user has accepted it. A failed or declined
-        /// authorization leaves the stored record untouched.
+        /// authorization leaves the stored record untouched. Until the
+        /// session sets a candidate, its requests carry no credential at
+        /// all: the stored record's `attach` rules never apply during
+        /// authorization, so re-signing in to a different server on the
+        /// same host never sends it the old server's token.
         set-credential: func(credential: credential) -> result<_, error>;
 
         /// Sends one request. The credential's `attach` rules are applied to

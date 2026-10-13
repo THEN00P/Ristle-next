@@ -538,8 +538,11 @@ interface reposts {
 /// yet but a `next` (its pages so far held only entries the Plugin
 /// skipped) counts as the newest, so it is read first; the host follows up
 /// to ten empty pages in a row for one Provider per load, and stops at a
-/// repeated cursor, before waiting for the user to scroll again. It groups
-/// reposts of the same item. The
+/// repeated cursor. If a load ends with nothing new to show while some
+/// Provider still has a `next`, the feed ends in a "Load more" row instead
+/// of waiting for a scroll past rows that are not there, so a post behind
+/// many skipped entries stays reachable. It groups reposts of the same
+/// item. The
 /// feed is refreshed only when the user asks.
 interface feed {
     use types.{error, instant, item, person};

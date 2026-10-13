@@ -128,8 +128,9 @@ interface types {
         unavailable: option<string>,
         /// Authoritative recording id, used to group equivalent search results.
         isrc: option<string>,
-        /// The Track's public web page, for sharing. Like every link a
-        /// Plugin returns for the user to follow (see `url-rules`), HTTPS only.
+        /// The Track's page on the Provider. Ristle offers it as "Open on
+        /// <Provider>" in the item's context menu, and for sharing. HTTPS
+        /// only, like every link the user follows (see `url-rules`).
         url: option<string>,
         attributes: list<attribute>,
     }
@@ -144,9 +145,13 @@ interface types {
     // url-rules: every URL a Plugin returns falls under one of two rules.
     //
     // - Links the user follows (`url` on items, a form's `help-url`) must be
-    //   HTTPS. They open in a browser only when the user taps them, are never
-    //   handed to the operating system as an app link, and may point to any
-    //   host, like a link on a web page. Anything else is dropped. The
+    //   HTTPS. They open only when the user taps them, and may point to any
+    //   host, like a link on a web page. They open the way the platform opens
+    //   any HTTPS link: in the browser, or in an app the link's domain has
+    //   verified as its own (iOS universal links, Android verified App
+    //   Links), so "Open on Spotify" opens the Spotify app when it is
+    //   installed. Never as a custom scheme or an unverified app intent.
+    //   Anything else is dropped. The
     //   manifest's `homepage` is such a link too; install refuses a package
     //   whose `homepage` is not HTTPS.
     // - URLs the host opens or fetches by itself (authorization challenges,
@@ -161,6 +166,9 @@ interface types {
         released: option<media-date>,
         release-type: option<release-type>,
         track-count: option<u32>,
+        /// The item's page on the Provider. Ristle offers it as "Open on
+        /// <Provider>" in the item's context menu, and for sharing. HTTPS
+        /// only, like every link the user follows (see `url-rules`).
         url: option<string>,
     }
 
@@ -187,6 +195,9 @@ interface types {
         followers: option<u64>,
         /// City or country, as the Provider shows it.
         location: option<string>,
+        /// The item's page on the Provider. Ristle offers it as "Open on
+        /// <Provider>" in the item's context menu, and for sharing. HTTPS
+        /// only, like every link the user follows (see `url-rules`).
         url: option<string>,
     }
 
@@ -203,6 +214,9 @@ interface types {
         editable: bool,
         /// The Provider folder that holds this playlist in the owner's library.
         folder: option<string>,
+        /// The item's page on the Provider. Ristle offers it as "Open on
+        /// <Provider>" in the item's context menu, and for sharing. HTTPS
+        /// only, like every link the user follows (see `url-rules`).
         url: option<string>,
     }
 

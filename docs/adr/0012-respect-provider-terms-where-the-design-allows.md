@@ -40,8 +40,12 @@ Ristle's reading of the Spotify rules, which the measures below implement:
   attribution line or link is added. This deliberately stops short of Policy
   II.4.2, which asks for a link back to the item on Spotify wherever its
   content is shown. The user decided (2026-10-12) that a badge is enough,
-  and that decision is not to be reversed without asking. `track.url` stays
-  in the data, so a link can be added later without an API change.
+  and that decision is not to be reversed without asking. Separately, and
+  as in legacy Ristle, the context menu of every Track, album, artist and
+  playlist offers "Open on <Provider>", which opens the item's `url` on the
+  Provider's website, or in its app when installed. It is a user action for
+  every Provider, not an attribution line, and it gives Spotify items a way
+  back to Spotify without changing the badge decision.
 - **Third parties (IV.2.5)** are kept from Spotify metadata in a Ristle Party
   by relaying only references, for queued Tracks and for the albums, artists
   and playlists a guest's search returns. A guest whose own Ristle has a

@@ -117,7 +117,8 @@ interface types {
         unavailable: option<string>,
         /// Authoritative recording id, used to group equivalent search results.
         isrc: option<string>,
-        /// The Track's public web page, for sharing.
+        /// The Track's public web page, for sharing. Like every link a
+        /// Plugin returns for the user to follow (see `url-rules`), HTTPS only.
         url: option<string>,
         attributes: list<attribute>,
     }
@@ -128,6 +129,16 @@ interface types {
         ep,
         compilation,
     }
+
+    // url-rules: every URL a Plugin returns falls under one of two rules.
+    //
+    // - Links the user follows (`url` on items, a form's `help-url`) must be
+    //   HTTPS. They open in a browser only when the user taps them, are never
+    //   handed to the operating system as an app link, and may point to any
+    //   host, like a link on a web page. Anything else is dropped.
+    // - URLs the host opens or fetches by itself (authorization challenges,
+    //   stream and image URLs, update downloads) are confined to the hosts
+    //   the manifest declares, as documented where each is defined.
 
     record album {
         id: string,

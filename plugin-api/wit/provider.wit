@@ -201,6 +201,8 @@ interface accounts {
         title: string,
         instructions: option<string>,
         fields: list<field>,
+        /// A link the user may follow: HTTPS only, opened in a browser on tap,
+        /// never by the operating system (see `url-rules` in `types`).
         help-url: option<string>,
     }
 

@@ -736,10 +736,18 @@ that otherwise succeeded.
 SoundCloud's API replaces a playlist's whole Track list in one `PUT`, so its
 `edit` reads the current list, applies the change, and writes it back. If
 `last_modified` no longer matches `revision`, it returns `error.conflict`.
+That check runs before the write, so a change another client makes in the
+round trip between the read and the `PUT` would be overwritten. The Plugin
+sends `If-Unmodified-Since` with the `last_modified` it read; if the recorded
+observations show api-v2 honouring it (412 maps to `error.conflict`), the
+write is conditional. If not, the window of one round trip stays. That is
+accepted rather than leaving SoundCloud playlist editing out, which the user
+decided against.
 Legacy declared `playlist_write: false` for SoundCloud and never built
 writes. The port supports them, as Spotify's does. The web-session request
 shapes (`PUT /playlists/{id}`, `POST /playlists` and `DELETE /playlists/{id}`
-on api-v2) still have to be observed in the browser and recorded, as the
+on api-v2, and whether the `PUT` honours `If-Unmodified-Since`) still have to
+be observed in the browser and recorded, as the
 favorites requests were in `soundcloud-favorites-web-observations.md`.
 
 `create` and `delete` are single requests on both services. Unfollowing

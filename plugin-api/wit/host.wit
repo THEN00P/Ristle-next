@@ -71,10 +71,12 @@ interface http {
         status: u16,
         headers: list<header>,
         body: list<u8>,
-        /// The response came from the cache without reaching the Provider.
-        /// Its headers are historical: a Plugin takes credential changes,
-        /// such as a rotated cookie, only from responses where this is false.
-        /// A revalidated response (304) is not cached in this sense.
+        /// Any part of the response came from the cache: served without
+        /// reaching the Provider, or revalidated with a 304 and merged with
+        /// the stored headers. Such headers may be historical, so a Plugin
+        /// takes credential changes, such as a rotated cookie, only from
+        /// responses where this is false. A rotation carried by a 304 is
+        /// picked up from the next full response.
         cached: bool,
     }
 

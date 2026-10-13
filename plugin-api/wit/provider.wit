@@ -325,6 +325,8 @@ interface accounts {
         poll,
     }
 
+    /// `connection.set-credential` inside these two calls sets a candidate
+    /// that is stored only once the authorization is accepted (see there).
     begin-authorization: func(conn: borrow<connection>, context: session-context) -> result<step, error>;
 
     continue-authorization: func(conn: borrow<connection>, context: session-context, state: string, answer: answer) -> result<step, error>;

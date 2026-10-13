@@ -94,6 +94,13 @@ interface connection {
         /// Replaces the stored Credential Record, for example when the
         /// Provider rotates a cookie in a response. Takes effect for the next
         /// request.
+        ///
+        /// During `begin-authorization` and `continue-authorization` the
+        /// credential set here is only a candidate: it signs this session's
+        /// requests (such as a `/me` lookup) and is stored only when the step
+        /// returns `done`, the host has checked the account and, for a
+        /// different account, the user has accepted it. A failed or declined
+        /// authorization leaves the stored record untouched.
         set-credential: func(credential: credential);
 
         /// Sends one request. The credential's `attach` rules are applied to

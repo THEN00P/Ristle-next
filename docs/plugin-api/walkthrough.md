@@ -312,7 +312,7 @@ fn continue_authorization(conn: &Connection, cx: SessionContext, state: String,
     let playback: Token = serde_json::from_str(&state).map_err(|_| unexpected())?;
     let catalog = exchange(conn, CATALOG_CLIENT, code, &cb)?;
     let credential = credential(&catalog, &playback);
-    conn.set_credential(&credential);
+    conn.set_credential(&credential);          // a candidate until the host accepts `done`
     let me: SpotifyUser = json(conn.fetch(&get("https://api.spotify.com/v1/me"))?)?;
     Ok(Step::Done(Authorized { credential, account: me.into() }))
 }
@@ -665,17 +665,39 @@ revision changes.
 
 ### Writing
 
-Spotify maps one-to-one onto `/playlists/{id}/items` (renamed from
-`/tracks` in February 2026, with removals now listing their entries under
-`items`):
+Spotify maps onto `/playlists/{id}/items` (renamed from `/tracks` in
+February 2026). Two gaps in that endpoint need care:
+
+- **Adds take no snapshot.** A positional add would land at the wrong place
+  if the playlist changed since the user's view, so the Plugin compares the
+  current snapshot with `revision` first and returns `error.conflict` when
+  they differ.
+- **Removals take only URIs.** Each entry is `{ "uri": ... }`; there is no
+  position, so a Track that appears more than once cannot be removed one
+  occurrence at a time. When the playlist holds a removed Track only once
+  (the Plugin checks with the listing it has read), the Web API removal is
+  exact. Otherwise the Plugin removes that occurrence through spclient's
+  position-addressed playlist changes (spike E), and if that path is
+  unavailable it returns `error.unsupported` rather than removing the wrong
+  copies.
 
 ```rust
 fn edit(conn: &Connection, id: String, revision: Option<String>, change: Change) -> Result<Outcome, Error> {
     let url = format!("https://api.spotify.com/v1/playlists/{id}/items");
     let body = match change {
-        Change::Add(i) => json!({ "uris": uris(&i.tracks), "position": i.at }),
-        Change::Remove(o) => json!({ "snapshot_id": revision,
-            "items": o.iter().map(|o| json!({ "uri": uri(&o.track), "positions": [o.position] })).collect::<Vec<_>>() }),
+        Change::Add(i) => {
+            if i.at.is_some() && revision.is_some() && current_snapshot(conn, &id)? != revision {
+                return Err(Error::Conflict("Playlist changed since it was shown".into()));
+            }
+            json!({ "uris": uris(&i.tracks), "position": i.at })
+        }
+        Change::Remove(o) => {
+            if has_duplicates(conn, &id, &o)? {
+                return spclient_remove_occurrences(conn, &id, revision, &o);
+            }
+            json!({ "snapshot_id": revision,
+                    "items": o.iter().map(|o| json!({ "uri": uri(&o.track) })).collect::<Vec<_>>() })
+        }
         Change::Move(m) => json!({ "snapshot_id": revision, "range_start": m.from,
                                    "range_length": m.count, "insert_before": m.to }),
         Change::Details(d) => return details(conn, &id, d),

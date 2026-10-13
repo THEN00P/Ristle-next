@@ -133,7 +133,8 @@ Projection in `docs/plugin-api/walkthrough.md`. It decides whether the
 5. The catalog reads Spotify's February 2026 changes took away from
    Development Mode apps: several Tracks at once, artist top Tracks, user
    profiles and playlists, and items of other users' playlists, all from
-   spclient (see the walkthrough's Development Mode section).
+   spclient (see the walkthrough's Development Mode section), and removing
+   one occurrence of a Track that a playlist holds more than once.
 6. Spotify Connect for the Queue Projection: open the dealer WebSocket, get the
    connection id, announce a device through spclient's connect-state, and
    receive pause, skip, seek and add-to-queue commands from the Spotify app.

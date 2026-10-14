@@ -60,7 +60,9 @@ interface types {
     /// for choosing a rendition and are never trusted: before decoding, the
     /// host reads the real dimensions from the image header and shows a
     /// placeholder for anything over 4096 pixels on a side or 16 megapixels,
-    /// or in a format other than JPEG, PNG or WebP.
+    /// or in a format other than JPEG, PNG or WebP. The download itself is
+    /// bounded too: at most 8 MiB of encoded bytes and 15 s, after which the
+    /// host stops reading and shows the placeholder.
     ///
     /// The host fetches an image for the Provider Connection the item came
     /// from and applies that connection's `attach` rules, so artwork that

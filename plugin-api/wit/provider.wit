@@ -33,8 +33,8 @@ package ristle:plugin@0.1.0;
 ///   `queue-projection.update`. Nothing else is ever repeated automatically:
 ///   authorization steps may have spent a one-time code, and writes may have
 ///   partly happened.
-/// - The host caches what exports return: pages, listings, search results,
-///   Feed pages and comments. Together with cached HTTP responses these are
+/// - The host caches what exports return: the library (`my-library`),
+///   pages, listings, search results, Feed pages and comments. Together with cached HTTP responses these are
 ///   the "cached results" that every rule about caching refers to. Every
 ///   cursor a Plugin returns (`listing.next`, `search-group.next`, the
 ///   Feed's and comments' `next`) is followed once per traversal: a cursor
@@ -151,7 +151,11 @@ interface catalog {
 /// The host owns the session: it creates the OAuth `state` and PKCE verifier,
 /// runs the callback (loopback port, custom scheme, app link or remote
 /// redirect page, from the manifest's `redirects`), opens windows, and keeps
-/// the `state` string a Plugin returns between steps. The Plugin turns
+/// the `state` string a Plugin returns between steps. A callback is accepted
+/// only when its OAuth `state` exactly matches the one the host created for
+/// a step that is waiting for it, and only once; any other callback,
+/// including an unsolicited error, is dropped before it reaches a Plugin or
+/// ends a session. The Plugin turns
 /// answers into a Credential Record. It stores nothing itself.
 interface accounts {
     use types.{error, credential, account, media-server, music-folder};

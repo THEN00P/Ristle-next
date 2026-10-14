@@ -1,0 +1,858 @@
+package ristle:plugin@0.1.0;
+
+/// The one interface every Provider Plugin exports.
+///
+/// How the host calls a Plugin:
+///
+/// - Calls to one instance run one at a time. The host may run several
+///   instances of a Plugin and may discard an instance between any two calls,
+///   so memory is a cache only. Anything that must survive goes into the
+///   Credential Record, `storage`, or the tokens the Plugin returns. The host
+///   keeps an instance alive while it is in use (during playback, and for a
+///   few minutes after its last call), so warm connections are rarely lost.
+/// - Every call names a Provider Connection. Reading a public catalog item
+///   (a Track, album or artist) may go through the connection it came from
+///   or any connected one. Everything an account owns or acts on keeps the
+///   connection it came from, as CONTEXT.md requires: playlists, a user's
+///   own uploads and profile, and every write, so a playlist found through
+///   one account is never edited or checked through another. Items that
+///   come through a Provider Connection holding a Server Grant or a Folder
+///   Grant are never treated as public: different servers and libraries
+///   issue unrelated ids and paths, so the host
+///   records that connection with each such item when it arrives, Tracks in
+///   the queue included, and calls only that connection for it, whatever a
+///   later manifest says. Without it the item is unavailable.
+/// - The host batches. It never asks for more ids in one `tracks` call, or
+///   more items in one `like-lookup.liked-states` call, than the manifest's
+///   `limits` allow, and it chunks large playlist adds and removals the same
+///   way (see `playlist-editing`).
+/// - Retry-safe exports are the ones the host repeats by itself after a
+///   credential refresh: everything in `catalog`, `like-lookup`, `feed`,
+///   `comments` and `byte-source`, `settings.describe`, `likes.set-liked`
+///   and `reposts.set-reposted` (they set a state), and
+///   `queue-projection.update`. Nothing else is ever repeated automatically:
+///   authorization steps may have spent a one-time code, and writes may have
+///   partly happened.
+/// - The host caches what exports return: the library (`my-library`),
+///   pages, listings, search results, Feed pages and comments. Together with cached HTTP responses these are
+///   the "cached results" that every rule about caching refers to. Every
+///   cursor a Plugin returns (`listing.next`, `search-group.next`, the
+///   Feed's and comments' `next`) is followed once per traversal: a cursor
+///   the host has already followed ends that traversal there and is
+///   logged. The host fetches again only when the
+///   user asks (pull to refresh, a refresh button), when nothing is cached,
+///   or when the cache has expired as the user navigates. It never replaces
+///   content the user is looking at by itself. Plugins keep no result caches.
+///   After every write (`set-liked`, `set-reposted`, a playlist `create`,
+///   `edit` or `delete`), whether it succeeded or failed, since a failed
+///   write may have partly happened, the host marks every cached result of
+///   that Provider Connection stale: an item shows up in pages, profiles,
+///   search results and listings alike, and the host cannot tell which of
+///   them embed it. A successful write's result is shown at once;
+///   the next read of a stale result runs as a refresh, revalidating the
+///   cached HTTP responses it would reuse, so a reopened playlist never
+///   shows its contents from before the write.
+/// - Calls also come while the app is in the background, on behalf of the
+///   user: a like from the lock screen, Android Auto browsing the library, a
+///   Party guest's search. They are ordinary calls.
+/// - Never sleep, retry or poll inside a call. Return an `error` and let the
+///   host decide.
+/// - Results are bounded. Every string a Plugin returns is at most 64 KiB,
+///   and a whole result at most 4 MiB, serialized. The host enforces this
+///   while lifting: it reads each string's and list's length from the
+///   instance's memory before copying it, keeps a running total, and stops
+///   at the first value over a limit, failing the call with `error.internal`
+///   before anything is cached or shown. So a call never costs the host more
+///   than 4 MiB of copies, whatever the instance holds. The host runs at
+///   most four Plugin calls at once across all Plugins on phones (eight on
+///   desktop).
+interface catalog {
+    use types.{error, item, track, page, target, library, listing, list-request, stream-source};
+    use connection.{connection};
+
+    flags kinds {
+        tracks,
+        albums,
+        artists,
+        users,
+        playlists,
+    }
+
+    record search-request {
+        query: string,
+        /// The groups to return. The first request asks for all supported
+        /// groups. "Show more" asks for one group with `cursor`.
+        kinds: kinds,
+        /// Per group.
+        limit: u32,
+        /// A group's `next` token. Set only together with that group's kind.
+        cursor: option<string>,
+    }
+
+    enum search-kind {
+        tracks,
+        albums,
+        artists,
+        users,
+        playlists,
+    }
+
+    /// The results of one kind.
+    record search-group {
+        kind: search-kind,
+        /// Best match first. Never contains `track-id` items.
+        items: list<item>,
+        /// Continues this group: pass it as `cursor` with only this kind.
+        next: option<string>,
+    }
+
+    record search-results {
+        /// One group per kind requested. The host interleaves Providers
+        /// within each group.
+        groups: list<search-group>,
+    }
+
+    enum quality {
+        data-saver,
+        balanced,
+        high,
+        lossless,
+    }
+
+    /// Everywhere Search across this Provider's catalog. Unified Search waits
+    /// at most 5 s for an answer. My Library Search is done by the host over
+    /// the collections from `my-library`.
+    search: func(conn: borrow<connection>, request: search-request) -> result<search-results, error>;
+
+    /// The standard library collections and the Provider Views shown in
+    /// navigation. Called after sign-in and when the user refreshes.
+    my-library: func(conn: borrow<connection>) -> result<library, error>;
+
+    /// An album, artist, user, playlist or Provider View, as data the host lays
+    /// out.
+    open: func(conn: borrow<connection>, target: target) -> result<page, error>;
+
+    /// One page of a collection from `my-library` or a page.
+    %list: func(conn: borrow<connection>, collection: string, request: list-request) -> result<listing, error>;
+
+    /// Full Tracks for ids, in the same order. A Track that no longer exists
+    /// is `error.unavailable` in its slot; a failure of the whole request is
+    /// the outer error.
+    tracks: func(conn: borrow<connection>, ids: list<string>) -> result<list<result<track, error>>, error>;
+
+    /// Where the Track's audio comes from. Called shortly before playback and
+    /// again when the returned location expires.
+    resolve: func(conn: borrow<connection>, track: string, quality: quality) -> result<stream-source, error>;
+}
+
+/// Sign-in through Authorization Sessions. Export this when the Provider has
+/// accounts.
+///
+/// The host owns the session: it creates the OAuth `state` and PKCE verifier,
+/// runs the callback (loopback port, custom scheme, app link or remote
+/// redirect page, from the manifest's `redirects`), opens windows, and keeps
+/// the `state` string a Plugin returns between steps. A callback is accepted
+/// only when its OAuth `state` exactly matches the one the host created for
+/// a step that is waiting for it, and only once; any other callback,
+/// including an unsolicited error, is dropped before it reaches a Plugin or
+/// ends a session. The Plugin turns
+/// answers into a Credential Record. It stores nothing itself.
+interface accounts {
+    use types.{error, credential, account, media-server, music-folder};
+    use connection.{connection};
+
+    enum reason {
+        sign-in,
+        /// The credential stopped working. The Provider Connection, its stored
+        /// credential and its data are kept until this succeeds.
+        reauthorize,
+    }
+
+    flags challenge-kinds {
+        redirect,
+        form,
+        web-capture,
+        device-code,
+        server,
+        folders,
+    }
+
+    /// The callback the host prepared for this step. Put `uri` in the
+    /// authorization URL as `redirect_uri`, `state` as `state`, and
+    /// `code-challenge` as the S256 `code_challenge`.
+    record redirect-target {
+        uri: string,
+        state: string,
+        code-challenge: string,
+    }
+
+    record session-context {
+        reason: reason,
+        /// What this platform can show. Only return challenges listed here.
+        supported: challenge-kinds,
+        /// Present when the manifest declares a redirect this platform can
+        /// serve. Fresh for every step.
+        redirect: option<redirect-target>,
+    }
+
+    enum opener {
+        /// A browser the host chooses (system browser or an in-app session).
+        browser,
+        /// The operating system, so that the Provider's own app answers
+        /// (deep link). Falls back to `fallback-url` in a browser.
+        app,
+    }
+
+    /// Open a URL and wait for the redirect to come back.
+    ///
+    /// `url` and `fallback-url` must be HTTPS on a host in the manifest's
+    /// `hosts`. With `opener.app`, `url` may instead use a scheme listed in
+    /// `[auth] app-schemes`. Anything else (`file:`, `intent:`, other custom
+    /// schemes, local addresses) is refused with `error.internal` and nothing
+    /// is opened.
+    record redirect-challenge {
+        url: string,
+        opener: opener,
+        fallback-url: option<string>,
+        /// Callback parameters to pass on besides `code`, `error` and
+        /// `error_description`. Everything else is dropped.
+        keep: list<string>,
+    }
+
+    enum field-kind {
+        text,
+        secret,
+        email,
+        url,
+    }
+
+    record field {
+        name: string,
+        label: string,
+        kind: field-kind,
+        required: bool,
+        placeholder: option<string>,
+        /// Pre-filled value, such as the username on re-authorization.
+        value: option<string>,
+    }
+
+    /// A form the host renders, for API tokens, server URLs or passwords.
+    record form {
+        title: string,
+        instructions: option<string>,
+        fields: list<field>,
+        /// A link the user may follow: HTTPS only, opened in a browser on tap,
+        /// never by the operating system (see `url-rules` in `types`).
+        help-url: option<string>,
+    }
+
+    variant user-agent {
+        /// The platform web view's own.
+        platform,
+        /// A current desktop browser, kept up to date by the host. Use it when
+        /// the mobile site is a different application.
+        desktop,
+        custom(string),
+    }
+
+    record query-param {
+        /// Matches request URLs that start with this.
+        url-prefix: string,
+        name: string,
+    }
+
+    /// Where a captured value may come from. The host looks only at traffic,
+    /// cookies and pages on `observe` hosts.
+    variant source {
+        cookie(string),
+        request-header(string),
+        response-header(string),
+        query-param(query-param),
+        /// A page script called `ristle.capture(name, value)` for this value.
+        /// The bridge accepts at most 16 KiB per value and 64 KiB for all
+        /// values of a challenge, checked in the page before anything crosses
+        /// to native code and again when the answer is built; a larger value
+        /// is dropped and counts as not seen.
+        script,
+    }
+
+    record capture {
+        name: string,
+        /// Tried in order. A later observation replaces an earlier value.
+        sources: list<source>,
+        required: bool,
+    }
+
+    /// JavaScript the host runs at document end on main-frame loads, never on
+    /// a host that is only loaded, such as an identity provider. `url-prefix`
+    /// must be an HTTPS URL on an `observe` host, and so on the manifest's
+    /// `web-capture-observe` list. Matching works on parsed URLs, not text:
+    /// the loaded page's origin (scheme, host and port) must equal the
+    /// prefix's origin exactly, and only then must its path and query start
+    /// with the prefix's. So `https://login.example.com` never matches
+    /// `https://login.example.com.attacker.tld`. Only the first matching
+    /// script runs, so list specific prefixes first. Scripts may call
+    /// `ristle.capture(name, value)`.
+    record page-script {
+        url-prefix: string,
+        code: string,
+    }
+
+    /// Sign-in on the Provider's real website in an isolated, non-persistent
+    /// web view. When every required value has been seen, the host closes the
+    /// window and calls `continue-authorization` with the values. The Plugin
+    /// declares what to capture; the host does the watching.
+    ///
+    /// Everything is bound to two manifest lists the user consented to.
+    /// `web-capture` names every host the window may load; `web-capture-observe`,
+    /// a subset, names the Provider's own hosts, the only ones whose
+    /// traffic, cookies and pages may be watched and the only ones page
+    /// scripts run on. Identity providers (such as a Google account page),
+    /// CDNs and bot checks belong only in `web-capture`: they load and work,
+    /// but nothing on them is observed or scripted, so a Plugin cannot read
+    /// what the user types into another company's sign-in page. The start
+    /// URL must be HTTPS on a `web-capture` host and `observe` must be a
+    /// subset of `web-capture-observe`. The `web-capture` list also bounds
+    /// the network: the window blocks every
+    /// request to any other host, not only navigation but also subresources,
+    /// `fetch`, XHR, beacons, forms, frames and WebSockets, so a page script
+    /// cannot send what it sees anywhere else. Adapters block through the
+    /// platform's request interception and add a host-written
+    /// Content-Security-Policy for what interception cannot see (WebSockets
+    /// on Android). A platform that cannot enforce this does not offer
+    /// `web-capture` at all. Page scripts run with the user's fresh session
+    /// and can act on the account like any page; that is no more than the
+    /// captured credential allows through `connection.fetch`, and the
+    /// `accounts` consent line says so. `web-capture` therefore names every
+    /// host the sign-in pages load from. The host rejects a challenge that
+    /// breaks these rules before opening anything.
+    record web-capture {
+        /// HTTPS, on a `web-capture` host.
+        start-url: string,
+        user-agent: user-agent,
+        /// Hosts whose traffic, cookies and pages the host watches. Exact
+        /// hosts, or `*.example.com` for subdomains; each must be covered by
+        /// the manifest's `web-capture-observe` list.
+        observe: list<string>,
+        values: list<capture>,
+        scripts: list<page-script>,
+    }
+
+    record device-code {
+        /// HTTPS on a host in the manifest's `hosts`, like a redirect
+        /// challenge's `url`. Anything else is refused and nothing is shown.
+        verification-url: string,
+        user-code: string,
+        expires-in-seconds: u32,
+    }
+
+    /// Ask the user which server to use. Only for Plugins whose manifest
+    /// sets `servers = true`.
+    ///
+    /// The host lists `found` (servers the Plugin discovered, for example
+    /// through a Plex account) and, with `allow-entry`, a field for an
+    /// address. The user picks or types one; the host then shows every
+    /// origin of that server and asks once more, in plain words, when an
+    /// origin is on the local network ("This server is on your home
+    /// network") or not encrypted ("Traffic to this server is not
+    /// encrypted"). Only after that does the server become the connection's
+    /// Server Grant, and `answer.server` carries it. A typed address becomes
+    /// a server with that one URL, path included, and the host as its name.
+    record server-choice {
+        found: list<media-server>,
+        allow-entry: bool,
+        /// For example "http://192.168.1.20:8096".
+        placeholder: option<string>,
+    }
+
+    /// Ask the user for music folders on this device. Only for Plugins whose
+    /// manifest sets `folders = true`. The host opens the platform's own
+    /// folder picker (Android's Storage Access Framework, the iOS document
+    /// picker, a desktop dialog) with `prompt` as its title; with
+    /// `multiple`, the user may pick several. The picked folders become the
+    /// connection's Folder Grant and `answer.folders` names them.
+    record folder-choice {
+        prompt: option<string>,
+        multiple: bool,
+    }
+
+    variant challenge {
+        redirect(redirect-challenge),
+        form(form),
+        web-capture(web-capture),
+        /// The host shows the code and keeps polling with `answer.poll`.
+        device-code(device-code),
+        server(server-choice),
+        folders(folder-choice),
+    }
+
+    record ask {
+        challenge: challenge,
+        /// Kept by the host and passed back with the answer.
+        state: string,
+    }
+
+    /// The host waits at least 2 s whatever `after-ms` says, and ends every
+    /// authorization session 30 minutes after `begin-authorization` at the
+    /// latest, whatever a challenge's expiry says.
+    ///
+    /// `state` here and in `ask` takes at most 64 KiB. The host checks it
+    /// before keeping it; a larger state ends the session with
+    /// `error.internal`.
+    record wait {
+        after-ms: u32,
+        state: string,
+    }
+
+    /// The stored Credential Record is the session's candidate as last set
+    /// with `connection.set-credential`, so there is one source for it and a
+    /// rotation during the session (such as on a `/me` lookup) is kept. A
+    /// Plugin that needs no credential, such as Local Files, sets none.
+    record authorized {
+        account: account,
+    }
+
+    variant step {
+        ask(ask),
+        /// Device code still pending: the host calls again with `answer.poll`
+        /// after the wait.
+        wait(wait),
+        done(authorized),
+    }
+
+    record callback {
+        /// `code`, `error`, `error_description` and the `keep` parameters.
+        params: list<tuple<string, string>>,
+        /// For the token request.
+        redirect-uri: string,
+        code-verifier: string,
+    }
+
+    /// Answers are bounded like captured values: at most 16 KiB per name or
+    /// value and 64 KiB for one answer, enforced while the host parses the
+    /// callback URL or reads the form, before anything reaches the Plugin.
+    /// A larger answer ends the session with `error.internal`, as if the
+    /// sign-in failed.
+    variant answer {
+        redirect(callback),
+        form(list<tuple<string, string>>),
+        web-capture(list<tuple<string, string>>),
+        poll,
+        /// The server the user chose and confirmed. From here on the
+        /// session's requests may reach its origins; the grant is stored
+        /// with the credential when the authorization is accepted.
+        server(media-server),
+        /// The folders the user picked. From here on the session may read
+        /// them through `files`; the grant is stored when the authorization
+        /// is accepted.
+        folders(list<music-folder>),
+    }
+
+    /// `connection.set-credential` inside these two calls sets a candidate
+    /// that is stored only once the authorization is accepted (see there).
+    begin-authorization: func(conn: borrow<connection>, context: session-context) -> result<step, error>;
+
+    continue-authorization: func(conn: borrow<connection>, context: session-context, state: string, answer: answer) -> result<step, error>;
+
+    /// Returns a fresh Credential Record. Called before `expires-at` and after
+    /// an `error.unauthorized`. Fail with `error.unauthorized` when only the
+    /// user can fix it.
+    refresh-credential: func(conn: borrow<connection>) -> result<credential, error>;
+}
+
+/// Liking Tracks, saving albums, following artists, users and playlists.
+interface likes {
+    use types.{error, item-ref};
+    use connection.{connection};
+
+    set-liked: func(conn: borrow<connection>, item: item-ref, liked: bool) -> result<_, error>;
+}
+
+/// Liked state in batches. Optional: without it, the host derives liked state
+/// from the matching library shelf (for example `liked-tracks`), which it
+/// enumerates with `detail.ids`.
+interface like-lookup {
+    use types.{error, item-ref};
+    use connection.{connection};
+
+    /// Answers in request order.
+    liked-states: func(conn: borrow<connection>, items: list<item-ref>) -> result<list<bool>, error>;
+}
+
+/// Creating, changing and deleting Provider Playlists.
+///
+/// Large changes are split by the host, never by the Plugin:
+///
+/// - Adds are chunked by `limits.playlist-add`. With an explicit `at`, each
+///   chunk is inserted after the previous one: `at` advances by the number
+///   of Tracks the previous chunk actually inserted.
+/// - Removals are chunked by `limits.playlist-remove`, highest positions
+///   first, so the positions of the remaining occurrences stay valid.
+/// - Each chunk gets the `revision` the previous chunk returned. If a chunk
+///   fails, the chunks before it stay applied, and the host reports how much
+///   was done.
+interface playlist-editing {
+    use types.{error, playlist};
+    use connection.{connection};
+
+    record new-playlist {
+        title: string,
+        description: option<string>,
+        public: bool,
+    }
+
+    /// Only the fields that are `some` change.
+    record details {
+        title: option<string>,
+        /// `some(none)` removes the description.
+        description: option<option<string>>,
+        public: option<bool>,
+    }
+
+    record insertion {
+        tracks: list<string>,
+        /// Position to insert at. `none` appends.
+        at: option<u32>,
+    }
+
+    /// One occurrence of a Track, so that duplicates stay distinct.
+    record occurrence {
+        track: string,
+        position: u32,
+    }
+
+    /// Moves `count` entries starting at `from` so that they come right
+    /// before the entry at `to`, with every position counted in the list as
+    /// it is before the move (Spotify's `insert_before`). `to` equal to the
+    /// length moves the range to the end. `to` must lie outside the range
+    /// and not right after it: `to < from` or `to > from + count`, and the
+    /// host never sends anything else. Moving forward, the range's first
+    /// entry ends at `to - count`. A Plugin translates to its Provider's
+    /// convention.
+    record moving {
+        %from: u32,
+        count: u32,
+        to: u32,
+    }
+
+    variant change {
+        add(insertion),
+        remove(list<occurrence>),
+        move(moving),
+        details(details),
+    }
+
+    record rejection {
+        /// Index into `add.tracks` or `remove`.
+        index: u32,
+        error: error,
+    }
+
+    record outcome {
+        revision: option<string>,
+        /// Items the Provider refused while the rest succeeded.
+        rejected: list<rejection>,
+    }
+
+    create: func(conn: borrow<connection>, playlist: new-playlist) -> result<playlist, error>;
+
+    /// `revision` is the one the user's view was based on. Fail with
+    /// `error.conflict` if the Provider rejects it.
+    edit: func(conn: borrow<connection>, playlist: string, revision: option<string>, change: change) -> result<outcome, error>;
+
+    /// Deletes an owned playlist. Unfollowing someone else's is
+    /// `likes.set-liked`.
+    delete: func(conn: borrow<connection>, playlist: string) -> result<_, error>;
+}
+
+/// Reposting Tracks and playlists to the user's followers (SoundCloud,
+/// Audius).
+interface reposts {
+    use types.{error, item-ref};
+    use connection.{connection};
+
+    set-reposted: func(conn: borrow<connection>, item: item-ref, reposted: bool) -> result<_, error>;
+}
+
+/// The user's feed: what the accounts they follow published or reposted.
+///
+/// Ristle has one feed. The host merges the feeds of every Provider
+/// Connection into it by `post.at`, so posts must come newest first. When
+/// the merged feed needs more, it reads the next page of the Provider whose
+/// oldest post so far is the newest; on a tie, of every tied Provider, so
+/// equal timestamps never stall the feed. A Provider with no post loaded
+/// yet but a `next` (its pages so far held only entries the Plugin
+/// skipped) counts as the newest, so it is read first; the host follows up
+/// to ten empty pages in a row for one Provider per load, and stops at a
+/// repeated cursor. If a load ends with nothing new to show while some
+/// Provider still has a `next`, the feed ends in a "Load more" row instead
+/// of waiting for a scroll past rows that are not there, so a post behind
+/// many skipped entries stays reachable. It groups reposts of the same
+/// item. The
+/// feed is refreshed only when the user asks.
+interface feed {
+    use types.{error, instant, item, person};
+    use connection.{connection};
+
+    record counts {
+        likes: option<u64>,
+        reposts: option<u64>,
+        comments: option<u64>,
+        plays: option<u64>,
+    }
+
+    record post {
+        /// Stable for the same post, so the host keeps a refreshed feed in
+        /// place instead of redrawing it.
+        id: string,
+        /// When it was published, or reposted for a repost. A release known
+        /// only by day is midnight UTC of that day.
+        at: instant,
+        /// A Track, album or playlist. Never `track-id`.
+        item: item,
+        /// Who published the item.
+        author: person,
+        /// Who put it in the feed by reposting it.
+        reposted-by: option<person>,
+        /// The post's text, or the caption of a repost.
+        text: option<string>,
+        counts: option<counts>,
+    }
+
+    record feed-page {
+        posts: list<post>,
+        next: option<string>,
+    }
+
+    /// One page, newest first. `cursor` is a `next` from the previous page.
+    posts: func(conn: borrow<connection>, cursor: option<string>, limit: u32) -> result<feed-page, error>;
+}
+
+/// Comments on Tracks and playlists, read-only.
+interface comments {
+    use types.{error, instant, item-ref, person};
+    use connection.{connection};
+
+    record comment {
+        id: string,
+        author: person,
+        text: string,
+        at: instant,
+        /// The point in the Track the comment is attached to (SoundCloud's
+        /// timed comments).
+        track-position-ms: option<u32>,
+        /// The comment this one answers, when the Provider threads them.
+        reply-to: option<string>,
+        likes: option<u64>,
+    }
+
+    record comment-page {
+        comments: list<comment>,
+        /// `none` at the end. As for `listing.next`, a cursor the host has
+        /// already followed for this item ends the comments there.
+        next: option<string>,
+    }
+
+    /// Newest first, unless the Provider only offers another order.
+    %comments: func(conn: borrow<connection>, item: item-ref, cursor: option<string>, limit: u32) -> result<comment-page, error>;
+}
+
+/// Settings the Plugin offers, shown by Ristle on the Plugin's settings page
+/// with its standard controls. Settings that apply to every Provider, such
+/// as stream quality, belong to Ristle and are passed in calls instead.
+interface settings {
+    use types.{error, setting-value};
+    use connection.{connection};
+
+    enum scope {
+        /// One value for the whole Plugin.
+        plugin,
+        /// One value per Provider Connection.
+        connection,
+    }
+
+    record choice-option {
+        value: string,
+        label: string,
+    }
+
+    record choice {
+        options: list<choice-option>,
+        initial: string,
+    }
+
+    record text-field {
+        secret: bool,
+        placeholder: option<string>,
+        initial: string,
+    }
+
+    record number-field {
+        min: f64,
+        max: f64,
+        step: f64,
+        unit: option<string>,
+        initial: f64,
+    }
+
+    record button {
+        /// Ask the user with this text before pressing.
+        confirm: option<string>,
+    }
+
+    variant control {
+        toggle(bool),
+        choice(choice),
+        text(text-field),
+        number(number-field),
+        button(button),
+    }
+
+    record setting {
+        key: string,
+        title: string,
+        description: option<string>,
+        scope: scope,
+        control: control,
+    }
+
+    record group {
+        title: option<string>,
+        settings: list<setting>,
+    }
+
+    /// The settings to show. May depend on the account, for example options
+    /// that only a paid plan has. Called when the settings page opens.
+    describe: func(conn: borrow<connection>) -> result<list<group>, error>;
+
+    /// The user changed a setting or pressed a button. The host stores the
+    /// value only if this succeeds; an `error` is shown next to the setting.
+    /// Returns a short confirmation to show, if any. After every call,
+    /// whether it succeeded or failed, since an action such as a button may
+    /// have partly happened, the host marks every cached result of the
+    /// Plugin stale (see `catalog`), for
+    /// this connection or, for a Plugin-wide
+    /// setting, for all of them, since it cannot tell which results a
+    /// setting shapes. The next read of each runs as a refresh; a Feed or
+    /// page the user is looking at reloads when the settings page closes,
+    /// so turning reposts off removes them from the Feed.
+    apply: func(conn: borrow<connection>, key: string, value: setting-value) -> result<option<string>, error>;
+}
+
+/// Queue Projection: showing Ristle's Canonical Queue inside a Provider's own
+/// apps and taking the edits made there. For example, Ristle appears as a
+/// Spotify Connect device, so the Spotify app shows what Ristle plays and can
+/// pause, skip or queue Tracks.
+///
+/// The Plugin never changes the Canonical Queue. It reports what the user
+/// asked for remotely as mutations; the core applies them like any other
+/// Queue Mutation, and the next `update` shows the result.
+interface queue-projection {
+    use types.{error, instant};
+    use connection.{connection};
+    use live.{frame};
+
+    enum repeat {
+        off,
+        all,
+        one,
+    }
+
+    record projected-entry {
+        /// The host's id for this occurrence. Stable while it stays queued.
+        id: string,
+        /// This Provider's Track id when the entry is one of its Tracks.
+        /// Otherwise the Plugin shows a Projection Marker in its place, or
+        /// leaves the entry out if the Provider cannot show markers.
+        track: option<string>,
+        /// Only for this Provider's own Tracks; empty for every other entry,
+        /// so no Plugin learns what other Providers or the local library are
+        /// playing. Markers need only `provider`.
+        title: string,
+        artists: list<string>,
+        /// The Provider the entry comes from, for marker text such as
+        /// "Playing in Ristle: SoundCloud".
+        provider: string,
+    }
+
+    record queue-state {
+        /// Grows with every change. Mutations name the revision they saw.
+        revision: u64,
+        /// A window around the current entry: a few played entries, the
+        /// current one, and up to 50 upcoming.
+        entries: list<projected-entry>,
+        /// Index of the current entry in `entries`.
+        current: option<u32>,
+        position-ms: u32,
+        /// When `position-ms` was sampled.
+        sampled-at: instant,
+        playing: bool,
+        shuffle: bool,
+        repeat: repeat,
+    }
+
+    record moving {
+        entry: string,
+        /// Move before this entry. `none` moves to the end.
+        before: option<string>,
+    }
+
+    variant mutation {
+        play,
+        pause,
+        seek(u32),
+        next,
+        previous,
+        /// Play this entry now.
+        jump(string),
+        /// Add this Provider's Tracks as a Queued Request.
+        enqueue(list<string>),
+        remove(string),
+        move(moving),
+        shuffle(bool),
+        repeat(repeat),
+        /// The user moved playback to another device. Ristle pauses.
+        released,
+    }
+
+    record mutations {
+        /// The `queue-state.revision` the remote edit was based on.
+        revision: u64,
+        changes: list<mutation>,
+    }
+
+    /// The user turned the projection on for this connection. Announce Ristle
+    /// to the Provider and open live channels here.
+    start: func(conn: borrow<connection>, state: queue-state) -> result<_, error>;
+
+    /// The queue or transport changed. Calls are coalesced; only the latest
+    /// state matters.
+    update: func(conn: borrow<connection>, state: queue-state) -> result<_, error>;
+
+    /// A frame arrived on one of the Plugin's live channels. It is not
+    /// retry-safe, so when it fails with `error.unauthorized` the host
+    /// refreshes the credential and then delivers `closed` for that channel;
+    /// the Plugin reopens it and receives a fresh session, such as a new
+    /// Spotify connection id, instead of losing the frame silently.
+    ///
+    /// `state` is the current queue state, as `update` would get it, so a
+    /// frame that needs it (such as the connection id that lets the Plugin
+    /// announce its device) can be answered on any instance. Projection
+    /// state is the core's: a Plugin never keeps it in `storage`.
+    receive: func(conn: borrow<connection>, channel: string, frame: frame, state: queue-state) -> result<mutations, error>;
+
+    /// The user turned the projection off, signed out, or Ristle is closing.
+    stop: func(conn: borrow<connection>) -> result<_, error>;
+}
+
+/// Plugin Byte Sources. Export this only if `resolve` returns
+/// `location.bytes`.
+interface byte-source {
+    use types.{error};
+    use connection.{connection};
+
+    /// Up to `length` bytes from `offset`. Fewer bytes than asked for means
+    /// the end of the stream. The host reads ahead of the playhead and on
+    /// seek, in chunks of at least 64 KiB.
+    read: func(conn: borrow<connection>, handle: string, offset: u64, length: u32) -> result<list<u8>, error>;
+}

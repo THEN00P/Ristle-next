@@ -43,6 +43,14 @@ before relying on it, and update it when you learn something new.
   back through logcat or `run-as`, so no UI agent is needed.
 - cmake and ninja for any native build ship inside Visual Studio and are not on
   PATH. Resolve them with `vswhere` (see `../Ristle/CLAUDE.local.md`).
+- **WIT tooling** is installed with `cargo install --locked wasm-tools wit-bindgen-cli`.
+  Validate with `wasm-tools component wit plugin-api/wit` and
+  `wit-bindgen rust --world full-provider --out-dir <tmp> plugin-api/wit` (the
+  WIT path goes last). In WIT, `from` is a keyword (write `%from`), and a
+  function cannot share a name with a type in the same interface.
+- **Bash heredocs break on `'''`.** A quoted heredoc containing Python
+  triple-single-quotes fails with "unexpected EOF". Write the script to a file
+  with the Write tool and run it instead.
 - **`workflow_dispatch` only works for workflow files already on `main`.** New
   Apple jobs go into `spike-c-ios.yml` behind its `spike` input
   (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=d`).
@@ -52,4 +60,14 @@ before relying on it, and update it when you learn something new.
   `\Memory\Available MBytes` before timing on the emulator. Use the AGP 9.2 line
   with Gradle ≥ 9.4.1 and the Android Studio JBR (Java 21) as `JAVA_HOME`,
   not the global Java 25.
-
+- **Babysitting Codex reviews: T3's PR watch wakes late.** It reacts
+  promptly to the edited "Codex Review Summary" comment, but delivers the
+  inline review comments about ten minutes late. Poll in the background
+  instead: wait until `pulls/1/reviews` has a review by
+  `chatgpt-codex-connector[bot]` whose `commit_id` is the head, or a `+1`
+  reaction on the PR. Use `gh api --paginate` for both: PR #1 has more
+  than 100 reviews, and a single page silently misses new ones. The same
+  goes for `reviewThreads` in GraphQL: page with `after:$endCursor` and
+  `gh api graphql --paginate`, or the newest threads stay unseen and
+  unresolved. Resolve threads with the GraphQL `resolveReviewThread`
+  mutation after replying.

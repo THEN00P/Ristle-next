@@ -1,0 +1,50 @@
+package ristle:plugin@0.1.0;
+
+/// Everything a Plugin may import. Each import is checked at call time
+/// against the manifest and the user's consent.
+world imports {
+    import types;
+    import http;
+    import connection;
+    import storage;
+    import crypto;
+    import system;
+    import socket;
+    import live;
+    import files;
+}
+
+/// The smallest Provider Plugin: search, browse and play, no accounts.
+///
+/// A Plugin's capabilities are the interfaces it exports. Its own world
+/// includes this one and adds the optional exports it implements:
+///
+/// ```wit
+/// world spotify {
+///     include ristle:plugin/provider@0.1.0;
+///     export ristle:plugin/accounts@0.1.0;
+///     export ristle:plugin/likes@0.1.0;
+/// }
+/// ```
+///
+/// The host reads the exports from the component at install time. There are
+/// no capability flags and no stubs.
+world provider {
+    include imports;
+    export catalog;
+}
+
+/// Every optional export, used to validate the package as a whole.
+world full-provider {
+    include provider;
+    export accounts;
+    export likes;
+    export like-lookup;
+    export playlist-editing;
+    export reposts;
+    export feed;
+    export comments;
+    export settings;
+    export queue-projection;
+    export byte-source;
+}

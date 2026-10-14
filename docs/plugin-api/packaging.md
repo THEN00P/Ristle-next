@@ -339,8 +339,11 @@ The screen says, in this spirit:
 - The default button keeps what is installed.
 - "Replace and sign out" removes every stored sign-in for the Plugin first,
   and with it everything the old Plugin kept that the host cannot vouch
-  for: its whole `storage` namespace, its Plugin settings, its Server
-  Grants and every cached response and result. The new maker starts with
+  for: its whole `storage` namespace, its Plugin settings, its Server and
+  Folder Grants, every connection's data and every cached response and
+  result. Each connection's generation ends before the new code is
+  installed, so no handle to a server or folder reaches the new maker; the
+  user grants them again when signing in. The new maker starts with
   nothing of the user's accounts. Provider Connections stay as entries
   that need signing in, so Ristle Playlist references survive.
 - The names come from the manifests and are shown as text, never as proof.

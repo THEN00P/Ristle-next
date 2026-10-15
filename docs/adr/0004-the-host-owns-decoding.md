@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-10-08). The codec coverage is to be confirmed by spike B. The
-reasoning is in `docs/research/audio-pipeline.md`.
+Accepted (2026-10-08). Amended 2026-10-15 after spike B (see "Amendment"). The
+reasoning and measurements are in `docs/research/audio-pipeline.md`.
 
 ## Context
 
@@ -48,5 +48,41 @@ cannot deliver them, and services that only offer DRM streams cannot be played.
   Byte Source that decrypts with AES in the interpreter handles a
   320 kbps (~40 KB/s) stream with plenty of headroom (to be measured in spike B).
 - Codec coverage is a host responsibility and grows centrally, not per Plugin.
-- MPEG-TS is not demuxed by Symphonia. HLS over TS needs a small TS demuxer in
-  the host, or Plugins have to prefer fMP4/ADTS renditions. Decided in spike B.
+- MPEG-TS is not demuxed by Symphonia. Decided in spike B: the host demuxes TS
+  (see the amendment).
+
+## Amendment (2026-10-15, spike B)
+
+Spike B confirmed the split and changed the decoder set. Native decoding costs
+0.05–0.3 % of a desktop core per stream (the arm64 phone figure is still open).
+
+1. **The decoder registry ships with three providers, not one.** Symphonia
+   0.6.1 has no HE-AAC (SBR/PS) and no Opus decoder. With implicit SBR it
+   silently outputs the AAC core: half the sample rate, and mono for HE-AAC v2.
+   - Symphonia: MP3, AAC-LC, Vorbis, FLAC, ALAC, PCM.
+   - **libopus** (BSD-3-Clause) through a Symphonia adapter, on every platform.
+   - **Platform AAC decoders for HE-AAC**: MediaCodec, AudioToolbox, Media
+     Foundation. AAC goes to them when the HLS `CODECS` or a Plugin hint says
+     `mp4a.40.5`/`40.29`, when the AudioSpecificConfig says object type 5 or
+     29, or when the AAC core rate is 24 kHz or less. FDK AAC cannot ship: its
+     licence is not GPL-compatible.
+2. **Decoder contract.** A `Decoder` gets demuxed packets and returns
+   interleaved f32 aligned to the input timeline, so decoder latency is the
+   provider's problem (FDK's output trails Symphonia's by 1685 frames).
+   Gapless trims are applied in one place per stream.
+3. **The host applies MP4 edit lists** (`elst`, `iTunSMPB`). Symphonia parses
+   them but does not apply them, so without this AAC albums are not gapless.
+   MP3 (LAME), Ogg Vorbis/Opus and FLAC were sample-exact as they are.
+4. **The host demuxes MPEG-TS.** Live radio HLS is TS (BBC, Radio France), and
+   BBC's is HE-AAC, so a Plugin preference cannot avoid it. The spike demuxer is
+   155 lines. A production one is estimated at 300–400 lines. Plugins still
+   prefer fMP4 when offered, because it carries the edit list.
+5. **HLS decodes segments while they download, and seeks with byte ranges
+   inside a segment.** Buffering whole segments puts seeks at 840–890 ms on a
+   150 ms / 1.5 Mbit/s link. Streaming decode brings it to 527 ms median, and
+   byte-range seeks are needed to stay under 500 ms. `EXT-X-BYTERANGE` is
+   supported.
+6. **Android output:** a cpal stream needs a one-call JNI bootstrap that fills
+   `ndk-context` (JNA loads the library without `JNI_OnLoad`). AAudio's
+   PowerSaving mode and music content type are not reachable through cpal 0.18
+   and need the `ndk` stream builder or a cpal patch.

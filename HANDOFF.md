@@ -66,6 +66,11 @@ waits for the user's Mac (see `docs/research/apple-without-hardware.md`).
 
 ## Spike B: audio pipeline
 
+**Status 2026-10-15: go, with design changes** (ADR 0004 amendment). Results:
+`docs/research/audio-pipeline.md` (Spike B results), code in `spikes/b-audio/`.
+Ran on Windows and the Android emulator. **Open: the arm64 phone run** (decode
+CPU and the 30-minute soak, one script each, see `spikes/b-audio/README.md`).
+
 Criteria are in `docs/research/audio-pipeline.md`: Symphonia codec CPU, the cost
 of an interpreted Byte Source, gapless playback, HLS (including how common TS
 is), and Android background playback through Media3.

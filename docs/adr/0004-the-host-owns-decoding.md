@@ -94,3 +94,29 @@ Spike B confirmed the split and changed the decoder set. Native decoding costs
    optional: on a Pixel 8 cpal's default landed on the low-latency output
    (about 95 callbacks/s) and `audioserver` used 5.3 % of a core. The core
    resamples to the output rate itself and wakes the decoder on demand.
+
+### Host requirements from the spike B review
+
+Codex's review of the spike found these. Each one is a requirement for the
+phase 2 host, whether or not the spike fixed it:
+
+- **Media3 mirrors the core's queue.** The `SimpleBasePlayer` timeline is
+  built from core state (queue items, current index, durations) and never from
+  a Kotlin copy of the queue. The spike's static `ALBUM` list broke this
+  (AGENTS.md ownership).
+- **Seeks map logical time through the MP4 edit list.** A seek target is in
+  presentation time after the priming trim, so the demuxer target and the
+  decode-and-discard count include `elst` media_time.
+- **AES-128 covers `EXT-X-MAP` init sections.** When an `EXT-X-KEY` precedes
+  the map, the init section is decrypted too (IV from the tag, or the rule the
+  spec gives for init sections).
+- **Ranged fMP4 parsing filters by track ID.** Muxed audio/video variants put
+  several `traf`s in one `moof`. Only the selected audio track's samples (by
+  `tfhd` track_ID) are used.
+- **Output follows the decoder's actual output rate.** Implicit SBR doubles
+  the rate only after the first frames, and MediaCodec reports it through a
+  format change. The core opens the output from the decoder's output, or
+  resamples everything to the device rate (the plan anyway).
+- **Decoders are flushed at end of stream before the next track starts.**
+  MediaCodec holds several packets in flight; dropping it at EOF loses the
+  tail and breaks gapless.

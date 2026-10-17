@@ -226,7 +226,16 @@ packed-audio ID3 stripping, and the TS demuxer. Fixtures are a 4-minute AAC-LC
 ADTS with Apple's ID3 timestamp tag, MPEG-TS, AES-128 fMP4 and AES-128 TS. All
 five play and seek correctly. A seek is "seek call to the first decoded frame
 at the target, playlist already loaded". The local server simulates the RTT and
-paces the body to the bandwidth.
+paces the body to the bandwidth. (Re-measured
+on 2026-10-17 for all five variants in both modes, after review found the
+`fmp4-aes` rows missing from the raw file and the streaming fetch counter
+stuck at zero: `results/hls-local-windows.jsonl`. The latencies below are
+unchanged. In streaming runs the network wait is practically the whole seek
+time: 97–100 % for fMP4 and ADTS. For TS the fetch median runs 3–8 % above the
+seek median, because the TS path keeps reading ahead after the target.)
+The AES-128 fMP4 fixture puts `EXT-X-KEY` after `EXT-X-MAP`, so its init
+segment is not encrypted. An encrypted init section (key before the map) was
+not exercised; the spike client would hand its ciphertext to the demuxer.
 
 Seek latency, median (p95), 12 seeks per row:
 
@@ -467,7 +476,14 @@ question: Symphonia has neither.**
   device), Apple AudioToolbox, Windows Media Foundation. **The MediaCodec
   provider was built and tested on the Mi 9T**: it decodes HE-AAC v1 and v2
   at the full rate and in stereo, and AAC album tracks through it are
-  sample-exact with the host's edit-list trim. Unlike the raw FDK adapter
+  sample-exact with the host's edit-list trim. **Both were measured in
+  isolation**, through `audiolab bench` and `audiolab gapless`, which call
+  `finish()` at end of stream and use the decoder's reported output rate.
+  The spike player never played a MediaCodec stream. Review found that it
+  dropped the decoder's tail at track ends (now fixed: it flushes before
+  advancing) and that it opens the output at the demuxer's rate, so
+  implicit-SBR ADTS would play at half speed through it (not fixed, a host
+  requirement in ADR 0004). Unlike the raw FDK adapter
   (+1685 frames), Codec2 compensates its own decoder delay, so its output lines
   up with Symphonia's frame for frame. Cost: section 1. The trait needed one
   addition for it: `finish()`, because MediaCodec holds several packets in

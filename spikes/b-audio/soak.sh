@@ -44,9 +44,10 @@ for i in $(seq 1 60); do
   $A shell dumpsys power | grep -q "mWakefulness=Awake" || break
   sleep 3
 done
-log "home + screen off ($($A shell dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*' | tr -d '
-'))"
+log "home + screen off ($($A shell dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'))"
 if [ "$DOZE" = "--doze" ]; then
+  # Undo the fake unplug and forced idle however the script ends.
+  trap '$A shell dumpsys deviceidle unforce >/dev/null 2>&1; $A shell dumpsys battery reset >/dev/null 2>&1' EXIT
   $A shell dumpsys battery unplug
   $A shell dumpsys deviceidle force-idle | tr -d '\r' | tee -a "$OUT/events.txt"
 fi
@@ -72,17 +73,22 @@ for m in $(seq 1 "$MIN"); do
         log "dispatch play"; $A shell cmd media_session dispatch play ;;
     20) log "dispatch next"; $A shell cmd media_session dispatch next ;;
   esac
+  # Check liveness before reading /proc/$PID: under set -e a vanished process
+  # would end the script before the log is collected.
+  # A restarted app has a new PID (the Mi 9T's crash restarted it), so compare.
+  now_pid=$($A shell pidof $P | tr -d '\r' || true)
+  if [ "$now_pid" != "$PID" ]; then log "APP DIED at minute $m (pid now '${now_pid}')"; break; fi
   now=$(date +%s); c=$(cpu $PID); a=$(cpu $ASPID)
   dt=$((now - pt))
   echo "$m $(awk -v d=$((c - pc)) -v t=$dt -v k=$TICKS 'BEGIN{printf "%.2f", d/k/t*100}') $(awk -v d=$((a - pa)) -v t=$dt -v k=$TICKS 'BEGIN{printf "%.2f", d/k/t*100}') | $(threads)" >> "$OUT/cpu.txt"
   pc=$c; pa=$a; pt=$now
-  if ! $A shell pidof $P >/dev/null; then log "APP DIED"; break; fi
 done
 now=$(date +%s)
+if [ "$($A shell pidof $P | tr -d '\r' || true)" = "$PID" ]; then
 log "total app CPU $(awk -v d=$(( $(cpu $PID) - c0 )) -v t=$((now - t0)) -v k=$TICKS 'BEGIN{printf "%.3f", d/k/t*100}')% of one core over $((now - t0)) s, audioserver $(awk -v d=$(( $(cpu $ASPID) - a0 )) -v t=$((now - t0)) -v k=$TICKS 'BEGIN{printf "%.3f", d/k/t*100}')%"
+fi
 $A shell dumpsys power | grep -E "mWakefulness=|mDeviceIdleMode|Display Power" | tr -d '\r' >> "$OUT/events.txt" || true
 $A shell dumpsys activity services $P | grep -E "isForeground" | tr -d '\r' >> "$OUT/events.txt" || true
-if [ "$DOZE" = "--doze" ]; then $A shell dumpsys deviceidle unforce; $A shell dumpsys battery reset; fi
 $A logcat -d -s SPIKE_B:* ristle-audio:* AndroidRuntime:E AudioTrack:W AAudio:W > "$OUT/logcat.txt"
 $A shell input keyevent KEYCODE_WAKEUP 2>/dev/null || true
 grep SPIKE_B_HEALTH "$OUT/logcat.txt" | tail -3

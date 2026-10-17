@@ -468,6 +468,13 @@ impl DecodeLoop {
                 }
             };
             let Some(packet) = packet else {
+                // Flush what the decoder still holds (MediaCodec keeps packets
+                // in flight) before the next track starts behind it.
+                let mut tail = Vec::new();
+                match t.decoder.finish(&mut tail) {
+                    Ok(()) => self.timeline += trim_into(t, &tail, &mut self.pending),
+                    Err(e) => log_line(&format!("decoder flush failed: {e:#}")),
+                }
                 self.advance_track();
                 continue;
             };
@@ -479,27 +486,7 @@ impl DecodeLoop {
                 log_line(&format!("decode error, packet skipped: {e:#}"));
                 continue;
             }
-            let ch = t.decoder.output().1.max(1);
-            let mut frames = pcm.len() / ch;
-            let skip = (t.skip as usize).min(frames);
-            t.skip -= skip as u64;
-            let mut start = skip;
-            frames -= skip;
-            if let Some(r) = t.remaining.as_mut() {
-                frames = frames.min(*r as usize);
-                *r -= frames as u64;
-            }
-            if ch == 2 {
-                self.pending.extend_from_slice(&pcm[start * 2..(start + frames) * 2]);
-            } else {
-                // Mono to stereo.
-                for f in &pcm[start..start + frames] {
-                    self.pending.extend_from_slice(&[*f, *f]);
-                }
-            }
-            start = 0;
-            let _ = start;
-            self.timeline += frames as u64;
+            self.timeline += trim_into(t, &pcm, &mut self.pending);
         }
     }
 
@@ -534,6 +521,11 @@ impl DecodeLoop {
     }
 
     fn seek(&mut self, track: usize, ms: u64, handoff: &mut Producer<(u64, Consumer<f32>)>) -> anyhow::Result<()> {
+        // While paused the callback does not drain the handoff queue. Refuse
+        // the seek before touching the active ring rather than lose it.
+        if handoff.slots() == 0 {
+            anyhow::bail!("seek dropped: two seeks already pending while paused");
+        }
         let track = track % self.paths.len();
         let t = open_track(&self.reg, &self.paths[track], ms)?;
         self.shared.durations.lock().unwrap()[track] = t.duration_ms;
@@ -556,6 +548,28 @@ impl DecodeLoop {
         self.cur = Some(t);
         Ok(())
     }
+}
+
+/// Applies the track's gapless trims (priming skip, valid length) to decoded
+/// frames, upmixes mono, appends to `pending`. Returns the frames appended.
+fn trim_into(t: &mut OpenTrack, pcm: &[f32], pending: &mut Vec<f32>) -> u64 {
+    let ch = t.decoder.output().1.max(1);
+    let mut frames = pcm.len() / ch;
+    let skip = (t.skip as usize).min(frames);
+    t.skip -= skip as u64;
+    frames -= skip;
+    if let Some(r) = t.remaining.as_mut() {
+        frames = frames.min(*r as usize);
+        *r -= frames as u64;
+    }
+    if ch == 2 {
+        pending.extend_from_slice(&pcm[skip * 2..(skip + frames) * 2]);
+    } else {
+        for f in pcm[skip * ch..(skip + frames) * ch].chunks_exact(ch) {
+            pending.extend_from_slice(&[f[0], f[0]]);
+        }
+    }
+    frames as u64
 }
 
 fn prune(shared: &Shared, generation: u64) {

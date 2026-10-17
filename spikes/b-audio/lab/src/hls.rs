@@ -94,11 +94,29 @@ impl Fetcher {
     }
     pub fn stream(&self, url: &str) -> Result<Box<dyn Read + Send + Sync>> {
         self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t0 = Instant::now();
         let r = self.get(url)?;
-        Ok(Box::new(r.into_body().into_reader()))
+        self.fetch_ns.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(Box::new(TimedReader { inner: Box::new(r.into_body().into_reader()), fetch_ns: self.fetch_ns.clone() }))
     }
     pub fn text(&self, url: &str) -> Result<String> {
         Ok(String::from_utf8(self.bytes(url)?)?)
+    }
+}
+
+/// Counts time spent inside the body's reads (waiting for the network) as
+/// fetch time, so streaming runs report their network share too.
+struct TimedReader {
+    inner: Box<dyn Read + Send + Sync>,
+    fetch_ns: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Read for TimedReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let t0 = Instant::now();
+        let n = self.inner.read(buf)?;
+        self.fetch_ns.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(n)
     }
 }
 

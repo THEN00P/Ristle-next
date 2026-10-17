@@ -85,7 +85,11 @@ package ristle:plugin@0.1.0;
 ///   response, a `catalog` result or a library snapshot older than that is
 ///   never served, not even stale-if-error, and is gone from disk. A longer
 ///   `Cache-Control` freshness or `cache-override.ttl-seconds` is capped at
-///   that age, so no Provider data is kept indefinitely.
+///   that age, so no Provider data is kept indefinitely. A result built from
+///   other data (a `catalog` result or library snapshot assembled from
+///   several responses, or from cached ones) carries the fetch time of its
+///   *oldest* input. Rebuilding it from cached data never makes it younger,
+///   only a fresh fetch of every input does.
 ///   During a call the user asked to refresh, the host revalidates every
 ///   cached response it would otherwise reuse (conditional requests where the
 ///   server supports them), so a Plugin never needs a "refresh" flag.

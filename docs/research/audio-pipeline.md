@@ -145,33 +145,42 @@ wakeups (see section 4).
 
 Share of one core while decoding one real-time stream.
 
-| Stream | Decoder | Windows 7700X | Emulator x86_64 | Pixel 8, unpinned | Pixel 8, A510 little core |
-|---|---|---|---|---|---|
-| MP3 320 CBR | Symphonia | 0.080 % | 0.112 % | 0.135 % | 0.72 % |
-| AAC-LC 256 (MP4) | Symphonia | 0.054 % | 0.087 % | 0.111 % | 0.74 % |
-| AAC-LC 256 (ADTS) | Symphonia | 0.053 % | 0.086 % | 0.107 % | 0.72 % |
-| Vorbis 320 | Symphonia | 0.076 % | 0.114 % | 0.143 % | 0.93 % |
-| Opus 160 (Ogg) | libopus | 0.152 % | 0.174 % | 0.240 % | 1.36 % |
-| Opus 160 (WebM) | libopus | 0.151 % | 0.173 % | 0.241 % | 1.39 % |
-| FLAC 16/44.1 | Symphonia | 0.050 % | 0.088 % | 0.093 % | 0.50 % |
-| FLAC 24/96 | Symphonia | 0.130 % | 0.232 % | 0.238 % | 1.22 % |
-| HE-AAC v1 (ADTS / MP4) | FDK | 0.276 / 0.281 % | 0.263 / 0.263 % | 0.338 / 0.338 % | 2.28 / 2.29 % |
-| HE-AAC v2 (ADTS) | FDK | 0.309 % | 0.298 % | 0.354 % | 2.55 % |
-| AAC-LC 256 (MP4), for comparison | FDK | 0.214 % | 0.220 % | 0.263 % | — |
-| Resampling 44.1 → 48 kHz | rubato FFT | 0.031 % | 0.033 % | 0.11–0.13 % | — |
+| Stream | Decoder | Windows 7700X | Emulator x86_64 | Pixel 8, unpinned | Pixel 8, A510 core | Mi 9T, unpinned | Mi 9T, A55 core |
+|---|---|---|---|---|---|---|---|
+| MP3 320 CBR | Symphonia | 0.080 % | 0.112 % | 0.135 % | 0.72 % | 0.214 % | 0.69 % |
+| AAC-LC 256 (MP4) | Symphonia | 0.054 % | 0.087 % | 0.111 % | 0.74 % | 0.173 % | 0.62 % |
+| AAC-LC 256 (ADTS) | Symphonia | 0.053 % | 0.086 % | 0.107 % | 0.72 % | 0.166 % | 0.61 % |
+| Vorbis 320 | Symphonia | 0.076 % | 0.114 % | 0.143 % | 0.93 % | 0.256 % | 0.89 % |
+| Opus 160 (Ogg) | libopus | 0.152 % | 0.174 % | 0.240 % | 1.36 % | 0.388 % | 1.09 % |
+| Opus 160 (WebM) | libopus | 0.151 % | 0.173 % | 0.241 % | 1.39 % | 0.487 % | 1.08 % |
+| FLAC 16/44.1 | Symphonia | 0.050 % | 0.088 % | 0.093 % | 0.50 % | 0.136 % | 0.41 % |
+| FLAC 24/96 | Symphonia | 0.130 % | 0.232 % | 0.238 % | 1.22 % | 0.386 % | 1.15 % |
+| HE-AAC v1 (ADTS / MP4) | FDK | 0.276 / 0.281 % | 0.263 / 0.263 % | 0.338 / 0.338 % | 2.28 / 2.29 % | 0.675 / 0.659 % | 2.48 / 2.46 % |
+| HE-AAC v2 (ADTS) | FDK | 0.309 % | 0.298 % | 0.354 % | 2.55 % | 0.720 % | 2.78 % |
+| AAC-LC 256 (MP4), for comparison | FDK | 0.214 % | 0.220 % | 0.263 % | — | 0.504 % | — |
+| HE-AAC v1 / v2 (ADTS) | MediaCodec (`c2.android.aac.decoder`) | — | — | — | — | 2.55 / 2.93 % (0.71 / 0.72 % own thread + 1.84 / 2.21 % in `media.swcodec`) | — |
+| AAC-LC 256 (MP4 / ADTS), for comparison | MediaCodec | — | — | — | — | 3.53 / 3.76 % | — |
+| Resampling 44.1 → 48 kHz | rubato FFT | 0.031 % | 0.033 % | 0.11–0.13 % | — | 0.23–0.26 % | — |
 
-The phone is a Google Pixel 8 (Tensor G3, Android 17) on USB power. "Unpinned"
-lets the scheduler choose and lands on the mid or big cores. "A510" pins the
-process with `taskset 0f` to CPUs 0–3, the Cortex-A510 little cores at
-1.7 GHz, which is roughly what a low-end phone's best core offers. **Every
-codec stays under the 3 % target on a little core**: 0.5–0.9 % for the
-Symphonia codecs at 16/44.1, 1.4 % for Opus, and 2.3–2.6 % for HE-AAC through
-FDK, the most expensive case. MediaCodec's software AAC decoder is FDK too, so
-the HE-AAC fallback should cost about the same, just in `media.swcodec`. A
-little core is 5–7× slower than the scheduler's choice. Pinning the emulator
-run changed nothing, as expected for x86 cores of one type. Raw data:
-`spikes/b-audio/results/windows-7700x.jsonl`, `android-emu-x86_64-bench.jsonl`
-and `android-pixel8-bench.jsonl`.
+Phones: a Google Pixel 8 (Tensor G3, Android 17) and a Xiaomi Mi 9T
+(Snapdragon 730, Android 11, 2019, six Cortex-A55 at 1.8 GHz plus two A76),
+both on USB power. "Unpinned" lets the scheduler choose. The core columns pin
+the process with `taskset 0f` to CPUs 0–3: the Pixel's Cortex-A510 little
+cores at 1.7 GHz, and the Mi 9T's Cortex-A55 cores, the core of most low-end
+phones. **Every codec stays under the 3 % target on the slow cores of both
+phones**: 0.4–0.9 % for the Symphonia codecs at 16/44.1, 1.1–1.4 % for Opus,
+and 2.3–2.8 % for HE-AAC through FDK, the most expensive case.
+
+MediaCodec (implemented in the spike, `lab/src/mediacodec.rs`, measured on the
+Mi 9T unpinned) decodes HE-AAC v1 and v2 correctly: 44.1 kHz stereo, so SBR and
+Parametric Stereo both work. It costs 2.5–2.9 % of a core in total, most of
+it in the `media.swcodec` process (read from `/proc`) and about 0.7 % on our
+thread for the buffer queueing, IPC and copies. For AAC-LC it costs 3.5–3.8 %
+against Symphonia's 0.17 %, about 20× more, so MediaCodec is only for what
+Symphonia cannot decode. Pinning the emulator run changed nothing, as expected
+for x86 cores of one type. Raw data: `spikes/b-audio/results/windows-7700x.jsonl`,
+`android-emu-x86_64-bench.jsonl`, `android-pixel8-bench.jsonl`,
+`android-mi9t-bench.jsonl` and `android-mi9t-mediacodec.jsonl`.
 
 ### 2. Gapless
 
@@ -181,7 +190,7 @@ encoder would, decoded back to back and compared with the source. The check
 reports each track's length delta and start offset (cross-correlation lag) and
 the signal-to-error ratio of 10 ms windows around each boundary. A positive
 control that inserts one frame at the start of track 2 is caught as lag +1 and
-delta +1. The results were identical on Windows, the emulator and the Pixel 8.
+delta +1. The results were identical on Windows, the emulator, the Pixel 8 and the Mi 9T.
 
 | Container | Gapless info | Who trims | Result |
 |---|---|---|---|
@@ -244,13 +253,30 @@ Public streams (decode while downloading, about 60 ms RTT to the CDN):
 
 Findings:
 
-- **Criterion 4 passes on decent networks** (64–200 ms median) and fails on a
-  slow mobile link (527 ms median, 792 ms p95). A seek has to wait for the
-  bytes up to the target, on average half a segment. To get under 500 ms there,
-  seek with a byte-range request into the segment: estimated from the byte rate
-  for ADTS/TS (resync on the sync word), or from the `moof`'s sample table for
-  fMP4. That costs two RTTs plus a few KB, about 320 ms at 150 ms RTT. It was
-  not implemented in the spike.
+- **Criterion 4 passes on every tested network with byte-range seeks.** With
+  streaming decode alone, a seek waits for the bytes up to the target (on
+  average half a segment): 527 ms median and 792 ms p95 on the slow link.
+  `lab/src/hlsseek.rs` implements byte-range seeks for fMP4 (SoundCloud's
+  container). It fetches the first 4 KB of the segment, reads every `trun`
+  (Apple's packager writes several per fragment), then requests only the bytes
+  from one frame before the target onwards and feeds those AAC frames straight
+  to the decoder, with the extra frame priming the MDCT overlap. Positions stay
+  sample-accurate (same constant −1024 priming offset as every other path):
+
+  | Network | Streaming decode, median (p95) | Byte-range seek, median (p95) |
+  |---|---|---|
+  | localhost | 2 ms | 6 ms (7) |
+  | 30 ms RTT, 20 Mbit/s | 64 ms (88) | 70 ms (70) |
+  | 80 ms RTT, 5 Mbit/s | 199 ms (284) | 189 ms (190) |
+  | 150 ms RTT, 1.5 Mbit/s | 527 ms (792) | **391 ms (391)** |
+  | Apple's fMP4 example over the internet | 147 ms (172) | **72 ms (75)** |
+
+  A byte-range seek costs two round trips and about 5 KB regardless of
+  segment length or seek position. Not covered: AES-128 segments (CBC needs
+  the preceding cipher block as IV, which is one extra block in the range), and
+  TS/ADTS, which have no sample table, so the offset has to be estimated from
+  the byte rate, then resynchronised on the sync word and corrected with PTS.
+  Live radio (TS) seeks rarely, so streaming decode is enough there.
 - **Positions need an encoder-delay correction.** Every variant was off by a
   constant −1024 frames (23 ms), the AAC priming, which HLS carries as ordinary
   audio. For fMP4 the init segment's `elst` provides the value. TS and ADTS have
@@ -417,7 +443,14 @@ question: Symphonia has neither.**
   rate is 24 kHz or less. The last rule also catches Apple's 22.05 kHz LC
   stream: a harmless false positive, because a full decoder handles LC.
   Fallback: Android MediaCodec (`c2.android.aac.decoder`, FDK-based, on every
-  device), Apple AudioToolbox, Windows Media Foundation. FDK itself cannot ship
+  device), Apple AudioToolbox, Windows Media Foundation. **The MediaCodec
+  provider was built and tested on the Mi 9T**: it decodes HE-AAC v1 and v2
+  at the full rate and in stereo, and AAC album tracks through it are
+  sample-exact with the host's edit-list trim. Unlike the raw FDK adapter
+  (+1685 frames), Codec2 compensates its own decoder delay, so its output lines
+  up with Symphonia's frame for frame. Cost: section 1. The trait needed one
+  addition for it: `finish()`, because MediaCodec holds several packets in
+  flight and only releases them on end-of-stream. FDK itself cannot ship
   in the app: the Fraunhofer licence is not GPL-compatible (ADR 0009), and the
   spike used it only for comparison and to encode test files. Desktop Linux is
   not a target. CPU with FDK is 0.26–0.31 % of a desktop core.
@@ -455,8 +488,8 @@ question: Symphonia has neither.**
    not enough for live radio.
 3. **The host applies MP4 edit lists** (`elst`, `iTunSMPB`) and the decoder
    contract requires timeline-aligned output.
-4. **HLS decodes while downloading** and seeks with byte ranges into the
-   segment, so seeks stay under 500 ms on slow links.
+4. **HLS decodes while downloading** and seeks with byte ranges into fMP4
+   segments (built and measured: 391 ms on a 150 ms / 1.5 Mbit/s link).
 5. Android output needs the **`ndk-context` JNI bootstrap** and **must use
    AAudio PowerSaving** (outside cpal's current API), with the core resampling
    to the output rate and waking its decoder on demand. On the Pixel 8 the
@@ -464,11 +497,11 @@ question: Symphonia has neither.**
 
 ### Open items
 
-- Platform AAC decoders were not implemented. MediaCodec's software AAC decoder
-  is FDK-based, so it should cost about what FDK cost here (2.3–2.6 % of a
-  little core), but it runs in `media.swcodec`.
-- Byte-range HLS seeking, AAudio PowerSaving with resampling in the core, and
-  event-driven decode wakeups are untested. The phone soak says they matter
-  for battery (section 4).
-- Only one phone was measured, and it is not low-end. Its A510 little cores
-  stand in for a low-end phone's cores.
+- **The Mi 9T soak.** MIUI blocks `adb install` ("Install via USB" is off),
+  so the 30-minute soak ran on the Pixel 8 and the emulator only.
+- Platform AAC decoders on iOS (AudioToolbox) and Windows (Media Foundation)
+  were not built. MediaCodec was.
+- Byte-range seeks for AES-128 fMP4 and for TS/ADTS segments are not built.
+  AAudio PowerSaving with resampling in the core and event-driven decode
+  wakeups are untested. The Pixel 8 soak says they matter for battery
+  (section 4).

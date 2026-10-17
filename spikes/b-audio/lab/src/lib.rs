@@ -6,3 +6,6 @@ pub mod gapless;
 pub mod hls;
 pub mod server;
 pub mod ts;
+#[cfg(target_os = "android")]
+pub mod mediacodec;
+pub mod hlsseek;

@@ -79,6 +79,7 @@ pub fn decode_bytes(reg: &DecoderRegistry, bytes: &[u8], ext: &str, gapless_mp4:
             Err(e) => return Err(e),
         }
     }
+    dec.finish(&mut samples)?;
     let (rate, channels) = dec.output();
     let mut host_trim = None;
     if gapless_mp4 && matches!(ext, "m4a" | "mp4") {

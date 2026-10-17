@@ -54,8 +54,8 @@ cannot deliver them, and services that only offer DRM streams cannot be played.
 ## Amendment (2026-10-17, spike B)
 
 Spike B confirmed the split and changed the decoder set. Native decoding costs
-0.05–0.3 % of a desktop core per stream and 0.5–2.6 % of a Pixel 8's Cortex-A510
-little core.
+0.05–0.3 % of a desktop core per stream and 0.4–2.8 % of a phone's slow core
+(Pixel 8 A510, Mi 9T A55).
 
 1. **The decoder registry ships with three providers, not one.** Symphonia
    0.6.1 has no HE-AAC (SBR/PS) and no Opus decoder. With implicit SBR it
@@ -66,7 +66,10 @@ little core.
      Foundation. AAC goes to them when the HLS `CODECS` or a Plugin hint says
      `mp4a.40.5`/`40.29`, when the AudioSpecificConfig says object type 5 or
      29, or when the AAC core rate is 24 kHz or less. FDK AAC cannot ship: its
-     licence is not GPL-compatible.
+     licence is not GPL-compatible. The MediaCodec provider was built in the
+     spike: correct HE-AAC v1/v2, timeline-aligned output, 2.5–2.9 % of a
+     core (mostly in `media.swcodec`), about 20× Symphonia for AAC-LC, so it is
+     used only where Symphonia cannot decode.
 2. **Decoder contract.** A `Decoder` gets demuxed packets and returns
    interleaved f32 aligned to the input timeline, so decoder latency is the
    provider's problem (FDK's output trails Symphonia's by 1685 frames).
@@ -80,9 +83,10 @@ little core.
    prefer fMP4 when offered, because it carries the edit list.
 5. **HLS decodes segments while they download, and seeks with byte ranges
    inside a segment.** Buffering whole segments puts seeks at 840–890 ms on a
-   150 ms / 1.5 Mbit/s link. Streaming decode brings it to 527 ms median, and
-   byte-range seeks are needed to stay under 500 ms. `EXT-X-BYTERANGE` is
-   supported.
+   150 ms / 1.5 Mbit/s link. Streaming decode brings it to 527 ms median.
+   Byte-range seeks into fMP4 segments (read the `moof`, fetch from the target
+   frame) were built and give 391 ms there, two round trips regardless of
+   segment length. `EXT-X-BYTERANGE` playlists are supported.
 6. **Android output:** a cpal stream needs a one-call JNI bootstrap that fills
    `ndk-context` (JNA loads the library without `JNI_OnLoad`). AAudio's
    PowerSaving mode and music content type are not reachable through cpal 0.18

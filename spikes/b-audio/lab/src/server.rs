@@ -14,10 +14,23 @@ pub fn spawn(root: PathBuf, rtt: Duration, kbps: u64) -> String {
                 let path = root.join(req.url().trim_start_matches('/').split('?').next().unwrap());
                 std::thread::sleep(rtt);
                 match std::fs::read(&path) {
-                    Ok(body) => {
+                    Ok(mut body) => {
+                        // Single "bytes=a-b" / "bytes=a-" ranges, as CDNs serve them.
+                        let range = req.headers().iter().find(|h| h.field.equiv("Range")).and_then(|h| {
+                            let v = h.value.as_str().strip_prefix("bytes=")?;
+                            let (a, b) = v.split_once('-')?;
+                            let a: usize = a.parse().ok()?;
+                            let b: usize = if b.is_empty() { body.len() - 1 } else { b.parse().ok()? };
+                            Some((a, b.min(body.len() - 1)))
+                        });
+                        let mut status = 200;
+                        if let Some((a, b)) = range {
+                            body = body[a..=b].to_vec();
+                            status = 206;
+                        }
                         let len = body.len();
                         let paced = Paced { data: body, pos: 0, kbps };
-                        let _ = req.respond(tiny_http::Response::new(200.into(), vec![], paced, Some(len), None));
+                        let _ = req.respond(tiny_http::Response::new(status.into(), vec![], paced, Some(len), None));
                     }
                     Err(_) => {
                         let _ = req.respond(tiny_http::Response::empty(404));

@@ -27,12 +27,14 @@ fn bench(args: &[String]) -> Result<()> {
     let mut min_cpu = Duration::from_millis(3000);
     let mut fdk_all = false;
     let mut resample = false;
+    let mut mediacodec_all = false;
     let mut files = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--fdk-all" => fdk_all = true,
             "--resample" => resample = true,
+            "--mediacodec-all" => mediacodec_all = true,
             "--min-cpu-ms" => min_cpu = Duration::from_millis(it.next().unwrap().parse()?),
             f => files.push(f.to_string()),
         }
@@ -44,6 +46,11 @@ fn bench(args: &[String]) -> Result<()> {
         reg.register(Box::new(registry::AdapterProvider::fdk_aac_all()));
     }
     let _ = fdk_all;
+    #[cfg(target_os = "android")]
+    if mediacodec_all {
+        reg.register(Box::new(audiolab::mediacodec::MediaCodecProvider { all_aac: true }));
+    }
+    let _ = mediacodec_all;
     for f in &files {
         let bytes = std::fs::read(f)?;
         let ext = ext_of(f);
@@ -56,6 +63,9 @@ fn bench(args: &[String]) -> Result<()> {
         };
         let audio_s = first.seconds();
         let mut reps = 0u32;
+        #[cfg(target_os = "android")]
+        let remote0 = audiolab::mediacodec::remote_codec_ticks();
+        let wall0 = std::time::Instant::now();
         let t0 = thread_cpu();
         while reps < 3 || thread_cpu() - t0 < min_cpu {
             let d = decode::decode_bytes(&reg, &bytes, &ext, true)?;
@@ -68,6 +78,16 @@ fn bench(args: &[String]) -> Result<()> {
             Path::new(f).file_name().unwrap().to_string_lossy(), first.format, first.decoder, first.support,
             first.rate, first.channels, audio_s, reps, cpu * 1000.0 / audio_s, cpu / audio_s * 100.0
         );
+        // Decoding inside a codec service process does not show on our thread.
+        #[cfg(target_os = "android")]
+        if first.decoder == "mediacodec" {
+            let tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+            let remote1 = audiolab::mediacodec::remote_codec_ticks();
+            let busy: u64 = remote1.iter().map(|(n, t)| t - remote0.iter().find(|(m, _)| m == n).map_or(*t, |x| x.1)).sum();
+            let audio_total = audio_s * reps as f64;
+            line += &format!(",\"remote_pct_one_core\":{:.3},\"wall_s\":{:.1}", busy as f64 / tck / audio_total * 100.0, wall0.elapsed().as_secs_f64());
+        }
+        let _ = wall0;
         if resample && first.rate != 48_000 {
             let pct = resample_cost(&first, 48_000, min_cpu)?;
             line += &format!(",\"resample_to_48k_pct_one_core\":{pct:.3}");
@@ -156,6 +176,10 @@ fn gapless(args: &[String]) -> Result<()> {
     if args.get(1).is_some_and(|a| a == "--fdk-all") {
         reg.register(Box::new(registry::AdapterProvider::fdk_aac_all()));
     }
+    #[cfg(target_os = "android")]
+    if args.get(1).is_some_and(|a| a == "--mediacodec-all") {
+        reg.register(Box::new(audiolab::mediacodec::MediaCodecProvider { all_aac: true }));
+    }
     let cases: &[(&str, &str, &str, bool)] = &[
         ("mp3", "t", "source.wav", false),
         ("m4a", "t", "source.wav", false),
@@ -204,6 +228,7 @@ fn hls(args: &[String]) -> Result<()> {
     let mut kbps = 0u64;
     let mut seeks = 20usize;
     let mut streaming = false;
+    let mut ranged = false;
     let mut targets = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -212,6 +237,7 @@ fn hls(args: &[String]) -> Result<()> {
             "--kbps" => kbps = it.next().unwrap().parse()?,
             "--seeks" => seeks = it.next().unwrap().parse()?,
             "--streaming" => streaming = true,
+            "--ranged" => ranged = true,
             t => targets.push(t.to_string()),
         }
     }
@@ -251,6 +277,17 @@ fn hls(args: &[String]) -> Result<()> {
         // Deterministic spread of targets over the track, avoiding segment starts.
         for i in 0..seeks {
             let target = (dur - 8.0) * ((i as f64 * 0.618_034) % 1.0) + 1.234;
+            if ranged && start.container == hls::Container::Fmp4 {
+                // Byte-range seek inside the segment (moof, then the frames from the target).
+                let r = audiolab::hlsseek::seek_fmp4(&reg, &f, &pl, init.as_deref().unwrap_or(&[]), target)?;
+                lat.push(r.latency.as_secs_f64() * 1000.0);
+                fetch.push(0.0);
+                if let (Some(src), false) = (&source, t.starts_with("http")) {
+                    let at = (r.first_frame_s * r.rate as f64).round() as i64;
+                    lags.push(align(&r.audio, src, at, 2048));
+                }
+                continue;
+            }
             let (s, _) = hls::open_at(&reg, &f, &pl, init.clone(), target)?;
             lat.push(s.latency.as_secs_f64() * 1000.0);
             fetch.push(s.fetch.as_secs_f64() * 1000.0);
@@ -264,7 +301,7 @@ fn hls(args: &[String]) -> Result<()> {
         fetch.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let p = |v: &Vec<f64>, q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
         println!(
-            "{{\"stream\":\"{t}\",\"container\":\"{:?}\",\"codecs\":{:?},\"decoder\":\"{}\",\"segments\":{},\"seg_s\":{:.2},\"rtt_ms\":{rtt},\"kbps\":{kbps},\"streaming\":{streaming},\"playlist_ms\":{playlist_ms:.0},\"start_ms\":{:.0},\"seek_ms_p50\":{:.0},\"seek_ms_p95\":{:.0},\"seek_ms_max\":{:.0},\"fetch_ms_p50\":{:.0},\"seek_lag_frames\":{:?}}}",
+            "{{\"stream\":\"{t}\",\"container\":\"{:?}\",\"codecs\":{:?},\"decoder\":\"{}\",\"segments\":{},\"seg_s\":{:.2},\"rtt_ms\":{rtt},\"kbps\":{kbps},\"streaming\":{streaming},\"ranged\":{ranged},\"playlist_ms\":{playlist_ms:.0},\"start_ms\":{:.0},\"seek_ms_p50\":{:.0},\"seek_ms_p95\":{:.0},\"seek_ms_max\":{:.0},\"fetch_ms_p50\":{:.0},\"seek_lag_frames\":{:?}}}",
             start.container, pl.codecs.clone().unwrap_or_default(), start.decoder, pl.segments.len(), pl.segments[0].dur_s,
             start.latency.as_secs_f64() * 1000.0, p(&lat, 0.5), p(&lat, 0.95), lat[lat.len() - 1], p(&fetch, 0.5), { lags.sort(); lags.dedup(); lags }
         );

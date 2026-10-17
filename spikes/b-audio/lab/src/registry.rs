@@ -41,6 +41,11 @@ pub trait Decoder: Send {
     fn output(&self) -> (u32, usize);
     /// Drops internal state after a seek.
     fn reset(&mut self);
+    /// End of stream: emits frames the decoder still holds (MediaCodec keeps
+    /// several packets in flight).
+    fn finish(&mut self, _out: &mut Vec<f32>) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub trait DecoderProvider: Send + Sync {
@@ -89,7 +94,7 @@ pub fn aac_object_type(params: &AudioCodecParameters) -> Option<u8> {
     Some(if aot == 31 { 32 + ((asc[0] & 7) << 3 | asc.get(1)? >> 5) } else { aot })
 }
 
-fn is_he_aac(stream: &StreamInfo) -> bool {
+pub fn is_he_aac(stream: &StreamInfo) -> bool {
     if stream.params.codec != CODEC_ID_AAC {
         return false;
     }
@@ -246,5 +251,8 @@ pub fn default_registry() -> DecoderRegistry {
     r.register(Box::new(AdapterProvider::libopus()));
     #[cfg(feature = "fdk")]
     r.register(Box::new(AdapterProvider::fdk_aac()));
+    // On Android the platform decoder takes HE-AAC (registered last, wins ties).
+    #[cfg(target_os = "android")]
+    r.register(Box::new(crate::mediacodec::MediaCodecProvider { all_aac: false }));
     r
 }

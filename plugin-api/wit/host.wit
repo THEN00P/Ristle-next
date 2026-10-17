@@ -1,0 +1,500 @@
+package ristle:plugin@0.1.0;
+
+/// HTTPS requests. Requests are sent through a `connection`
+/// (`connection.fetch`), which is how the host knows which Credential Record
+/// to attach.
+///
+/// The host enforces, for every request:
+///
+/// - HTTPS only, to hosts declared in the manifest's `hosts`, or to the
+///   origins of the connection's Server Grant (`connection.server`, the
+///   origins of its `urls`), which may also be plain HTTP. Redirects are
+///   followed only within those. Within one origin a redirect keeps the
+///   request as browsers do. Across origins the host drops the Plugin's
+///   headers and applies the credential's `attach` rules for the new host
+///   alone, and a redirect that would resend the body (307, 308) is not
+///   followed: the Plugin gets the 3xx response and decides. So nothing
+///   meant for one origin is replayed to another.
+/// - Public addresses only. The host resolves every name itself and refuses
+///   loopback, link-local, private, unique-local, multicast and unspecified
+///   addresses, checking again for every new connection so DNS rebinding
+///   gains nothing. This applies to every connection the host makes for a
+///   Plugin: `http`, `live`, `socket`, Stream Sources and images.
+///   The one exception is a Server Grant: its origins may resolve to the
+///   local network or, on desktop, to this device, because the user chose
+///   that server and confirmed it. The grant records, per origin, what the
+///   user confirmed: for a public address its class only (public addresses
+///   change routinely, and reaching one needs no grant), and for a local
+///   network or same-device address the exact address. Every new connection
+///   resolves again. One that reaches anything else, such as a public name
+///   rebound to a private address or a local name now pointing at another
+///   device on the network, is refused with `error.transient`, and the host
+///   asks the user itself, outside any Plugin call, whether the server at
+///   the new address is still theirs, with the same warnings as at sign-in.
+///   Confirming adds the address; nothing reaches it before that. The
+///   exception holds only for that connection and only for those origins.
+/// - Bounded size (16 MiB per body) and time (30 s unless `timeout-ms` is
+///   lower), and a per-Plugin concurrency limit.
+/// - Bounded arguments, for every import in this package, not only `http`:
+///   each string a Plugin passes is at most 64 KiB, the byte payloads of
+///   one call (request bodies, a live frame, socket data, a storage value)
+///   at most 16 MiB together, so all bodies of a `fetch-all` share it, each
+///   also within its interface's lower limit, and everything else in one
+///   call at most 1 MiB. The host reads the lengths from the instance's memory
+///   before copying anything and fails the call with `error.internal` (or
+///   traps, for an import without an error result) at the first value over
+///   a limit, as it does for exported results (see `catalog`).
+/// - Rate limiting. A 429, or a 503 with `Retry-After`, never reaches the
+///   Plugin as a response: the call fails with `error.rate-limited`, and the
+///   host holds back further requests to that host until the wait is over.
+///   It does not retry.
+/// - Caching. The host honors `Cache-Control` unless `cache` says otherwise.
+///   Cache keys always include the Plugin and the Provider Connection.
+///   Requests made during `begin-authorization` or `continue-authorization`
+///   never read or write the cache, so a candidate credential is never
+///   answered with a response cached for the previous one. A Provider
+///   Connection's generation changes with every accepted authorization,
+///   even for the same account and server, since new credentials may reach
+///   less than the old ones (a routine `refresh-credential` does not change
+///   it), and ends for good when the user signs out or removes the
+///   connection. On a change the host drops every cached result of that
+///   connection (see `catalog`) before the next call and reloads whatever
+///   is on screen, so
+///   nothing read as the old account or from the old server is shown or
+///   acted on as the new one. Every call is tagged with the generation it
+///   started under; a call still running from before the change can finish,
+///   but its cache writes, results and `set-credential` are discarded. From
+///   the moment of any change, sign-out and removal included, such a call
+///   is retired and can reach nothing outside its own instance. Every
+///   import other than `crypto` and `system` fails with
+///   `error.unauthorized` without doing anything, or, where it has no error
+///   result, returns nothing (`credential`, `account`, `server` and
+///   `get-data` return `none`, `folders` is empty, `storage.get` returns
+///   `none` and `storage.delete` does nothing). So it neither uses the old
+///   account or grant, nor sees or stores the new one. Every Plugin
+///   instance that served a call for the old generation is discarded once
+///   its running call ends, so nothing a Plugin kept in memory for one
+///   account, such as audio keys, ever serves the next.
+///   All cached results (see `catalog`) together take at most
+///   64 MiB per Plugin and 512 MiB for all Plugins, evicting least recently
+///   used entries first. An evicted entry is simply fetched again, so the
+///   bound costs only stale-if-error coverage, never correctness; a Plugin
+///   cannot grow the cache by varying URLs or `cache-override.key`.
+///   During a call the user asked to refresh, the host revalidates every
+///   cached response it would otherwise reuse (conditional requests where the
+///   server supports them), so a Plugin never needs a "refresh" flag.
+interface http {
+    use types.{header};
+
+    enum method {
+        get,
+        head,
+        post,
+        put,
+        patch,
+        delete,
+    }
+
+    record cache-override {
+        /// Treat the response as fresh for this long, whatever its headers say.
+        ttl-seconds: u32,
+        /// After that, keep serving it for this long when the Provider is
+        /// unreachable or rate-limiting (stale-if-error). The host never
+        /// refetches in the background.
+        stale-seconds: u32,
+        /// Replaces the URL as the cache key, for URLs that carry volatile
+        /// parameters such as a client id.
+        key: option<string>,
+    }
+
+    variant cache {
+        /// Follow the response's `Cache-Control`. Only GET and HEAD are cached.
+        http,
+        /// Neither read nor write the cache.
+        bypass,
+        override(cache-override),
+    }
+
+    record request {
+        method: method,
+        url: string,
+        /// The host owns the authority and the framing: a `Host`,
+        /// `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`,
+        /// `Keep-Alive`, `TE`, `Trailer` or `Proxy-*` header, or any HTTP/2
+        /// pseudo-header, fails the request with `error.internal` before
+        /// anything is sent. The host sets these itself from `url` and
+        /// `body`. The same names are refused in every header list the host
+        /// sends for a Plugin: `attach` rules, live channel requests and
+        /// Stream Sources.
+        headers: list<header>,
+        body: list<u8>,
+        cache: cache,
+        timeout-ms: option<u32>,
+    }
+
+    /// Response headers are bounded like bodies: at most 64 KiB and 200
+    /// headers per response, enforced while parsing, before they are kept or
+    /// copied into the Plugin. A Provider that sends more fails the request
+    /// with `error.transient`.
+    record response {
+        status: u16,
+        /// All headers of the response as the Plugin should read it; for a
+        /// cached or revalidated response, the stored ones merged with any
+        /// new ones.
+        headers: list<header>,
+        body: list<u8>,
+        /// Any part of the response came from the cache: served without
+        /// reaching the Provider, or revalidated with a 304 and merged with
+        /// the stored headers.
+        cached: bool,
+        /// Only the headers that arrived from the Provider for this request:
+        /// all of them for a full response, the 304's own for a revalidated
+        /// one, none when served from the cache. A Plugin takes credential
+        /// changes, such as a rotated cookie, from these alone, so a
+        /// rotation sent with a 304 is kept and a stored header is never
+        /// mistaken for a new one.
+        received: list<header>,
+        /// Where this response stands in the order responses from the
+        /// Provider arrived for this Provider Connection. It grows with every
+        /// response that reached the Provider and never repeats or goes back
+        /// for a connection, across restarts too. Concurrent calls finish in
+        /// any order, so a Plugin that keeps a value from responses, such as
+        /// a rotated cookie, stores the sequence with it and keeps the value
+        /// only when its sequence is higher.
+        sequence: u64,
+    }
+
+    /// Reports a rate limit the Provider signalled in some other way, such as
+    /// a 200 response with an error body. The host then treats `host` as if
+    /// it had answered 429 with this wait.
+    rate-limit: func(host: string, retry-after-ms: u32);
+}
+
+/// The Provider Connection a call is made for. Every Plugin export receives
+/// one. For a Provider without accounts, or for a public catalog call while no
+/// account is connected, it is an anonymous connection with an empty id and no
+/// credential.
+interface connection {
+    use types.{error, credential, account, setting-value, media-server, music-folder};
+    use http.{request, response};
+
+    resource connection {
+        /// Stable id of this Provider Connection, unique within the Plugin.
+        /// Empty for the anonymous connection.
+        id: func() -> string;
+
+        /// Data kept for this connection's current generation (see `http`),
+        /// such as an account's cached ids: anything about the account
+        /// belongs here, not in `storage`. It counts against the Plugin's
+        /// `storage-mib` quota. The host deletes all of it when the
+        /// generation changes or ends, and a call from a retired
+        /// generation reads nothing and fails to write with
+        /// `error.unauthorized`, so one account's data never reaches the
+        /// next.
+        get-data: func(key: string) -> option<list<u8>>;
+        /// Fails with `error.internal` when the quota is exceeded.
+        set-data: func(key: string, value: list<u8>, ttl-seconds: option<u32>) -> result<_, error>;
+        delete-data: func(key: string) -> result<_, error>;
+
+        /// The account from the last successful authorization.
+        account: func() -> option<account>;
+
+        /// The server the user granted this connection during sign-in, for
+        /// Plugins whose manifest sets `servers = true`. Its origins count
+        /// as `hosts`, `media-hosts` and `image-hosts` for this connection.
+        server: func() -> option<media-server>;
+
+        /// The folders the user granted this connection during sign-in, for
+        /// Plugins whose manifest sets `folders = true` (see `files`).
+        folders: func() -> list<music-folder>;
+
+        /// The stored Credential Record.
+        credential: func() -> option<credential>;
+
+        /// Replaces the stored Credential Record, for example when the
+        /// Provider rotates a cookie in a response. Takes effect for the next
+        /// request.
+        ///
+        /// It is a compare-and-set against the record this call last read
+        /// with `credential` (or the one it started with): if another call
+        /// has replaced the record since, nothing is written and it fails
+        /// with `error.conflict`, so a stale read-modify-write never undoes a
+        /// newer refresh. The Plugin reads again and reapplies its change, or
+        /// drops it.
+        ///
+        /// All writes to one connection's record are serialized: a
+        /// `set-credential` and the storing of a `refresh-credential` result
+        /// never interleave, and a refresh result is stored by the same
+        /// compare-and-set against the record the refresh started from. A
+        /// `set-credential` made by another call while a refresh runs waits
+        /// for it and then fails with `error.conflict`, because the
+        /// refreshed record is newer. Inside `refresh-credential` itself it
+        /// never waits: as during authorization, it sets the refresh's
+        /// candidate, which signs the refresh's own requests and which
+        /// `credential` then returns, so a shared wrapper that rotates a
+        /// cookie works there too. What is stored is the record
+        /// `refresh-credential` returns.
+        /// Two writes from the same base keep the first; the second learns
+        /// so by `error.conflict`. The host runs `refresh-credential` at most
+        /// once at a time per connection.
+        ///
+        /// A record larger than 64 KiB, serialized, fails with
+        /// `error.internal` and is not stored (see `types.credential`).
+        ///
+        /// During `begin-authorization` and `continue-authorization` the
+        /// credential set here is only a candidate: it signs this session's
+        /// requests (such as a `/me` lookup) and is stored only when the step
+        /// returns `done`, the host has checked the account and, for a
+        /// different account, the user has accepted it. A failed or declined
+        /// authorization leaves the stored record untouched. However a
+        /// session ends (accepted, declined, failed, cancelled or expired),
+        /// every instance that ran one of its steps is discarded once its
+        /// running call ends, so no candidate or other state from the
+        /// session survives in guest memory. Until the
+        /// session sets a candidate, its requests carry no credential at
+        /// all: the stored record's `attach` rules never apply during
+        /// authorization, so re-signing in to a different server on the
+        /// same host never sends it the old server's token.
+        set-credential: func(credential: credential) -> result<_, error>;
+
+        /// Sends one request. The credential's `attach` rules are applied to
+        /// matching hosts. A 401 from such a host fails with
+        /// `error.unauthorized`, so the host can refresh and retry the whole
+        /// call. Any other status is returned as a response.
+        fetch: func(request: request) -> result<response, error>;
+
+        /// Sends independent requests concurrently and returns the results in
+        /// the same order. More than 16 requests fail the whole call with
+        /// `error.internal` (the outer error). Response bodies in one call
+        /// add up to at most 32 MiB; once that is reached, the remaining
+        /// requests fail individually with `error.internal` instead of being
+        /// kept in memory.
+        fetch-all: func(requests: list<request>) -> result<list<result<response, error>>, error>;
+
+        /// The user's value for a setting from `settings.describe`, or its
+        /// initial value. Plugin-wide and per-connection settings are both
+        /// read here.
+        setting: func(key: string) -> option<setting-value>;
+    }
+}
+
+/// A per-Plugin key-value store with a quota: the manifest's `storage-mib`,
+/// default 5, at most 64 (a larger manifest is refused). Shared by all
+/// instances and all Provider Connections of the Plugin, and it outlives
+/// sign-outs, so it holds only data about no account, such as a public
+/// client id scraped from a web player. Data about an account goes into
+/// `connection.set-data`, which the host scopes to the account; credentials
+/// belong in the Credential Record.
+interface storage {
+    use types.{error};
+
+    get: func(key: string) -> option<list<u8>>;
+
+    /// Fails with `error.internal` when the quota is exceeded.
+    set: func(key: string, value: list<u8>, ttl-seconds: option<u32>) -> result<_, error>;
+
+    delete: func(key: string);
+}
+
+/// Cryptography done natively by the host, so that interpreted Plugins (iOS)
+/// do not pay for it.
+interface crypto {
+    use types.{error, aes-mode};
+
+    enum hash {
+        md5,
+        sha1,
+        sha256,
+        sha512,
+    }
+
+    enum base64 {
+        standard,
+        standard-unpadded,
+        url,
+        url-unpadded,
+    }
+
+    /// AES-128, -192 or -256, chosen by the key length.
+    aes-encrypt: func(mode: aes-mode, key: list<u8>, iv: list<u8>, data: list<u8>) -> result<list<u8>, error>;
+    aes-decrypt: func(mode: aes-mode, key: list<u8>, iv: list<u8>, data: list<u8>) -> result<list<u8>, error>;
+
+    digest: func(hash: hash, data: list<u8>) -> list<u8>;
+    hmac: func(hash: hash, key: list<u8>, data: list<u8>) -> list<u8>;
+
+    base64-encode: func(alphabet: base64, data: list<u8>) -> string;
+    base64-decode: func(alphabet: base64, text: string) -> result<list<u8>, error>;
+
+    /// Cryptographically secure random bytes, at most 1024 per call;
+    /// a larger `length` fails with `error.internal`.
+    random: func(length: u32) -> result<list<u8>, error>;
+}
+
+/// Time, locale and logging.
+interface system {
+    use types.{instant};
+
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// Wall-clock time.
+    now: func() -> instant;
+
+    /// The user's locale as a BCP 47 tag, such as `de-DE`.
+    locale: func() -> string;
+
+    /// Bounded per Plugin. Excess messages are dropped and counted. Never log
+    /// tokens or cookies.
+    log: func(level: level, message: string);
+}
+
+/// Long-lived WebSocket connections that the host keeps open for a Plugin
+/// during a Queue Projection, such as Spotify's Connect messaging. The host
+/// owns the connection, so it outlives Plugin instances: incoming frames
+/// arrive through `queue-projection.receive`, which any instance can handle.
+/// Only `wss://` URLs to hosts declared in the manifest's `hosts`.
+///
+/// The host never reconnects with an old request, because a request usually
+/// carries a token that expires. When a channel closes, it delivers `closed`
+/// to `receive`; the Plugin answers by calling `reopen` with a request built
+/// from the current credential. If the Plugin does not, or `reopen` fails,
+/// the host delivers `closed` again later, with back-off, while the
+/// projection runs.
+///
+/// Channels exist only inside a running projection: `open` succeeds only
+/// during `queue-projection.start` or while that Provider Connection's
+/// projection runs, and fails otherwise. A connection may hold at most two
+/// channels. When the projection stops, the user signs out, the
+/// connection's generation changes (any accepted authorization, see `http`),
+/// the Plugin is disabled, or any version of it is installed (an update, a
+/// downgrade or a takeover), the host closes every channel of that
+/// connection. After a generation change it starts the projection again with
+/// the new credential; after an install, only if the new version still
+/// exports `queue-projection` and its manifest still permits the channel's
+/// host, through `start` on the new code. No channel outlives the account,
+/// server or code it was opened for.
+interface live {
+    use types.{error, header};
+
+    record keepalive {
+        /// At least 5000; a smaller value fails `open` or `reopen` with
+        /// `error.internal`.
+        every-ms: u32,
+        /// At most 4 KiB; a longer message fails `open` or `reopen` with
+        /// `error.internal`.
+        message: string,
+    }
+
+    record channel-request {
+        url: string,
+        headers: list<header>,
+        /// An application-level ping the host sends by itself, so the Plugin
+        /// is not called just to keep the connection alive.
+        keepalive: option<keepalive>,
+    }
+
+    /// A received `text` or `binary` message is at most 1 MiB. The host
+    /// stops reading a larger one as soon as it passes the limit, closes the
+    /// channel and delivers `closed`, so a message is never assembled in full.
+    variant frame {
+        text(string),
+        binary(list<u8>),
+        /// The host (re)connected the channel.
+        opened,
+        /// The channel closed. Call `reopen` to connect it again.
+        closed(string),
+    }
+
+    /// Returns the channel id, which stays the same across reconnections.
+    /// Connecting, including TLS and the WebSocket upgrade, takes at most
+    /// 15 s; after that `open` and `reopen` fail with `error.transient`.
+    open: func(request: channel-request) -> result<string, error>;
+
+    /// Connects a closed channel again with a fresh request, keeping its id.
+    reopen: func(channel: string, request: channel-request) -> result<_, error>;
+
+    /// Sends a `text` or `binary` frame of at most 1 MiB. Each channel
+    /// queues at most 1 MiB of unsent frames; when the queue is full, `send`
+    /// waits up to 10 s for room, then fails with `error.transient` and the
+    /// host closes the channel and delivers `closed`.
+    send: func(channel: string, frame: frame) -> result<_, error>;
+
+    close: func(channel: string);
+}
+
+/// Reading the folders the user granted a Provider Connection (its Folder
+/// Grant), for Plugins whose manifest sets `folders = true`, such as the
+/// built-in Local Files Plugin. It is the only way to the file system: a
+/// Plugin has no other file access, and only reads.
+///
+/// Every call names the connection, and every path must lie inside one of
+/// its granted folders; anything else, including a link that leads outside,
+/// fails with `error.unavailable`. The host keeps the platform's access
+/// itself (an Android Storage Access Framework tree, an iOS security-scoped
+/// bookmark, a desktop path) and maps paths onto it, so Plugins see the same
+/// paths on every platform. A folder the system no longer lets Ristle read
+/// fails with `error.unauthorized`, so the user is asked to choose it again.
+/// The Folder Grant is part of the connection's generation (see `http`):
+/// choosing other folders is signing in again.
+interface files {
+    use types.{error, instant, file-path};
+    use connection.{connection};
+
+    record entry {
+        name: string,
+        folder: bool,
+        size: u64,
+        modified: option<instant>,
+    }
+
+    /// The entries of a folder, sorted by name, at most 1000 per call.
+    /// `after` is the last name of the previous call, to continue.
+    %list: func(conn: borrow<connection>, dir: file-path, after: option<string>) -> result<list<entry>, error>;
+
+    /// Up to `length` bytes from `offset`, at most 1 MiB per call; fewer at
+    /// the end of the file. For tags and headers: audio is read by the host
+    /// itself through `location.file`.
+    read: func(conn: borrow<connection>, file: file-path, offset: u64, length: u32) -> result<list<u8>, error>;
+}
+
+/// Raw TCP, optionally with TLS, for Providers whose protocol is not HTTP,
+/// such as Spotify's access points. Only to `host:port` pairs declared in the
+/// manifest's `sockets`, which the consent screen lists separately, and only
+/// to public addresses (see `http`).
+///
+/// A socket belongs to one Plugin instance and one Provider Connection, and
+/// closes when it is dropped or the instance is discarded, so Plugins
+/// reconnect lazily. Disabling the Plugin or installing any version of it
+/// discards every instance and so closes every socket (see packaging). It is bound to the generation of its connection (see
+/// `http`): when that generation ends, by sign-out, removal or any accepted
+/// authorization, the host closes the socket, and later `send` and
+/// `receive` fail with `error.unauthorized`. Only calls for the same
+/// connection may use it; from any other call they fail with
+/// `error.internal`, so an account's socket never serves another. A Plugin
+/// may hold at most four open sockets across all its instances; `connect`
+/// fails with `error.internal` beyond that.
+interface socket {
+    use types.{error};
+    use connection.{connection};
+
+    resource tcp {
+        /// Connecting, including the TLS handshake, takes at most 15 s;
+        /// after that it fails with `error.transient`.
+        connect: static func(conn: borrow<connection>, host: string, port: u16, tls: bool) -> result<tcp, error>;
+
+        /// Sends all of `data` within 30 s. If the peer stops reading and the
+        /// deadline passes, it fails with `error.transient` and the host
+        /// closes the socket, since how much was sent is unknown.
+        send: func(data: list<u8>) -> result<_, error>;
+
+        /// Waits at most `timeout-ms` (capped at 10 s) for up to `max` bytes,
+        /// with `max` capped at 1 MiB before anything is allocated. Returns
+        /// an empty list on timeout and `error.transient` once the peer has
+        /// closed.
+        receive: func(max: u32, timeout-ms: u32) -> result<list<u8>, error>;
+    }
+}

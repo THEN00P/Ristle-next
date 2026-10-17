@@ -28,7 +28,7 @@ The API must provide data for:
 | Albums, Artists | Artist pages with releases and profile modules |
 | Profiles | Users and creators (SoundCloud-style) |
 | Playlists | Public and private, owned and followed, plus write operations |
-| Feeds | Plugin-defined Provider Views with rows and drill-down links |
+| Feeds | One Feed merged across Providers from typed posts. Provider Views only for Provider-specific surfaces |
 | Likes | Read liked state (batched), like and unlike, liked collections |
 | Streams | `resolve(track) → StreamSource`, see ADR 0004 |
 
@@ -54,7 +54,7 @@ Lessons from Ristle legacy that the API must encode:
 | Service | Requirements |
 |---|---|
 | HTTP | HTTPS only, hosts declared in the manifest, bounded size and time, concurrency limit per Plugin, redirects allowed only within declared hosts |
-| HTTP cache | The host honors `Cache-Control` and lets the Plugin override TTLs and set cache keys per request. Stale-while-revalidate for browse data |
+| HTTP cache | The host honors `Cache-Control` and lets the Plugin override TTLs and set cache keys per request. No background refetch: data is fetched again only on a user action or when nothing usable is cached. Stale data is served only while the Provider is unreachable or rate-limiting (stale-if-error) |
 | Rate limiting | The host parses `Retry-After` and 429/503, backs the Plugin off, and reports it in the UI. Plugins never sleep-loop |
 | Storage | Per-Plugin key-value store with a quota, and a separate encrypted Credential Record per Provider Connection |
 | Time, randomness, logging | Standard, with a bounded log volume |
@@ -94,6 +94,9 @@ All of these must be expressible without Plugin-specific host code:
   again.
 
 ## Open questions for the WIT draft
+
+The draft's proposed answers are in `walkthrough.md`, under "Decisions and
+open questions for the user".
 
 1. Do Provider Views stay as plugin-defined rows and links, or does the API need
    richer layout primitives (shelves, hero, grids)?

@@ -122,3 +122,10 @@ phase 2 host, whether or not the spike fixed it:
 - **Decoders are flushed at end of stream before the next track starts.**
   MediaCodec holds several packets in flight; dropping it at EOF loses the
   tail and breaks gapless.
+- **The edit list comes from the selected audio track.** In a muxed MP4 the
+  host first picks the audio `trak` and reads `elst` from that same track,
+  never from the first track that has one (a video track's edit list would
+  trim or truncate the audio).
+- **Playback has a terminal state.** When the last Track ends without repeat,
+  the core publishes an ended state and stops output, so platform facades
+  never see an endless "buffering".

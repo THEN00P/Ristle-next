@@ -68,8 +68,10 @@ waits for the user's Mac (see `docs/research/apple-without-hardware.md`).
 
 **Status 2026-10-17: go, with design changes** (ADR 0004 amendment). Results:
 `docs/research/audio-pipeline.md` (Spike B results), code in `spikes/b-audio/`.
-Ran on Windows, the Android emulator and a Pixel 8: decode CPU, gapless, the
-30-minute screen-off soak and the lock-screen controls all passed on the phone.
+Ran on Windows, the Android emulator, a Pixel 8 and a Xiaomi Mi 9T. Decode
+CPU, gapless, the 30-minute screen-off soak and the lock-screen controls passed
+on the Pixel 8. The Mi 9T found a Media3 crash on shell media-button events
+under Android 11, which needs a check against current Media3.
 
 Criteria are in `docs/research/audio-pipeline.md`: Symphonia codec CPU, the cost
 of an interpreted Byte Source, gapless playback, HLS (including how common TS

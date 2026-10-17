@@ -375,6 +375,27 @@ Where the phone's 10 % goes, and what fixes it:
 - The observer and Media3 refresh (about 1 %) come from pushing full state
   every 500 ms. Push on change and let Media3 extrapolate the position.
 
+**Xiaomi Mi 9T (Android 11, MIUI): 10 clean screen-off minutes, then a Media3
+crash.** The soak ran with the screen off and forced deep idle: 0 underruns,
+app 4.7–5.1 % of a core per minute (decode thread 3.2 %, callback 1.1 %),
+`audioserver` 5.4–5.9 %, the same pattern as the Pixel 8. At minute 10 the
+scripted `cmd media_session dispatch pause` **crashed the app**:
+`IllegalArgumentException: packageName should be nonempty` inside Media3
+1.8.0's legacy `onMediaButtonEvent`. On Android 11 a media button injected from
+the shell has an empty caller package, and Media3 fails while building the
+controller info (`spikes/b-audio/results/soak-mi9t-partial/`). The Pixel 8
+(Android 17) took the same command fine. Real notification and headset
+buttons carry a package name, so this is mainly the test tool, but a media
+button from a system component without a package would kill playback the same
+way. Production should check this against the current Media3 release, or guard
+`onMediaButtonEvent`. The following "play" restarted the service and resumed
+playback on its own. The run was not repeated to 30 minutes. A rerun without
+the shell commands measured 30 minutes of *paused* idle by mistake, and that
+cost 1.0 % of a core, from the spike's 20 ms decode polling and the 500 ms
+state push. That confirms the wakeup fix below. MIUI also blocks `adb install`
+and injected key events even with "Install via USB" on, so the APK went in
+through the file manager and the screen was switched off by hand.
+
 None of this threatened playback, but it is battery. The production target
 should be the deep-buffer path with a decode wakeup every few hundred
 milliseconds.
@@ -497,8 +518,9 @@ question: Symphonia has neither.**
 
 ### Open items
 
-- **The Mi 9T soak.** MIUI blocks `adb install` ("Install via USB" is off),
-  so the 30-minute soak ran on the Pixel 8 and the emulator only.
+- **The full 30-minute soak passed on the Pixel 8 and the emulator.** The Mi 9T
+  gave 10 clean screen-off minutes before the Media3 media-button crash
+  (section 4). That crash needs a check against current Media3 before phase 3.
 - Platform AAC decoders on iOS (AudioToolbox) and Windows (Media Foundation)
   were not built. MediaCodec was.
 - Byte-range seeks for AES-128 fMP4 and for TS/ADTS segments are not built.

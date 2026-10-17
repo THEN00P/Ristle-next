@@ -14,19 +14,38 @@ P=dev.ristle.spike.b
 mkdir -p "$OUT"
 log() { echo "$(date +%H:%M:%S) $*" | tee -a "$OUT/events.txt"; }
 
+if [ -z "${SOAK_ATTACH:-}" ]; then   # SOAK_ATTACH=1 measures playback already running
 $A shell am force-stop $P
 $A logcat -c
-$A shell input keyevent KEYCODE_WAKEUP
+$A shell input keyevent KEYCODE_WAKEUP 2>/dev/null || true
 $A shell wm dismiss-keyguard >/dev/null 2>&1 || true
+# The app must start visible: autoplay presses Play once its controller connects.
+until $A shell dumpsys power | grep -q "mWakefulness=Awake" && ! $A shell dumpsys window | grep -q "isKeyguardShowing=true"; do
+  echo "Unlock the phone and leave the screen on."; sleep 5
+done
 $A shell am start -n $P/.MainActivity --ez autoplay true >/dev/null
-sleep 15
+for i in $(seq 1 30); do
+  $A shell dumpsys media_session | grep -qE "state=(PLAYING|3)," && break
+  sleep 2
+done
+$A shell dumpsys media_session | grep -qE "state=(PLAYING|3)," || { echo "playback did not start"; exit 1; }
+echo "PLAYING: press Home, then the power button now."
+sleep 10
+fi
 PID=$($A shell pidof $P | tr -d '\r')
 ASPID=$($A shell pidof audioserver | tr -d '\r')
 log "started pid=$PID audioserver=$ASPID device=$($A shell getprop ro.product.model | tr -d '\r')"
-$A shell input keyevent KEYCODE_HOME
+# MIUI refuses injected keys without "USB debugging (Security settings)":
+# then press Home and the power button by hand. Wait for the screen to go off.
+$A shell input keyevent KEYCODE_HOME 2>/dev/null || true
 sleep 2
-$A shell input keyevent KEYCODE_SLEEP
-log "home + screen off"
+$A shell input keyevent KEYCODE_SLEEP 2>/dev/null || echo "Press Home, then the power button on the phone."
+for i in $(seq 1 60); do
+  $A shell dumpsys power | grep -q "mWakefulness=Awake" || break
+  sleep 3
+done
+log "home + screen off ($($A shell dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*' | tr -d '
+'))"
 if [ "$DOZE" = "--doze" ]; then
   $A shell dumpsys battery unplug
   $A shell dumpsys deviceidle force-idle | tr -d '\r' | tee -a "$OUT/events.txt"
@@ -44,7 +63,11 @@ echo "# minute app_cpu_pct audioserver_cpu_pct (share of one core, interval) | t
 pc=$c0; pa=$a0; pt=$t0
 for m in $(seq 1 "$MIN"); do
   sleep 60
-  case $m in
+  # SOAK_NO_DISPATCH=1: skip the shell media-button commands. On Android 11,
+  # `cmd media_session dispatch` has an empty caller package and Media3 1.8.0
+  # crashes on it in onMediaButtonEvent (Mi 9T, spike B).
+  [ -n "${SOAK_NO_DISPATCH:-}" ] && [ "$m" != 999 ] && m_cmd=0 || m_cmd=$m
+  case $m_cmd in
     10) log "dispatch pause (screen off)"; $A shell cmd media_session dispatch pause; sleep 5
         log "dispatch play"; $A shell cmd media_session dispatch play ;;
     20) log "dispatch next"; $A shell cmd media_session dispatch next ;;
@@ -61,6 +84,6 @@ $A shell dumpsys power | grep -E "mWakefulness=|mDeviceIdleMode|Display Power" |
 $A shell dumpsys activity services $P | grep -E "isForeground" | tr -d '\r' >> "$OUT/events.txt" || true
 if [ "$DOZE" = "--doze" ]; then $A shell dumpsys deviceidle unforce; $A shell dumpsys battery reset; fi
 $A logcat -d -s SPIKE_B:* ristle-audio:* AndroidRuntime:E AudioTrack:W AAudio:W > "$OUT/logcat.txt"
-$A shell input keyevent KEYCODE_WAKEUP
+$A shell input keyevent KEYCODE_WAKEUP 2>/dev/null || true
 grep SPIKE_B_HEALTH "$OUT/logcat.txt" | tail -3
 tail -4 "$OUT/events.txt"

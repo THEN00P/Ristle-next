@@ -80,6 +80,12 @@ package ristle:plugin@0.1.0;
 ///   used entries first. An evicted entry is simply fetched again, so the
 ///   bound costs only stale-if-error coverage, never correctness; a Plugin
 ///   cannot grow the cache by varying URLs or `cache-override.key`.
+///   Independently of freshness and of that bound, the host deletes every
+///   cached result 30 days after it was last fetched from the Provider: a
+///   response, a `catalog` result or a library snapshot older than that is
+///   never served, not even stale-if-error, and is gone from disk. A longer
+///   `Cache-Control` freshness or `cache-override.ttl-seconds` is capped at
+///   that age, so no Provider data is kept indefinitely.
 ///   During a call the user asked to refresh, the host revalidates every
 ///   cached response it would otherwise reuse (conditional requests where the
 ///   server supports them), so a Plugin never needs a "refresh" flag.

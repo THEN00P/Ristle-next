@@ -1,0 +1,26 @@
+# Google Pixel 8, Tensor G3, Android 17, arm64-v8a
+# cores: 1704000 1704000 1704000 1704000 2367000 2367000 2367000 2367000 2914000 
+# battery:   AC powered: false   USB powered: true   level: 100   Capacity level: 5 
+{"pin":"none","file":"mp3_320.mp3","format":"mp3","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":38,"cpu_ms_per_audio_s":1.352,"pct_one_core":0.135,"resample_to_48k_pct_one_core":0.111}
+{"pin":"none","file":"aaclc_256.m4a","format":"isomp4","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":46,"cpu_ms_per_audio_s":1.106,"pct_one_core":0.111,"resample_to_48k_pct_one_core":0.112}
+{"pin":"none","file":"aaclc_256.aac","format":"aac","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.024,"reps":47,"cpu_ms_per_audio_s":1.069,"pct_one_core":0.107,"resample_to_48k_pct_one_core":0.111}
+{"pin":"none","file":"vorbis_320.ogg","format":"ogg","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":36,"cpu_ms_per_audio_s":1.429,"pct_one_core":0.143,"resample_to_48k_pct_one_core":0.115}
+{"pin":"none","file":"opus_160.opus","format":"ogg","decoder":"libopus","support":"Full","rate":48000,"channels":2,"audio_s":60.000,"reps":21,"cpu_ms_per_audio_s":2.399,"pct_one_core":0.240}
+{"pin":"none","file":"opus_160.webm","format":"matroska","decoder":"libopus","support":"Full","rate":48000,"channels":2,"audio_s":60.014,"reps":21,"cpu_ms_per_audio_s":2.411,"pct_one_core":0.241}
+{"pin":"none","file":"flac_16_44.flac","format":"flac","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":54,"cpu_ms_per_audio_s":0.931,"pct_one_core":0.093,"resample_to_48k_pct_one_core":0.129}
+{"pin":"none","file":"flac_24_96.flac","format":"flac","decoder":"symphonia","support":"Full","rate":96000,"channels":2,"audio_s":60.000,"reps":21,"cpu_ms_per_audio_s":2.383,"pct_one_core":0.238,"resample_to_48k_pct_one_core":0.113}
+{"pin":"none","file":"heaac_v1.aac","format":"aac","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":15,"cpu_ms_per_audio_s":3.375,"pct_one_core":0.338,"resample_to_48k_pct_one_core":0.131}
+{"pin":"none","file":"heaac_v1.m4a","format":"isomp4","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":15,"cpu_ms_per_audio_s":3.376,"pct_one_core":0.338,"resample_to_48k_pct_one_core":0.133}
+{"pin":"none","file":"heaac_v2.aac","format":"aac","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":15,"cpu_ms_per_audio_s":3.543,"pct_one_core":0.354,"resample_to_48k_pct_one_core":0.136}
+{"pin":"cpu0-3","file":"mp3_320.mp3","format":"mp3","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":7,"cpu_ms_per_audio_s":7.224,"pct_one_core":0.722}
+{"pin":"cpu0-3","file":"aaclc_256.m4a","format":"isomp4","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":7,"cpu_ms_per_audio_s":7.424,"pct_one_core":0.742}
+{"pin":"cpu0-3","file":"aaclc_256.aac","format":"aac","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.024,"reps":7,"cpu_ms_per_audio_s":7.198,"pct_one_core":0.720}
+{"pin":"cpu0-3","file":"vorbis_320.ogg","format":"ogg","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":6,"cpu_ms_per_audio_s":9.281,"pct_one_core":0.928}
+{"pin":"cpu0-3","file":"opus_160.opus","format":"ogg","decoder":"libopus","support":"Full","rate":48000,"channels":2,"audio_s":60.000,"reps":4,"cpu_ms_per_audio_s":13.572,"pct_one_core":1.357}
+{"pin":"cpu0-3","file":"opus_160.webm","format":"matroska","decoder":"libopus","support":"Full","rate":48000,"channels":2,"audio_s":60.014,"reps":4,"cpu_ms_per_audio_s":13.877,"pct_one_core":1.388}
+{"pin":"cpu0-3","file":"flac_16_44.flac","format":"flac","decoder":"symphonia","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":11,"cpu_ms_per_audio_s":4.954,"pct_one_core":0.495}
+{"pin":"cpu0-3","file":"flac_24_96.flac","format":"flac","decoder":"symphonia","support":"Full","rate":96000,"channels":2,"audio_s":60.000,"reps":5,"cpu_ms_per_audio_s":12.185,"pct_one_core":1.219}
+{"pin":"cpu0-3","file":"heaac_v1.aac","format":"aac","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":3,"cpu_ms_per_audio_s":22.810,"pct_one_core":2.281}
+{"pin":"cpu0-3","file":"heaac_v1.m4a","format":"isomp4","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":3,"cpu_ms_per_audio_s":22.883,"pct_one_core":2.288}
+{"pin":"cpu0-3","file":"heaac_v2.aac","format":"aac","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.325,"reps":3,"cpu_ms_per_audio_s":25.483,"pct_one_core":2.548}
+{"pin":"none","file":"aaclc_256.m4a","format":"isomp4","decoder":"fdk-aac","support":"Full","rate":44100,"channels":2,"audio_s":60.000,"reps":20,"cpu_ms_per_audio_s":2.627,"pct_one_core":0.263}

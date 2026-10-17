@@ -60,6 +60,15 @@ before relying on it, and update it when you learn something new.
   `\Memory\Available MBytes` before timing on the emulator. Use the AGP 9.2 line
   with Gradle ≥ 9.4.1 and the Android Studio JBR (Java 21) as `JAVA_HOME`,
   not the global Java 25.
+- **Git Bash rewrites `/data/...` and `/sdcard/...` in adb arguments** into
+  Windows paths, so pushes and shell commands fail or land in the wrong place.
+  Prefix adb calls with `MSYS_NO_PATHCONV=1` (the `spikes/b-audio` scripts do).
+  Files adb pushes into a directory it created belong to `shell`, so the app
+  can't read them: push into the app's own `files/` directory.
+- **C code in Android Rust builds:** cargo-ndk sets the hyphenated
+  `CFLAGS_<triple>` variables, which `cc` prefers over the underscore form, so
+  pass extra flags as `env "CFLAGS_aarch64-linux-android=..."`. Crates that
+  build with cmake (libopus) need the VS-bundled cmake on PATH.
 - **Babysitting Codex reviews: T3's PR watch wakes late.** It reacts
   promptly to the edited "Codex Review Summary" comment, but delivers the
   inline review comments about ten minutes late. Poll in the background

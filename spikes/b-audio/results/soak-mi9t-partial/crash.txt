@@ -1,0 +1,15 @@
+E AndroidRuntime: FATAL EXCEPTION: main
+E AndroidRuntime: Process: dev.ristle.spike.b, PID: 21758
+E AndroidRuntime: java.lang.IllegalArgumentException: packageName should be nonempty
+E AndroidRuntime: 	at kb.b(r8-map-id-424a361979c8a56db305189084349d8c2cedba8cc0c22bd8aebdbfa1d1c73d8b:3)
+E AndroidRuntime: 	at xa.<init>(r8-map-id-424a361979c8a56db305189084349d8c2cedba8cc0c22bd8aebdbfa1d1c73d8b:38)
+E AndroidRuntime: 	at v9.b(r8-map-id-424a361979c8a56db305189084349d8c2cedba8cc0c22bd8aebdbfa1d1c73d8b:9)
+E AndroidRuntime: 	at va.g(r8-map-id-424a361979c8a56db305189084349d8c2cedba8cc0c22bd8aebdbfa1d1c73d8b:9)
+E AndroidRuntime: 	at r9.onMediaButtonEvent(r8-map-id-424a361979c8a56db305189084349d8c2cedba8cc0c22bd8aebdbfa1d1c73d8b:13)
+E AndroidRuntime: 	at android.media.session.MediaSession$CallbackMessageHandler.handleMessage(MediaSession.java:1566)
+E AndroidRuntime: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+E AndroidRuntime: 	at android.os.Looper.loop(Looper.java:236)
+E AndroidRuntime: 	at android.app.ActivityThread.main(ActivityThread.java:7876)
+E AndroidRuntime: 	at java.lang.reflect.Method.invoke(Native Method)
+E AndroidRuntime: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:656)
+E AndroidRuntime: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:967)

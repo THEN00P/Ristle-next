@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-10-08). The codec coverage is to be confirmed by spike B. The
-reasoning is in `docs/research/audio-pipeline.md`.
+Accepted (2026-10-08). Amended 2026-10-17 after spike B (see "Amendment"). The
+reasoning and measurements are in `docs/research/audio-pipeline.md`.
 
 ## Context
 
@@ -48,5 +48,84 @@ cannot deliver them, and services that only offer DRM streams cannot be played.
   Byte Source that decrypts with AES in the interpreter handles a
   320 kbps (~40 KB/s) stream with plenty of headroom (to be measured in spike B).
 - Codec coverage is a host responsibility and grows centrally, not per Plugin.
-- MPEG-TS is not demuxed by Symphonia. HLS over TS needs a small TS demuxer in
-  the host, or Plugins have to prefer fMP4/ADTS renditions. Decided in spike B.
+- MPEG-TS is not demuxed by Symphonia. Decided in spike B: the host demuxes TS
+  (see the amendment).
+
+## Amendment (2026-10-17, spike B)
+
+Spike B confirmed the split and changed the decoder set. Native decoding costs
+0.05–0.3 % of a desktop core per stream and 0.4–2.8 % of a phone's slow core
+(Pixel 8 A510, Mi 9T A55).
+
+1. **The decoder registry ships with three providers, not one.** Symphonia
+   0.6.1 has no HE-AAC (SBR/PS) and no Opus decoder. With implicit SBR it
+   silently outputs the AAC core: half the sample rate, and mono for HE-AAC v2.
+   - Symphonia: MP3, AAC-LC, Vorbis, FLAC, ALAC, PCM.
+   - **libopus** (BSD-3-Clause) through a Symphonia adapter, on every platform.
+   - **Platform AAC decoders for HE-AAC**: MediaCodec, AudioToolbox, Media
+     Foundation. AAC goes to them when the HLS `CODECS` or a Plugin hint says
+     `mp4a.40.5`/`40.29`, when the AudioSpecificConfig says object type 5 or
+     29, or when the AAC core rate is 24 kHz or less. FDK AAC cannot ship: its
+     licence is not GPL-compatible. The MediaCodec provider was built in the
+     spike: correct HE-AAC v1/v2, timeline-aligned output, 2.5–2.9 % of a
+     core (mostly in `media.swcodec`), about 20× Symphonia for AAC-LC, so it is
+     used only where Symphonia cannot decode.
+2. **Decoder contract.** A `Decoder` gets demuxed packets and returns
+   interleaved f32 aligned to the input timeline, so decoder latency is the
+   provider's problem (FDK's output trails Symphonia's by 1685 frames).
+   Gapless trims are applied in one place per stream.
+3. **The host applies MP4 edit lists** (`elst`, `iTunSMPB`). Symphonia parses
+   them but does not apply them, so without this AAC albums are not gapless.
+   MP3 (LAME), Ogg Vorbis/Opus and FLAC were sample-exact as they are.
+4. **The host demuxes MPEG-TS.** Live radio HLS is TS (BBC, Radio France), and
+   BBC's is HE-AAC, so a Plugin preference cannot avoid it. The spike demuxer is
+   155 lines. A production one is estimated at 300–400 lines. Plugins still
+   prefer fMP4 when offered, because it carries the edit list.
+5. **HLS decodes segments while they download, and seeks with byte ranges
+   inside a segment.** Buffering whole segments puts seeks at 840–890 ms on a
+   150 ms / 1.5 Mbit/s link. Streaming decode brings it to 527 ms median.
+   Byte-range seeks into fMP4 segments (read the `moof`, fetch from the target
+   frame) were built and give 391 ms there, two round trips regardless of
+   segment length. `EXT-X-BYTERANGE` playlists are supported.
+6. **Android output:** a cpal stream needs a one-call JNI bootstrap that fills
+   `ndk-context` (JNA loads the library without `JNI_OnLoad`). AAudio's
+   PowerSaving mode and music content type are not reachable through cpal 0.18
+   and need the `ndk` stream builder or a cpal patch. This is required, not
+   optional: on a Pixel 8 cpal's default landed on the low-latency output
+   (about 95 callbacks/s) and `audioserver` used 5.3 % of a core. The core
+   resamples to the output rate itself and wakes the decoder on demand.
+
+### Host requirements from the spike B review
+
+Codex's review of the spike found these. Each one is a requirement for the
+phase 2 host, whether or not the spike fixed it:
+
+- **Media3 mirrors the core's queue.** The `SimpleBasePlayer` timeline is
+  built from core state (queue items, current index, durations) and never from
+  a Kotlin copy of the queue. The spike's static `ALBUM` list broke this
+  (AGENTS.md ownership).
+- **Seeks map logical time through the MP4 edit list.** A seek target is in
+  presentation time after the priming trim, so the demuxer target and the
+  decode-and-discard count include `elst` media_time.
+- **AES-128 covers `EXT-X-MAP` init sections.** When an `EXT-X-KEY` precedes
+  the map, the init section is decrypted too (IV from the tag, or the rule the
+  spec gives for init sections).
+- **Ranged fMP4 parsing filters by track ID.** Muxed audio/video variants put
+  several `traf`s in one `moof`. Only the selected audio track's samples (by
+  `tfhd` track_ID) are used. A `trun` without `data_offset` continues where
+  the previous run ended (ISO/IEC 14496-12), not at the `traf` base. Apple's
+  packager writes several runs per fragment.
+- **Output follows the decoder's actual output rate.** Implicit SBR doubles
+  the rate only after the first frames, and MediaCodec reports it through a
+  format change. The core opens the output from the decoder's output, or
+  resamples everything to the device rate (the plan anyway).
+- **Decoders are flushed at end of stream before the next track starts.**
+  MediaCodec holds several packets in flight; dropping it at EOF loses the
+  tail and breaks gapless.
+- **The edit list comes from the selected audio track.** In a muxed MP4 the
+  host first picks the audio `trak` and reads `elst` from that same track,
+  never from the first track that has one (a video track's edit list would
+  trim or truncate the audio).
+- **Playback has a terminal state.** When the last Track ends without repeat,
+  the core publishes an ended state and stops output, so platform facades
+  never see an endless "buffering".

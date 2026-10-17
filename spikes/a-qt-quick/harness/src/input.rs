@@ -6,6 +6,7 @@
 //!   ldown | lup               left button
 //!   touch down|move|up <x> <y>
 //!   focus <title>             brings the window to the foreground
+//!   wait                      no-op; keeps the injector alive until then
 //!
 //! Each event is sent at its target time (sleep, then spin for the last 2 ms)
 //! and its QPC time after SendInput returns is logged.
@@ -152,6 +153,9 @@ pub fn run(args: &[String]) -> Result {
             "lup" => send(&[mouse(MOUSEEVENTF_LEFTUP, 0, 0, 0)])?,
             "touch" if touch_ready => touch(&e[1], arg(2)?, arg(3)?)?,
             "focus" => focus(&e[1..].join(" "))?,
+            // Keeps the process (and its virtual touch device) alive: removing
+            // the device makes Qt rebuild its device list on the GUI thread.
+            "wait" => {}
             other => return Err(format!("unknown command {other}").into()),
         }
         log_rows.push((i, *t, qpc(), e.join(" ")));

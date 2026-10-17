@@ -94,10 +94,10 @@ Window {
     }
 
     Timer {
-        interval: 1000 / Math.max(1, Spike.queueOpsPerSecond)
+        interval: Spike.queueOpsPerSecond >= 60 ? 16 : 1000 / Math.max(1, Spike.queueOpsPerSecond)
         repeat: true
         running: Spike.queueOpsPerSecond > 0 && root.queueChurn
-        onTriggered: queueModel.step(8)
+        onTriggered: queueModel.steps(Spike.queueOpsPerSecond >= 60 ? Math.round(Spike.queueOpsPerSecond * 0.016) : 1, 8)
     }
 
     // Instrumentation, bottom-right corner: two 8 px clocks the duplication

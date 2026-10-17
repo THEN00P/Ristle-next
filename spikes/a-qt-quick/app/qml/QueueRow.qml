@@ -2,7 +2,7 @@ import QtQuick
 import Ristle.Spike
 
 // Queue row. Desktop drag reorders by click-dragging the row itself; the
-// lifted row scales to 1.015. The 6 px strip on the left is instrumentation:
+// lifted row scales to 1.015. The 8 px strip on the left is instrumentation:
 // its colour encodes the item id for the per-frame corruption check.
 Item {
     id: row
@@ -15,6 +15,7 @@ Item {
     required property int art
     required property int source
     required property string marker
+    required property string markerCheck
     required property var queue
     required property Item overlay
 
@@ -72,9 +73,15 @@ Item {
 
         Rectangle {
             x: 0
-            width: 6
+            width: 4
             height: parent.height
             color: row.marker
+        }
+        Rectangle {
+            x: 4
+            width: 4
+            height: parent.height
+            color: row.markerCheck
         }
 
         Artwork {

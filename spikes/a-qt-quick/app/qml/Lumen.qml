@@ -22,8 +22,11 @@ QtObject {
     readonly property color inkOnAmber: "#1b1712"
     readonly property var sources: ["#4ad17a", "#ff8a3d", "#9aa0ac", "#5ab0ff"]
 
-    readonly property string headline: "Schibsted Grotesk"
-    readonly property string mono: "DM Mono"
+    // The bundled static fonts register one family per weight (see
+    // lumen-tokens.reference.ts), so weight is part of the family name.
+    readonly property string headline: "SchibstedGrotesk-ExtraBold"
+    readonly property string headlineBold: "SchibstedGrotesk-Bold"
+    readonly property string mono: "DMMono-Regular"
     readonly property string body: "Segoe UI"
 
     readonly property int rowHeight: 48

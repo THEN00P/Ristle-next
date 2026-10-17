@@ -35,14 +35,24 @@ impl Default for QueueModelRust {
     }
 }
 
-/// The corruption check reads this colour back from captured frames: red and
-/// green carry the id and blue is a checksum, so a blended pixel (fading or
-/// antialiased) almost never decodes to a valid id.
+/// The corruption check reads these two colours back from captured frames
+/// (left and right half of the strip). Red and green of the first carry the
+/// id; blue and the whole second colour are checks, so a blended pixel
+/// (fading or antialiased) decodes to a valid id about once in 2^32.
 pub fn marker(id: u32) -> String {
     let r = id & 0xff;
     let g = (id >> 8) & 0xff;
     let b = (r * 7 + g * 13 + 0x5a) & 0xff;
     format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+pub fn marker_check(id: u32) -> String {
+    let r = id & 0xff;
+    let g = (id >> 8) & 0xff;
+    let c0 = (r * 11 + g * 3 + 0xa5) & 0xff;
+    let c1 = (r ^ 0x6c).wrapping_add(g * 29) & 0xff;
+    let c2 = (r * 5 + g * 17 + 0x33) & 0xff;
+    format!("#{c0:02x}{c1:02x}{c2:02x}")
 }
 
 impl qobject::QueueModel {
@@ -61,6 +71,7 @@ impl qobject::QueueModel {
             QueueRole::Art => QVariant::from(&catalog::art(seed)),
             QueueRole::Source => QVariant::from(&catalog::source(seed)),
             QueueRole::Marker => QVariant::from(&QString::from(marker(item.id).as_str())),
+            QueueRole::MarkerCheck => QVariant::from(&QString::from(marker_check(item.id).as_str())),
             _ => QVariant::default(),
         }
     }
@@ -75,6 +86,7 @@ impl qobject::QueueModel {
             (QueueRole::Art, "art"),
             (QueueRole::Source, "source"),
             (QueueRole::Marker, "marker"),
+            (QueueRole::MarkerCheck, "markerCheck"),
         ] {
             roles.insert(role.repr, QByteArray::from(name));
         }
@@ -146,6 +158,12 @@ impl qobject::QueueModel {
                 self.as_mut().end_move_rows();
                 spike_mark(EV_QUEUE_MOVE, ((from as u32) << 16) | to as u32);
             }
+        }
+    }
+
+    pub(crate) fn steps(mut self: Pin<&mut Self>, count: i32, window: i32) {
+        for _ in 0..count {
+            self.as_mut().step(window);
         }
     }
 

@@ -6,12 +6,15 @@
 //!   harness display get | refresh <hz> | scale <percent>
 //!   harness procstat <pid> <ms> <secs> <out>   memory and CPU of a process, plus system CPU
 //!   harness window <title>                     client rect (physical px) and DPI
+//!   harness place <x> <y> <w> <h> <title>      moves a window's client area
+//!   harness textref <secs>                     native text reference window
 //!   harness qpc                                prints QPC and its frequency
 
 mod display;
 mod dupcap;
 mod input;
 mod procstat;
+mod textref;
 
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::UI::HiDpi::{
@@ -43,6 +46,8 @@ fn main() {
         Some("display") => display::run(rest),
         Some("procstat") => procstat::run(rest),
         Some("window") => display::window(rest),
+        Some("place") => display::place(rest),
+        Some("textref") => textref::run(rest),
         Some("qpc") => {
             println!("{} {}", qpc(), qpc_freq());
             Ok(())

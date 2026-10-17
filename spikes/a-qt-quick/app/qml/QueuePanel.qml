@@ -22,7 +22,7 @@ Item {
         y: 18
         text: "Queue"
         color: Lumen.text
-        font.family: Lumen.headline
+        font.family: Lumen.headlineBold
         font.weight: Font.Bold
         font.pixelSize: 20
     }
@@ -136,14 +136,26 @@ Item {
         remove: Transition {
             NumberAnimation { property: "opacity"; to: 0; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
         }
-        displaced: Transition {
-            NumberAnimation { properties: "x,y"; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
-        }
+        displaced: Spike.queueFix ? displacedSettling : displacedPlain
         move: Transition {
             NumberAnimation { properties: "x,y"; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
         }
-        moveDisplaced: Transition {
+        moveDisplaced: Spike.queueFix ? displacedSettling : displacedPlain
+
+        // Plain: what QTBUG-49868 reports break when transitions interrupt
+        // each other (rows left dimmed, overlapping, or leaving gaps).
+        Transition {
+            id: displacedPlain
             NumberAnimation { properties: "x,y"; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        }
+        // Settling: Qt's documented handling of interrupted transitions
+        // (ViewTransition, "Handling Interrupted Animations"): a displaced item
+        // may still be mid-add or mid-remove, so drive opacity and scale home.
+        Transition {
+            id: displacedSettling
+            NumberAnimation { properties: "x,y"; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; to: 1; duration: Spike.transitionMs }
+            NumberAnimation { property: "scale"; to: 1; duration: Spike.transitionMs }
         }
     }
 }

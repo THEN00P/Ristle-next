@@ -19,10 +19,10 @@ def script(scale, during_scroll, spacing=700, repeats=1):
     if during_scroll:
         # Repeated finger drags over the track table (each 600 ms, 500 px), so
         # the list is moving under every stall.
-        x = int(600 * scale)
+        x = int((80 + 600) * scale)
         tt = 300
         while tt < t + 400:
-            s.touch_drag(tt, x, int(700 * scale), int(250 * scale), 600)
+            s.touch_drag(tt, x, int((60 + 690) * scale), int((60 + 250) * scale), 600)
             tt += 700
         # Stalls land at 600 + k*700 ms: the middle of a drag.
     for t, k, shift in events:

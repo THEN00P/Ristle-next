@@ -140,6 +140,29 @@ pub fn run(args: &[String]) -> Result {
     }
 }
 
+/// `place <x> <y> <w> <h> <title...>`: moves and sizes a top-level window so
+/// its client area is at the given physical rect.
+pub fn place(args: &[String]) -> Result {
+    let n: Vec<i32> = args.iter().take(4).map(|v| v.parse()).collect::<std::result::Result<_, _>>()?;
+    let title = args[4..].join(" ");
+    let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    let hwnd = unsafe { FindWindowW(None, windows::core::PCWSTR(wide.as_ptr()))? };
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let mut wr = RECT::default();
+        GetWindowRect(hwnd, &mut wr)?;
+        let mut cr = RECT::default();
+        GetClientRect(hwnd, &mut cr)?;
+        let mut origin = POINT { x: 0, y: 0 };
+        let _ = ClientToScreen(hwnd, &mut origin);
+        // Frame thickness around the client area.
+        let (l, t) = (origin.x - wr.left, origin.y - wr.top);
+        let (r, b) = (wr.right - origin.x - cr.right, wr.bottom - origin.y - cr.bottom);
+        SetWindowPos(hwnd, None, n[0] - l, n[1] - t, n[2] + l + r, n[3] + t + b, SWP_NOZORDER)?;
+    }
+    Ok(())
+}
+
 pub fn window(args: &[String]) -> Result {
     let title = args.join(" ");
     let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();

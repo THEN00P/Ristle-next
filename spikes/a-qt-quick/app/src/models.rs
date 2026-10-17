@@ -115,6 +115,7 @@ pub mod qobject {
         Art,
         Source,
         Marker,
+        MarkerCheck,
     }
 
     extern "RustQt" {
@@ -193,6 +194,9 @@ pub mod qobject {
         /// One random insert, remove or move among the first `window` rows.
         #[qinvokable]
         fn step(self: Pin<&mut QueueModel>, window: i32);
+        /// `count` steps at once (edit rates above the frame rate).
+        #[qinvokable]
+        fn steps(self: Pin<&mut QueueModel>, count: i32, window: i32);
     }
 }
 

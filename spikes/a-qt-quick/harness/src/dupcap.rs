@@ -65,7 +65,7 @@ pub fn run(args: &[String]) -> Result {
     let mut secs = 10.0f64;
     let mut out = String::from("dupcap");
     let mut rects: Vec<Rect> = Vec::new();
-    let mut marker: Option<(i32, i32, i32)> = None;
+    let mut marker: Option<(i32, i32, i32, i32)> = None;
     let mut snaps: Vec<f64> = Vec::new();
     let mut pixels: Vec<(String, i32, i32)> = Vec::new();
     let mut it = args.iter();
@@ -81,8 +81,9 @@ pub fn run(args: &[String]) -> Result {
                 rects.push(Rect { name: name.into(), x: n[0], y: n[1], w: n[2], h: n[3] });
             }
             "--marker" => {
+                // x,y0,y1,x_check: the id column and its check column.
                 let n = parse_ints(v()?)?;
-                marker = Some((n[0], n[1], n[2]));
+                marker = Some((n[0], n[1], n[2], n[3]));
             }
             "--snap" => snaps.push(v()?.parse()?),
             "--pixel" => {
@@ -109,9 +110,9 @@ pub fn run(args: &[String]) -> Result {
         by0 = by0.min(*py);
         by1 = by1.max(py + 1);
     }
-    if let Some((mx, my0, my1)) = marker {
-        bx0 = bx0.min(mx);
-        bx1 = bx1.max(mx + 1);
+    if let Some((mx, my0, my1, mx2)) = marker {
+        bx0 = bx0.min(mx).min(mx2);
+        bx1 = bx1.max(mx + 1).max(mx2 + 1);
         by0 = by0.min(my0);
         by1 = by1.max(my1);
     }
@@ -224,14 +225,25 @@ pub fn run(args: &[String]) -> Result {
             .collect();
 
         let mut markers = String::new();
-        if let Some((mx, my0, my1)) = marker {
+        if let Some((mx, my0, my1, mx2)) = marker {
             let mut run_start = 0i32;
             let mut run_id = 0u32;
             for y in my0..=my1 {
                 let id = if y < my1 {
-                    let p = &data[(y - by0) as usize * pitch + (mx - bx0) as usize * 4..][..4];
+                    let row = (y - by0) as usize * pitch;
+                    let p = &data[row + (mx - bx0) as usize * 4..][..4];
+                    let c = &data[row + (mx2 - bx0) as usize * 4..][..4];
                     let (b, g, r) = (p[0] as u32, p[1] as u32, p[2] as u32);
-                    if (r * 7 + g * 13 + 0x5a) & 0xff == b { r | (g << 8) } else { 0 }
+                    let check = [
+                        (r * 11 + g * 3 + 0xa5) & 0xff,
+                        (r ^ 0x6c).wrapping_add(g * 29) & 0xff,
+                        (r * 5 + g * 17 + 0x33) & 0xff,
+                    ];
+                    let ok = (r * 7 + g * 13 + 0x5a) & 0xff == b
+                        && c[2] as u32 == check[0]
+                        && c[1] as u32 == check[1]
+                        && c[0] as u32 == check[2];
+                    if ok { r | (g << 8) } else { 0 }
                 } else {
                     0
                 };

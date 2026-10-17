@@ -206,6 +206,53 @@ def control_dd(d, hz=None):
             "missed_by_recorder": cf["accumulated_gt1"], "stalls": res}
 
 
+def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, motion_gap_ms=100):
+    """Duplication pass: how smoothly `region` updated while it was moving.
+    Motion = consecutive changes less than `motion_gap_ms` apart. A hitch is
+    an interval inside motion longer than 1.5 refresh periods; it counts the
+    refreshes the content skipped. Works for any app, so baselines compare."""
+    m = meta(d)
+    hz = hz or refresh_hz(m)
+    T = 1000 / hz
+    _, cols, rows = dupcap(d)
+    changes, prev = [], None
+    for r in rows:
+        if prev is not None and r[region] != prev and t0 <= r["present_qpc"] <= t1:
+            changes.append(r["present_qpc"])
+        prev = r[region]
+    iv = [(b - a) / 1e4 for a, b in zip(changes, changes[1:])]
+    motion = [x for x in iv if x < motion_gap_ms]
+    skipped = sum(max(0, round(x / T) - 1) for x in motion if x > 1.5 * T)
+    motion_s = sum(motion) / 1000
+    return {"changes": len(changes), "motion_s": round(motion_s, 2),
+            "updates_per_s_in_motion": round(len(motion) / motion_s, 1) if motion_s else None,
+            "interval_p50_ms": pct(motion, 50), "interval_p99_ms": pct(motion, 99),
+            "skipped_refreshes": skipped, "skipped_per_min_of_motion": round(skipped / motion_s * 60, 1) if motion_s else None,
+            "recorder_missed": sum(1 for r in rows if r["accumulated"] > 1)}
+
+
+def input_to_photon(d, region, select):
+    """For each input whose command matches `select`, the time from the
+    SendInput return (QPC) to the DWM present time of the first duplicated
+    frame in which `region` changed. Both clocks are QPC, outside the app."""
+    _, cols, rows = dupcap(d)
+    lat = []
+    for t, q, c in inputs(d):
+        if not select(c):
+            continue
+        prev = None
+        for r in rows:
+            if r["present_qpc"] <= q:
+                prev = r[region]
+                continue
+            if prev is not None and r[region] != prev:
+                lat.append(round((r["present_qpc"] - q) / 1e4, 2))
+                break
+            prev = r[region]
+    return {"n": len(lat), "p50_ms": pct(lat, 50), "p99_ms": pct(lat, 99), "max_ms": max(lat, default=None),
+            "samples": lat}
+
+
 if __name__ == "__main__":
     import sys
     cmd, d = sys.argv[1], sys.argv[2]

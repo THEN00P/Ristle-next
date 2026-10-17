@@ -178,6 +178,8 @@ def run(name, cfg, script: Script | None, *, mode="pm", settle=1.5, tail=1.5, re
 
     dur = (script.end_ms if script else 0) / 1000 + tail
     if script:
+        # The injector must outlive the recorders (see `wait` in input.rs).
+        script.add(script.end_ms + (tail + 2.5) * 1000, "wait")
         script.write(d / "input.txt")
     x, y, w, h = (int(win[k]) for k in ("x", "y", "w", "h"))
     k = int(win["dpi"]) / 96
@@ -189,8 +191,8 @@ def run(name, cfg, script: Script | None, *, mode="pm", settle=1.5, tail=1.5, re
         for rname, (rx, ry, rw, rh) in (rects or {"window": (0, 0, 1280, 800)}).items():
             rect_args += ["--rect", f"{rname},{x + P(rx)},{y + P(ry)},{P(rw)},{P(rh)}"]
         if marker:
-            mx, my0, my1 = marker
-            rect_args += ["--marker", f"{x + P(mx)},{y + P(my0)},{y + P(my1)}"]
+            mx, my0, my1 = marker  # mx: logical x of the strip's left edge
+            rect_args += ["--marker", f"{x + P(mx + 2)},{y + P(my0)},{y + P(my1)},{x + P(mx + 6)}"]
         if clocks:
             rect_args += ["--pixel", f"gui,{x + w - P(16)},{y + h - P(6)}",
                           "--pixel", f"render,{x + w - P(6)},{y + h - P(6)}"]

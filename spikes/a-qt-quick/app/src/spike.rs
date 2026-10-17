@@ -38,6 +38,7 @@ pub mod ffi {
         #[qproperty(i32, queue_ops_per_second, cxx_name = "queueOpsPerSecond", READ, CONSTANT)]
         #[qproperty(bool, heartbeat, READ, CONSTANT)]
         #[qproperty(bool, animators, READ, CONSTANT)]
+        #[qproperty(bool, queue_fix, cxx_name = "queueFix", READ, CONSTANT)]
         #[qproperty(bool, specimen, READ, CONSTANT)]
         #[qproperty(i32, start_page, cxx_name = "startPage", READ, CONSTANT)]
         type Spike = super::SpikeRust;
@@ -75,6 +76,7 @@ pub struct SpikeRust {
     queue_ops_per_second: i32,
     heartbeat: bool,
     animators: bool,
+    queue_fix: bool,
     specimen: bool,
     start_page: i32,
 }
@@ -98,6 +100,8 @@ impl Default for SpikeRust {
             // flip-model swap chains and keep presenting while the GUI thread
             // is blocked (hiding GUI stalls from PresentMon). Off by default.
             animators: env("SPIKE_ANIMATORS", 0) != 0,
+            // Qt's documented handling of interrupted view transitions.
+            queue_fix: env("SPIKE_QUEUE_FIX", 1) != 0,
             specimen: env("SPIKE_SPECIMEN", 0) != 0,
             start_page: env("SPIKE_PAGE", 0),
         }

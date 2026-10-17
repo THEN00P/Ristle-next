@@ -26,7 +26,7 @@ def explorer_launch():
     if len(list(FOLDER.iterdir())) < 3000:
         for i in range(3000):
             (FOLDER / f"track {i:05d} - midnight pilot.txt").write_text("x")
-    title = FOLDER.name
+    title = f"{FOLDER.name} - File Explorer"
     if sh([HARNESS, "window", title]).returncode != 0:  # reuse an open window
         subprocess.Popen(["explorer.exe", str(FOLDER)])
     analyze_wait(title)
@@ -58,13 +58,16 @@ def analyze_wait(title, timeout=20):
 def measure_app(tag, app):
     launch = {"qt": None, "explorer": explorer_launch, "legacy": legacy_launch}[app]
     cfg = {"SPIKE_ROWS": 10000, "SPIKE_WEIGHT": 1} if app == "qt" else {}
+    title = {"qt": "Ristle spike A", "explorer": f"{FOLDER.name} - File Explorer", "legacy": "Ristle"}[app]
     for kind, speed in INPUTS:
         name = f"{tag}_baseline_{app}_{kind}{speed}"
-        d = run(name + "_dd", cfg, scroll_script(kind, speed), mode="dd", launch=launch,
+        d = run(name + "_dd", cfg, scroll_script(kind, speed, title=title), mode="dd", launch=launch,
                 rects={"list": LIST}, clocks=(app == "qt"), close=(app == "qt"))
         t0, t1 = window(d)
         cad = analyze.content_cadence(d, "list", t0, t1)
-        p = run(name + "_pm", cfg, scroll_script(kind, speed), mode="pm", launch=launch,
+        if kind == "fling":
+            cad["active"] = analyze.content_cadence(d, "list", t0, t1, windows=analyze.active_windows(d))
+        p = run(name + "_pm", cfg, scroll_script(kind, speed, title=title), mode="pm", launch=launch,
                 pm_target=dwm_pid() if app != "qt" else None, close=(app == "qt"))
         t0, t1 = window(p)
         hz = analyze.refresh_hz(analyze.meta(p))
@@ -75,7 +78,7 @@ def measure_app(tag, app):
             print(json.dumps(res), file=f)
         print(app, kind, speed, cad, {k: fs[k] for k in ("frames", "expected_frames", "p99_ms", "dropped")}, flush=True)
         if app != "qt":
-            title = {"explorer": FOLDER.name, "legacy": "Ristle"}[app]
+            title = {"explorer": f"{FOLDER.name} - File Explorer", "legacy": "Ristle"}[app]
             info = sh([HARNESS, "window", title]).stdout
             if "pid=" in info:
                 sh(["taskkill", "/PID", info.split("pid=")[1].split()[0]]) if app == "legacy" else None

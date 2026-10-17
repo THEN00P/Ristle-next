@@ -68,6 +68,8 @@ def meta(d):
 
 
 def refresh_hz(m):
+    if "refresh_exact" in m["display"]:
+        return float(m["display"]["refresh_exact"])
     hz = int(m["display"]["refresh"])
     return 59.951 if hz == 59 else (143.998 if hz in (143, 144) else float(hz))
 
@@ -206,7 +208,21 @@ def control_dd(d, hz=None):
             "missed_by_recorder": cf["accumulated_gt1"], "stalls": res}
 
 
-def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, motion_gap_ms=100):
+def active_windows(d, after_ms=200):
+    """High-velocity phases of scripted flings: finger down until `after_ms`
+    after release. At the tail of a fling content moves less than a pixel
+    per frame, so an unchanged frame there is not a stall."""
+    out, down = [], None
+    for t, q, c in inputs(d):
+        if c.startswith("touch down"):
+            down = q
+        elif c.startswith("touch up") and down is not None:
+            out.append((down, q + int(after_ms * 1e4)))
+            down = None
+    return out
+
+
+def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, motion_gap_ms=100, windows=None):
     """Duplication pass: how smoothly `region` updated while it was moving.
     Motion = consecutive changes less than `motion_gap_ms` apart. A hitch is
     an interval inside motion longer than 1.5 refresh periods; it counts the
@@ -220,7 +236,10 @@ def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, motion_gap_ms=100):
         if prev is not None and r[region] != prev and t0 <= r["present_qpc"] <= t1:
             changes.append(r["present_qpc"])
         prev = r[region]
-    iv = [(b - a) / 1e4 for a, b in zip(changes, changes[1:])]
+    pairs = list(zip(changes, changes[1:]))
+    if windows is not None:
+        pairs = [(a, b) for a, b in pairs if any(w0 <= a and b <= w1 for w0, w1 in windows)]
+    iv = [(b - a) / 1e4 for a, b in pairs]
     motion = [x for x in iv if x < motion_gap_ms]
     skipped = sum(max(0, round(x / T) - 1) for x in motion if x > 1.5 * T)
     motion_s = sum(motion) / 1000

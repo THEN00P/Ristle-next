@@ -93,3 +93,37 @@ if __name__ == "__main__":
     tag = sys.argv[1]
     for which in sys.argv[2:]:
         globals()[which](tag)
+
+
+def startup(tag, launches=5):
+    """Launch to first present (PresentMon, by name, started before the
+    launch) and to the first duplicated frame showing the window, repeated.
+    The first launch of the series is the coldest this session allows
+    (evicting the file cache needs elevation); the rest are warm."""
+    import analyze, os
+    from spikelib import APP, PRESENTMON, app_env, harness
+    res = []
+    for i in range(launches):
+        d = RUNS / f"{tag}_startup_{i}"
+        d.mkdir(parents=True, exist_ok=True)
+        pm = subprocess.Popen([str(PRESENTMON), "--process_name", "qtspike.exe", "--output_file", str(d / "presentmon.csv"),
+                               "--timed", "6", "--terminate_after_timed", "--qpc_time", "--no_console_stats",
+                               "--stop_existing_session"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.5)
+        t0 = int(harness("qpc").split()[0])
+        p = subprocess.Popen([str(APP)], env=app_env({"SPIKE_ROWS": 1000, "SPIKE_RING_OUT": d / "ring.csv"}),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        win = wait_window()
+        t_window = int(harness("qpc").split()[0])
+        pm.wait()
+        sh(["taskkill", "/PID", win["pid"]])
+        p.wait(timeout=10)
+        frames = analyze.presentmon(d)
+        first = min(f["qpc"] for f in frames) if frames else None
+        r = {"launch": i, "first_present_ms": round((first - t0) / 1e4, 1) if first else None,
+             "window_found_ms": round((t_window - t0) / 1e4, 1)}
+        res.append(r)
+        print(r, flush=True)
+        time.sleep(1)
+    with open(SUMMARY.parent / "startup.jsonl", "a") as f:
+        print(json.dumps({"tag": tag, "launches": res}), file=f)

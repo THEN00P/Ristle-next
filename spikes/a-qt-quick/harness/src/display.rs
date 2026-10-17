@@ -97,9 +97,12 @@ pub fn run(args: &[String]) -> Result {
                 }
                 i += 1;
             }
+            let path = primary_path()?;
+            let rr = path.targetInfo.refreshRate;
             println!(
-                "width={} height={} refresh={} max_refresh={} scale={} recommended_scale={}",
-                dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency, max_hz, scale, recommended
+                "width={} height={} refresh={} refresh_exact={:.4} max_refresh={} scale={} recommended_scale={}",
+                dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency,
+                rr.Numerator as f64 / rr.Denominator.max(1) as f64, max_hz, scale, recommended
             );
             Ok(())
         }

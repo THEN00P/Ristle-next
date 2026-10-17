@@ -16,12 +16,12 @@ QUEUE_X = 1100
 MEASURE_FROM_MS = 900  # scripted input before this is warm-up
 
 
-def scroll_script(kind, speed, secs=8.0, k=None):
+def scroll_script(kind, speed, secs=8.0, k=None, title=TITLE):
     """kind: fling (touch drag then release, `speed` px/s), wheel (`speed`
     notches/s), touchpad (`speed` px-ish/s as 120 Hz small wheel deltas)."""
     k = k or int(display()["scale"]) / 100
     s = Script()
-    s.add(0, "focus", TITLE)
+    s.add(0, "focus", title)
     t0 = MEASURE_FROM_MS
     P = lambda v: round(v * k)        # y offsets and distances
     X = lambda v: round((ORIGIN[0] + v) * k)

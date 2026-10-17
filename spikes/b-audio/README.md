@@ -37,7 +37,7 @@ The scripts set `MSYS_NO_PATHCONV=1` because Git Bash otherwise rewrites
 Android Studio JBR and finds the VS-bundled cmake (for libopus) through
 `vswhere`.
 
-## Phone run (open item)
+## Phone run (done 2026-10-17 on a Pixel 8; rerun on another phone the same way)
 
 With the phone on adb (`adb devices` shows its serial):
 

@@ -103,7 +103,7 @@ the decoder. *(spike B: verify per format)*
 5. Android: playback continues for 30 minutes with the screen off and the app
    backgrounded, controlled from the lock screen.
 
-## Spike B results (2026-10-13 to 2026-10-15)
+## Spike B results (2026-10-13 to 2026-10-17)
 
 Code: `spikes/b-audio/` (deleted after review). Criterion 2 was measured in spike
 C (about 1.4 % of one core on an iPhone 8) and was not repeated.
@@ -113,8 +113,11 @@ into ADR 0004). Symphonia is cheap enough everywhere measured and is gapless for
 MP3, Vorbis, Opus and FLAC. It cannot be the only decoder: it has **no HE-AAC
 (SBR/PS) and no Opus**, and it does not apply MP4 edit lists. Live radio HLS is
 mostly MPEG-TS, so the host needs a TS demuxer. One was written in the spike in
-155 lines. **Only the emulator was available, so the arm64 numbers and the
-30-minute phone soak are still open.**
+155 lines. It ran on Windows, the Android emulator and a **Pixel 8**: every
+codec decodes in under 3 % of a Cortex-A510 little core, and 30 minutes of
+screen-off, Doze playback had no underruns. On the phone the player costs about
+10 % of a core in total (app plus `audioserver`), mostly from avoidable
+wakeups (see section 4).
 
 ### Setup
 
@@ -142,27 +145,33 @@ mostly MPEG-TS, so the host needs a TS demuxer. One was written in the spike in
 
 Share of one core while decoding one real-time stream.
 
-| Stream | Decoder | Windows 7700X | Emulator x86_64 | arm64 phone |
-|---|---|---|---|---|
-| MP3 320 CBR | Symphonia | 0.080 % | 0.112 % | open |
-| AAC-LC 256 (MP4) | Symphonia | 0.054 % | 0.087 % | open |
-| AAC-LC 256 (ADTS) | Symphonia | 0.053 % | 0.086 % | open |
-| Vorbis 320 | Symphonia | 0.076 % | 0.114 % | open |
-| Opus 160 (Ogg) | libopus | 0.152 % | 0.174 % | open |
-| Opus 160 (WebM) | libopus | 0.151 % | 0.173 % | open |
-| FLAC 16/44.1 | Symphonia | 0.050 % | 0.088 % | open |
-| FLAC 24/96 | Symphonia | 0.130 % | 0.232 % | open |
-| HE-AAC v1 (ADTS / MP4) | FDK | 0.276 / 0.281 % | 0.263 / 0.263 % | open |
-| HE-AAC v2 (ADTS) | FDK | 0.309 % | 0.298 % | open |
-| AAC-LC 256 (MP4), for comparison | FDK | 0.214 % | 0.220 % | open |
-| Resampling 44.1 → 48 kHz | rubato FFT | 0.031 % | 0.033 % | open |
+| Stream | Decoder | Windows 7700X | Emulator x86_64 | Pixel 8, unpinned | Pixel 8, A510 little core |
+|---|---|---|---|---|---|
+| MP3 320 CBR | Symphonia | 0.080 % | 0.112 % | 0.135 % | 0.72 % |
+| AAC-LC 256 (MP4) | Symphonia | 0.054 % | 0.087 % | 0.111 % | 0.74 % |
+| AAC-LC 256 (ADTS) | Symphonia | 0.053 % | 0.086 % | 0.107 % | 0.72 % |
+| Vorbis 320 | Symphonia | 0.076 % | 0.114 % | 0.143 % | 0.93 % |
+| Opus 160 (Ogg) | libopus | 0.152 % | 0.174 % | 0.240 % | 1.36 % |
+| Opus 160 (WebM) | libopus | 0.151 % | 0.173 % | 0.241 % | 1.39 % |
+| FLAC 16/44.1 | Symphonia | 0.050 % | 0.088 % | 0.093 % | 0.50 % |
+| FLAC 24/96 | Symphonia | 0.130 % | 0.232 % | 0.238 % | 1.22 % |
+| HE-AAC v1 (ADTS / MP4) | FDK | 0.276 / 0.281 % | 0.263 / 0.263 % | 0.338 / 0.338 % | 2.28 / 2.29 % |
+| HE-AAC v2 (ADTS) | FDK | 0.309 % | 0.298 % | 0.354 % | 2.55 % |
+| AAC-LC 256 (MP4), for comparison | FDK | 0.214 % | 0.220 % | 0.263 % | — |
+| Resampling 44.1 → 48 kHz | rubato FFT | 0.031 % | 0.033 % | 0.11–0.13 % | — |
 
-Pinning the emulator run to CPUs 0–3 changed nothing (within 3 %). The
-emulator runs on the desktop's cores, so it says nothing about a low-end phone.
-A Cortex-A53-class core is very roughly 10–20× slower than a Zen 4 core, which
-would put Symphonia at about 1–2 % and HE-AAC at about 3–6 % of one little core.
-That is an estimate, not a measurement: the phone run is open. Raw data:
-`spikes/b-audio/results/windows-7700x.jsonl` and `android-emu-x86_64-bench.jsonl`.
+The phone is a Google Pixel 8 (Tensor G3, Android 17) on USB power. "Unpinned"
+lets the scheduler choose and lands on the mid or big cores. "A510" pins the
+process with `taskset 0f` to CPUs 0–3, the Cortex-A510 little cores at
+1.7 GHz, which is roughly what a low-end phone's best core offers. **Every
+codec stays under the 3 % target on a little core**: 0.5–0.9 % for the
+Symphonia codecs at 16/44.1, 1.4 % for Opus, and 2.3–2.6 % for HE-AAC through
+FDK, the most expensive case. MediaCodec's software AAC decoder is FDK too, so
+the HE-AAC fallback should cost about the same, just in `media.swcodec`. A
+little core is 5–7× slower than the scheduler's choice. Pinning the emulator
+run changed nothing, as expected for x86 cores of one type. Raw data:
+`spikes/b-audio/results/windows-7700x.jsonl`, `android-emu-x86_64-bench.jsonl`
+and `android-pixel8-bench.jsonl`.
 
 ### 2. Gapless
 
@@ -172,7 +181,7 @@ encoder would, decoded back to back and compared with the source. The check
 reports each track's length delta and start offset (cross-correlation lag) and
 the signal-to-error ratio of 10 ms windows around each boundary. A positive
 control that inserts one frame at the start of track 2 is caught as lag +1 and
-delta +1. The results were identical on Windows and on the emulator.
+delta +1. The results were identical on Windows, the emulator and the Pixel 8.
 
 | Container | Gapless info | Who trims | Result |
 |---|---|---|---|
@@ -300,10 +309,49 @@ state"), so the buttons were located from screenshots
 (`spikes/b-audio/results/ui/`) and pressed with `adb shell input tap`, not by a
 delegated UI agent.
 
-The decode thread costs 4–5× the benchmark figure because it polls every
-20 ms and reads files through the filesystem. The callback thread is the
-1024-frame copy plus AAudio's legacy path. On the emulator this is
-host-desktop CPU. The phone soak has to give the real figure.
+On the emulator this is host-desktop CPU. The phone gives the real figure:
+
+**Pixel 8 soak (30 min, same script and album, USB power, faked unplugged +
+forced deep idle): pass.**
+
+| | Result |
+|---|---|
+| Audio played | 1885 s in 1892 s (5 s scripted pause, about 1 s from the user's touch, startup) |
+| Underruns | 0 starved callbacks, 0 AAudio xruns, in 179,788 callbacks. Worst callback 1.3 ms |
+| Track transitions | 188 gapless transitions |
+| End state | `mWakefulness=Dozing`, `mDeviceIdleMode=true`, foreground `mediaPlayback` service, MediaStyle notification |
+| Screen | off throughout, except about 30 s at minute 26 when the user unlocked the phone and opened the app, which paused and resumed playback |
+| App CPU | **4.55 %** of one core: decode thread 2.40 %, cpal callback thread (`AudioTrack`) 1.10 %, observer callbacks (`ristle-core-cb`) 0.48 %, main thread (Media3 state refresh) 0.48 % |
+| `audioserver` CPU | **5.30 %** |
+
+The phone's log buffer wrapped during the 30 minutes, so the scripted
+commands were checked again right after the soak, with the phone dozing and the
+screen off: pause, play and next through the media session all took effect.
+**The lock-screen card works on the real device**: pause, play and next tapped
+with the secure keyguard showing all reached the core.
+
+Where the phone's 10 % goes, and what fixes it:
+
+- **The decode thread (2.40 %) is 18× its benchmark figure.** On a little core
+  the benchmark is 0.13–0.74 %. The rest is the spike's 20 ms polling loop
+  (50 wakeups/s) and small reads. Production should decode in batches and wake
+  when the ring drops below a threshold.
+- **The output path costs the most (1.10 % callback + 5.30 % `audioserver`).**
+  The phone has a deep-buffer output (`AUDIO_OUTPUT_FLAG_DEEP_BUFFER`,
+  1920-frame periods). cpal's performance mode NONE put the stream on the
+  primary low-latency output instead (480-frame periods, about 95
+  callbacks/s), at 44.1 kHz into a 48 kHz mixer, so `audioserver` also
+  resamples. Asking AAudio for PowerSaving routes music to deep buffer or
+  offload, and resampling to 48 kHz in the core (0.11–0.13 % on this phone)
+  removes the server-side resampler. Neither is reachable through cpal 0.18,
+  which makes the `ndk` stream builder (or a cpal patch) a requirement, not an
+  option.
+- The observer and Media3 refresh (about 1 %) come from pushing full state
+  every 500 ms. Push on change and let Media3 extrapolate the position.
+
+None of this threatened playback, but it is battery. The production target
+should be the deep-buffer path with a decode wakeup every few hundred
+milliseconds.
 
 Findings that change implementation:
 
@@ -315,18 +363,14 @@ Findings that change implementation:
   (`player/src/android.rs`, 20 lines). Every crate built on `ndk-context` needs
   this.
 - **cpal leaves AAudio's performance mode at NONE** (LowLatency only with its
-  `realtime` feature) and offers no PowerSaving or usage/content type. With
-  NONE the callback runs on an `AudioTrack` thread at about 43 callbacks/s
-  (1024-frame bursts), which suits background music. PowerSaving (deep buffer,
-  offload) and `CONTENT_TYPE_MUSIC` need the `ndk` crate's `AudioStreamBuilder`
-  directly or a cpal patch. That is worth doing for battery and was not
-  measured.
+  `realtime` feature) and offers no PowerSaving or usage/content type. On the
+  emulator NONE gave about 43 callbacks/s. On the Pixel 8 it landed on the
+  primary low-latency output at about 95 callbacks/s, and `audioserver` cost
+  5.3 % (above). PowerSaving (deep buffer, offload) and `CONTENT_TYPE_MUSIC`
+  need the `ndk` crate's `AudioStreamBuilder` directly or a cpal patch.
 - Media keys and `cmd media_session dispatch` reach the session only after it
   has played once ("Media button session is null"). This is normal Android
   behavior, but playback has to start from the app UI.
-- The spike's decode thread polls every 20 ms when the ring is full, about 50
-  wakeups/s. Production should wake on demand when the ring drops below a
-  threshold.
 - Not covered by the spike: audio focus and becoming-noisy handling. Media3's
   `SimpleBasePlayer` does not do them (ExoPlayer does). They are platform code
   around the core.
@@ -413,14 +457,18 @@ question: Symphonia has neither.**
    contract requires timeline-aligned output.
 4. **HLS decodes while downloading** and seeks with byte ranges into the
    segment, so seeks stay under 500 ms on slow links.
-5. Android output needs the **`ndk-context` JNI bootstrap**, and should use
-   AAudio PowerSaving (outside cpal's current API).
+5. Android output needs the **`ndk-context` JNI bootstrap** and **must use
+   AAudio PowerSaving** (outside cpal's current API), with the core resampling
+   to the output rate and waking its decoder on demand. On the Pixel 8 the
+   defaults cost about 10 % of a core.
 
 ### Open items
 
-- **The arm64 phone run**: decode CPU (`android-bench.sh`) and the 30-minute
-  soak with the lock-screen controls (`soak.sh`). See `spikes/b-audio/README.md`.
-- Platform AAC decoders were not implemented. MediaCodec cost is expected to be
-  close to the FDK figures, but it runs in the `media.swcodec` process.
-- Byte-range HLS seeking, AAudio PowerSaving and the power cost of NONE versus
-  PowerSaving were not measured.
+- Platform AAC decoders were not implemented. MediaCodec's software AAC decoder
+  is FDK-based, so it should cost about what FDK cost here (2.3–2.6 % of a
+  little core), but it runs in `media.swcodec`.
+- Byte-range HLS seeking, AAudio PowerSaving with resampling in the core, and
+  event-driven decode wakeups are untested. The phone soak says they matter
+  for battery (section 4).
+- Only one phone was measured, and it is not low-end. Its A510 little cores
+  stand in for a low-end phone's cores.

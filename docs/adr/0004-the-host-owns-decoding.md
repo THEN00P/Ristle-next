@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-10-08). Amended 2026-10-15 after spike B (see "Amendment"). The
+Accepted (2026-10-08). Amended 2026-10-17 after spike B (see "Amendment"). The
 reasoning and measurements are in `docs/research/audio-pipeline.md`.
 
 ## Context
@@ -51,10 +51,11 @@ cannot deliver them, and services that only offer DRM streams cannot be played.
 - MPEG-TS is not demuxed by Symphonia. Decided in spike B: the host demuxes TS
   (see the amendment).
 
-## Amendment (2026-10-15, spike B)
+## Amendment (2026-10-17, spike B)
 
 Spike B confirmed the split and changed the decoder set. Native decoding costs
-0.05–0.3 % of a desktop core per stream (the arm64 phone figure is still open).
+0.05–0.3 % of a desktop core per stream and 0.5–2.6 % of a Pixel 8's Cortex-A510
+little core.
 
 1. **The decoder registry ships with three providers, not one.** Symphonia
    0.6.1 has no HE-AAC (SBR/PS) and no Opus decoder. With implicit SBR it
@@ -85,4 +86,7 @@ Spike B confirmed the split and changed the decoder set. Native decoding costs
 6. **Android output:** a cpal stream needs a one-call JNI bootstrap that fills
    `ndk-context` (JNA loads the library without `JNI_OnLoad`). AAudio's
    PowerSaving mode and music content type are not reachable through cpal 0.18
-   and need the `ndk` stream builder or a cpal patch.
+   and need the `ndk` stream builder or a cpal patch. This is required, not
+   optional: on a Pixel 8 cpal's default landed on the low-latency output
+   (about 95 callbacks/s) and `audioserver` used 5.3 % of a core. The core
+   resamples to the output rate itself and wakes the decoder on demand.

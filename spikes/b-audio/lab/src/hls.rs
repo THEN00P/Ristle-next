@@ -579,6 +579,8 @@ pub fn open_at(reg: &DecoderRegistry, f: &Fetcher, pl: &Playlist, init_cache: Op
         discarded += frames as u64;
     }
     let latency = started.elapsed();
+    // Snapshot fetch time here too: the accuracy sample below reads more.
+    let fetch_ns = f.fetch_ns.load(std::sync::atomic::Ordering::Relaxed) - ns0;
     // Not part of the latency: collect a little more audio for the accuracy check.
     while after.len() < 8192 {
         let Ok(Some(p)) = format.next_packet() else { break };
@@ -591,7 +593,7 @@ pub fn open_at(reg: &DecoderRegistry, f: &Fetcher, pl: &Playlist, init_cache: Op
     Ok((
         SeekResult {
             latency,
-            fetch: Duration::from_nanos(f.fetch_ns.load(std::sync::atomic::Ordering::Relaxed) - ns0),
+            fetch: Duration::from_nanos(fetch_ns),
             container,
             decoder: name,
             requests: f.requests.load(std::sync::atomic::Ordering::Relaxed) - req0,

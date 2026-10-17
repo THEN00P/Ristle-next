@@ -281,7 +281,7 @@ fn hls(args: &[String]) -> Result<()> {
                 // Byte-range seek inside the segment (moof, then the frames from the target).
                 let r = audiolab::hlsseek::seek_fmp4(&reg, &f, &pl, init.as_deref().unwrap_or(&[]), target)?;
                 lat.push(r.latency.as_secs_f64() * 1000.0);
-                fetch.push(0.0);
+                fetch.push(r.fetch.as_secs_f64() * 1000.0);
                 if let (Some(src), false) = (&source, t.starts_with("http")) {
                     let at = (r.first_frame_s * r.rate as f64).round() as i64;
                     lags.push(align(&r.audio, src, at, 2048));

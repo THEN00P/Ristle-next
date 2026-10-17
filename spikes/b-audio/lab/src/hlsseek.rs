@@ -43,6 +43,8 @@ fn parse_moof(head: &[u8]) -> Result<Trun> {
             let (mut def_size, mut def_dur) = (0u32, 1024u32);
             let mut base_offset: Option<u64> = None;
             let mut all = Trun { offsets: Vec::new(), sizes: Vec::new(), durations: Vec::new() };
+            // End of the previous run: a trun without data_offset follows it.
+            let mut run_end: Option<u64> = None;
             while i + 8 <= moof.len() {
                 let s = be32(moof, i).unwrap() as usize;
                 if &moof[i + 4..i + 8] == b"traf" {
@@ -66,12 +68,16 @@ fn parse_moof(head: &[u8]) -> Result<Trun> {
                             let flags = be32(b, 0).unwrap() & 0xff_ffff;
                             let count = be32(b, 4).unwrap() as usize;
                             let mut o = 8;
-                            let mut data_offset = 0i64;
-                            if flags & 0x1 != 0 { data_offset = be32(b, o).unwrap() as i32 as i64; o += 4; }
+                            let mut data_offset: Option<i64> = None;
+                            if flags & 0x1 != 0 { data_offset = Some(be32(b, o).unwrap() as i32 as i64); o += 4; }
                             if flags & 0x4 != 0 { o += 4; }
                             // Without an explicit base, offsets count from the moof (default-base-is-moof).
                             let base = base_offset.unwrap_or(moof_start as u64);
-                            let mut at = (base as i64 + data_offset) as u64;
+                            let mut at = match (data_offset, run_end) {
+                                (Some(d), _) => (base as i64 + d) as u64,
+                                (None, Some(end)) => end,
+                                (None, None) => base,
+                            };
                             for _ in 0..count {
                                 let d = if flags & 0x100 != 0 { let v = be32(b, o).unwrap(); o += 4; v } else { def_dur };
                                 let z = if flags & 0x200 != 0 { let v = be32(b, o).unwrap(); o += 4; v } else { def_size };
@@ -82,6 +88,7 @@ fn parse_moof(head: &[u8]) -> Result<Trun> {
                                 all.durations.push(d);
                                 at += z as u64;
                             }
+                            run_end = Some(at);
                         }
                         j += bs.max(8);
                     }
@@ -111,6 +118,8 @@ fn split(url: &str) -> (String, u64, Option<u64>) {
 
 pub struct RangedSeek {
     pub latency: Duration,
+    /// Network time up to the first frame at the target.
+    pub fetch: Duration,
     pub requests: u64,
     pub first_frame_s: f64,
     pub audio: Vec<f32>,
@@ -122,6 +131,8 @@ pub struct RangedSeek {
 pub fn seek_fmp4(reg: &DecoderRegistry, f: &Fetcher, pl: &Playlist, init: &[u8], t: f64) -> Result<RangedSeek> {
     let started = Instant::now();
     let req0 = f.requests.load(std::sync::atomic::Ordering::Relaxed);
+    let ns0 = f.fetch_ns.load(std::sync::atomic::Ordering::Relaxed);
+    let mut fetch = Duration::ZERO;
     // Codec parameters from the init segment alone.
     let format = crate::decode::open(Box::new(Cursor::new(init.to_vec())), Some("mp4"))?;
     let (_, stream) = crate::decode::audio_stream(format.as_ref(), pl.codecs.clone())?;
@@ -185,6 +196,7 @@ pub fn seek_fmp4(reg: &DecoderRegistry, f: &Fetcher, pl: &Playlist, init: &[u8],
                 continue;
             }
             latency = started.elapsed();
+            fetch = Duration::from_nanos(f.fetch_ns.load(std::sync::atomic::Ordering::Relaxed) - ns0);
             first_at = Some(seg.start_s + (acc + skip_in_frame) as f64 / rate as f64);
         }
         out.extend(pcm[start * ch..].chunks_exact(ch).map(|f| f.iter().sum::<f32>() / ch as f32));
@@ -194,6 +206,7 @@ pub fn seek_fmp4(reg: &DecoderRegistry, f: &Fetcher, pl: &Playlist, init: &[u8],
     }
     Ok(RangedSeek {
         latency,
+        fetch,
         requests: f.requests.load(std::sync::atomic::Ordering::Relaxed) - req0,
         first_frame_s: first_at.ok_or_else(|| anyhow!("no audio after the seek"))?,
         audio: out,

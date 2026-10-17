@@ -112,7 +112,9 @@ phase 2 host, whether or not the spike fixed it:
   spec gives for init sections).
 - **Ranged fMP4 parsing filters by track ID.** Muxed audio/video variants put
   several `traf`s in one `moof`. Only the selected audio track's samples (by
-  `tfhd` track_ID) are used.
+  `tfhd` track_ID) are used. A `trun` without `data_offset` continues where
+  the previous run ended (ISO/IEC 14496-12), not at the `traf` base. Apple's
+  packager writes several runs per fragment.
 - **Output follows the decoder's actual output rate.** Implicit SBR doubles
   the rate only after the first frames, and MediaCodec reports it through a
   format change. The core opens the output from the decoder's output, or

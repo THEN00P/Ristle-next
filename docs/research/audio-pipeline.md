@@ -231,8 +231,9 @@ on 2026-10-17 for all five variants in both modes, after review found the
 `fmp4-aes` rows missing from the raw file and the streaming fetch counter
 stuck at zero: `results/hls-local-windows.jsonl`. The latencies below are
 unchanged. In streaming runs the network wait is practically the whole seek
-time: 97–100 % for fMP4 and ADTS. For TS the fetch median runs 3–8 % above the
-seek median, because the TS path keeps reading ahead after the target.)
+time: 95–100 % for every variant. A second review round found that fetch time
+was read after the accuracy check's extra reads, which had pushed TS above
+100 %; it is now snapshotted at the latency boundary and re-measured.)
 The AES-128 fMP4 fixture puts `EXT-X-KEY` after `EXT-X-MAP`, so its init
 segment is not encrypted. An encrypted init section (key before the map) was
 not exercised; the spike client would hand its ciphertext to the demuxer.
@@ -274,11 +275,17 @@ Findings:
 
   | Network | Streaming decode, median (p95) | Byte-range seek, median (p95) |
   |---|---|---|
-  | localhost | 2 ms | 6 ms (7) |
-  | 30 ms RTT, 20 Mbit/s | 64 ms (88) | 70 ms (70) |
-  | 80 ms RTT, 5 Mbit/s | 199 ms (284) | 189 ms (190) |
+  | localhost | 2 ms | 1 ms (1) |
+  | 30 ms RTT, 20 Mbit/s | 64 ms (88) | 69 ms (70) |
+  | 80 ms RTT, 5 Mbit/s | 199 ms (284) | 190 ms (190) |
   | 150 ms RTT, 1.5 Mbit/s | 527 ms (792) | **391 ms (391)** |
-  | Apple's fMP4 example over the internet | 147 ms (172) | **72 ms (75)** |
+  | Apple's fMP4 example over the internet, three paired runs | 76–79 ms (88–99) | **66–68 ms (70–80)** |
+
+  An earlier single run against Apple gave 147 ms streaming against 72 ms
+  ranged. The paired runs show most of that gap was CDN variance. Over a
+  fast connection a ranged seek saves only about 10 ms; the gain is on slow
+  links. In the ranged runs the fetch time equals the seek time to within
+  1 ms (`results/hls-ranged-windows.jsonl`).
 
   A byte-range seek costs two round trips and about 5 KB regardless of
   segment length or seek position. Not covered: AES-128 segments (CBC needs

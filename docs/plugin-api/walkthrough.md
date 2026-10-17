@@ -1216,8 +1216,10 @@ services. ADR 0012 records how Ristle reads them and what it does, in short:
   playlist a guest's search returns. A guest whose Ristle has a Spotify
   Provider Connection resolves the metadata with their own account; any other
   guest sees that a Spotify item is there, without its details.
-- **Storage.** The host's cache of Provider data is bounded and refreshed by
-  user action, never kept indefinitely.
+- **Storage.** The host's cache of Provider data is bounded in size, refreshed
+  by user action, and deleted 30 days after it was last fetched from the
+  Provider regardless of freshness headers or TTLs (see `http` in
+  `host.wit`), so nothing is kept indefinitely.
 
 These measures are made out of respect, not as a legal position. Spotify can
 stop the Spotify Plugin whatever Ristle does.

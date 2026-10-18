@@ -45,6 +45,14 @@ walkthrough. The WIT is final once spike E confirms the Spotify playback path.
 Goal: certify Qt Quick for the desktop app, or trigger an evaluation of GPUI.
 Rust models through cxx-qt, logic-free QML, Lumen styling.
 
+**Status 2026-10-18: no-go against the method, GPUI to be evaluated** (ADR 0002
+amendment). Results: `docs/research/qt-quick-spike.md`, code and harness in
+`spikes/a-qt-quick/`. Software rendering drops frames on every Qt path, and
+fresh page creation at 144 Hz sits at its knee. Everything else passed on the
+discrete GPU with four non-default settings (D3D12, no Animators, settling
+list transitions, native text). Ristle legacy could not be measured (its debug
+build needs Metro). The harness is reusable for the GPUI run.
+
 **Measurement follows `docs/research/frame-timing-method.md` with no
 shortcuts.** Its positive control (injected stalls must be detected) runs first.
 Any result without a load ramp that reached a breaking point is void.

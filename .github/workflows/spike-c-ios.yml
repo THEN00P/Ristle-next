@@ -1,15 +1,16 @@
 name: spike-c-ios
 
 # Manual only: macOS minutes are expensive on a private repository.
-# Also hosts spike D (UniFFI), because workflow_dispatch only works for workflow
-# files that already exist on the default branch.
+# Also hosts spike D (UniFFI) and the spike A macOS build, because
+# workflow_dispatch only works for workflow files that already exist on the
+# default branch.
 on:
   workflow_dispatch:
     inputs:
       spike:
         description: Which spike to run
         type: choice
-        options: [c, d]
+        options: [a, c, d]
         default: c
       device_build:
         description: Also build the signed-ad-hoc device test zip for Firebase Test Lab
@@ -21,6 +22,44 @@ on:
         default: true
 
 jobs:
+  spike-a:
+    # Spike A: the Qt Quick app builds on macOS and renders frames. Build and
+    # smoke only; timing waits for the user's Mac.
+    if: ${{ inputs.spike == 'a' }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: spikes/a-qt-quick
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Qt 6.11.3 (aqtinstall from git main reads the 6.11 repository layout)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt"
+          "$RUNNER_TEMP/aqt/bin/pip" install -q "git+https://github.com/miurahr/aqtinstall"
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt mac desktop 6.11.3 clang_64 -O "$RUNNER_TEMP/qt"
+          echo "QMAKE=$RUNNER_TEMP/qt/6.11.3/macos/bin/qmake" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build -p qtspike --release
+      - name: Smoke run
+        run: |
+          SPIKE_QUIT_AFTER_MS=6000 SPIKE_RING_OUT="$PWD/ring.csv" QSG_INFO=1 QT_FORCE_STDERR_LOGGING=1             ./target/release/qtspike 2>&1 | tee smoke.log
+          if grep -E "failed to load component|is not a type|unavailable|ReferenceError|TypeError" smoke.log; then
+            echo "QML errors"; exit 1
+          fi
+          frames=$(awk -F, '$2 == 6' ring.csv | wc -l)
+          echo "frames swapped: $frames"
+          test "$frames" -gt 60
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-a-macos-smoke
+          path: |
+            spikes/a-qt-quick/smoke.log
+            spikes/a-qt-quick/ring.csv
+
   ios:
     if: ${{ inputs.spike == 'c' }}
     runs-on: macos-15

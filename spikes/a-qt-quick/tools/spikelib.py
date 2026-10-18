@@ -131,11 +131,16 @@ def wait_window(title=TITLE, timeout=20):
     raise RuntimeError(f"window {title!r} did not appear")
 
 
+# Defaults applied to every app launch before the run's own config, so a
+# whole matrix can run with another backend (run configs still override).
+BASE_ENV: dict = {}
+
+
 def app_env(cfg):
     env = dict(os.environ)
     env["PATH"] = str(QT_BIN) + os.pathsep + env["PATH"]
     env["QT_FORCE_STDERR_LOGGING"] = "1"
-    for k, v in cfg.items():
+    for k, v in {**BASE_ENV, **cfg}.items():
         env[k] = str(v)
     return env
 
@@ -157,7 +162,7 @@ def run(name, cfg, script: Script | None, *, mode="pm", settle=1.5, tail=1.5, re
     heavy = heavy_processes()
     if heavy and require_quiet:
         raise RuntimeError(f"heavy processes running: {heavy}")
-    meta = {"name": name, "mode": mode, "config": cfg, "display": display(), "power_plan": power_plan(),
+    meta = {"name": name, "mode": mode, "config": {**BASE_ENV, **cfg}, "display": display(), "power_plan": power_plan(),
             "heavy_processes": heavy, "background_cpu_pct": background_cpu(),
             "free_memory_mb": free_memory_mb(), "affinity": affinity,
             "started": time.strftime("%Y-%m-%d %H:%M:%S")}

@@ -41,6 +41,7 @@ pub mod ffi {
         #[qproperty(bool, queue_fix, cxx_name = "queueFix", READ, CONSTANT)]
         #[qproperty(bool, specimen, READ, CONSTANT)]
         #[qproperty(i32, start_page, cxx_name = "startPage", READ, CONSTANT)]
+        #[qproperty(i32, quit_after_ms, cxx_name = "quitAfterMs", READ, CONSTANT)]
         type Spike = super::SpikeRust;
     }
 
@@ -79,6 +80,7 @@ pub struct SpikeRust {
     queue_fix: bool,
     specimen: bool,
     start_page: i32,
+    quit_after_ms: i32,
 }
 
 impl Default for SpikeRust {
@@ -104,6 +106,8 @@ impl Default for SpikeRust {
             queue_fix: env("SPIKE_QUEUE_FIX", 1) != 0,
             specimen: env("SPIKE_SPECIMEN", 0) != 0,
             start_page: env("SPIKE_PAGE", 0),
+            // CI smoke runs quit on their own so the ring buffer gets dumped.
+            quit_after_ms: env("SPIKE_QUIT_AFTER_MS", 0),
         }
     }
 }

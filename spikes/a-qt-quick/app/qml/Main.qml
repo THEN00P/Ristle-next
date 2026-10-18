@@ -128,6 +128,12 @@ Window {
         }
     }
 
+    Timer {
+        interval: Spike.quitAfterMs
+        running: Spike.quitAfterMs > 0
+        onTriggered: Qt.quit()
+    }
+
     Item {
         id: overlay
         anchors.fill: parent

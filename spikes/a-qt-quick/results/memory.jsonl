@@ -1,0 +1,6 @@
+{"tag": "c59s100", "run": "c59s100_idle_1k", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096}, "private_mb_median": 151.9, "working_set_mb_median": 149.5, "cpu_pct_median": 0.39}
+{"tag": "c59s100", "run": "c59s100_idle_1k_noheartbeat", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096, "SPIKE_HEARTBEAT": 0}, "private_mb_median": 147.5, "working_set_mb_median": 148.6, "cpu_pct_median": 0.0}
+{"tag": "c144s100", "run": "c144s100_idle_1k", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096}, "private_mb_median": 149.8, "working_set_mb_median": 150.6, "cpu_pct_median": 0.0}
+{"tag": "c144s100", "run": "c144s100_idle_1k_noheartbeat", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096, "SPIKE_HEARTBEAT": 0}, "private_mb_median": 151.0, "working_set_mb_median": 149.8, "cpu_pct_median": 0.0}
+{"tag": "d12c144s100", "run": "d12c144s100_idle_1k", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096}, "private_mb_median": 311.7, "working_set_mb_median": 280.2, "cpu_pct_median": 0.0}
+{"tag": "d12c144s100", "run": "d12c144s100_idle_1k_noheartbeat", "config": {"SPIKE_ROWS": 1000, "SPIKE_RING": 4096, "SPIKE_HEARTBEAT": 0}, "private_mb_median": 310.5, "working_set_mb_median": 279.1, "cpu_pct_median": 0.0}

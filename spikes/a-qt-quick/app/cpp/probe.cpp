@@ -1,8 +1,17 @@
 #include "probe.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+// macOS CI smoke builds only: a monotonic clock in 100 ns units stands in
+// for QPC. Timing is only measured on Windows.
+#include <chrono>
+#include <functional>
+#include <thread>
+#include <unistd.h>
+#endif
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
@@ -42,9 +51,22 @@ std::atomic<int> g_gui_stall_ms{0};
 int64_t g_qpc_freq = 0;
 
 inline int64_t qpc_now() {
+#ifdef _WIN32
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     return t.QuadPart;
+#else
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+#endif
+}
+
+inline uint32_t thread_id() {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
 }
 
 inline void record(uint32_t kind, uint32_t arg) {
@@ -55,13 +77,15 @@ inline void record(uint32_t kind, uint32_t arg) {
     e.qpc = qpc_now();
     e.kind = kind;
     e.arg = arg;
-    e.tid = GetCurrentThreadId();
+    e.tid = thread_id();
 }
 
 void spin_for_ms(int ms) {
     const int64_t end = qpc_now() + (g_qpc_freq * ms) / 1000;
     while (qpc_now() < end) {
+#ifdef _WIN32
         YieldProcessor();
+#endif
     }
 }
 
@@ -198,9 +222,13 @@ private:
 
 void spike_probe_setup(QQmlApplicationEngine &engine, int art_threads, const QString &asset_dir,
                        int text_render_type) {
+#ifdef _WIN32
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     g_qpc_freq = f.QuadPart;
+#else
+    g_qpc_freq = 10'000'000;
+#endif
 
     uint64_t entries = 1u << 20;
     const QByteArray ring_env = qgetenv("SPIKE_RING");
@@ -280,14 +308,19 @@ void spike_request_render_stall(int ms) { g_render_stall_ms.store(ms); }
 void spike_request_gui_stall(int ms) { g_gui_stall_ms.store(ms); }
 
 int64_t spike_dump(const QString &path) {
+#ifdef _WIN32
     FILE *f = _wfopen(reinterpret_cast<const wchar_t *>(path.utf16()), L"wb");
+#else
+    FILE *f = std::fopen(QFile::encodeName(path).constData(), "wb");
+#endif
     if (!f)
         return -1;
     const uint64_t total = g_next.load();
     const uint64_t size = g_mask + 1;
     const uint64_t first = total > size ? total - size : 0;
     std::fprintf(f, "# qpc_freq=%lld gui_tid=%lu pid=%lu dropped=%llu\n",
-                 static_cast<long long>(g_qpc_freq), GetCurrentThreadId(), GetCurrentProcessId(),
+                 static_cast<long long>(g_qpc_freq), static_cast<unsigned long>(thread_id()),
+                 static_cast<unsigned long>(QCoreApplication::applicationPid()),
                  static_cast<unsigned long long>(first));
     std::fprintf(f, "qpc,kind,arg,tid\n");
     for (uint64_t i = first; i < total; ++i) {

@@ -1,0 +1,8 @@
+{"tag": "c144s100", "variant": "default", "animators": {"gui_ticks_per_s": 66.8, "syncs_per_s": 66.8, "frames_per_s": 134.0}}
+{"tag": "c144s100", "variant": "basic_loop", "animators": {"gui_ticks_per_s": 134.0, "syncs_per_s": 134.0, "frames_per_s": 134.0}}
+{"tag": "c144s100", "variant": "d3d12", "animators": {"gui_ticks_per_s": 66.2, "syncs_per_s": 66.2, "frames_per_s": 132.9}}
+{"tag": "c144s100", "variant": "latency1", "animators": {"gui_ticks_per_s": 66.7, "syncs_per_s": 66.7, "frames_per_s": 134.2}}
+{"tag": "c144s100", "variant": "latency3", "animators": {"gui_ticks_per_s": 66.7, "syncs_per_s": 66.7, "frames_per_s": 134.3}}
+{"tag": "c144s100", "variant": "no_vblank_thread", "animators": {"gui_ticks_per_s": 67.1, "syncs_per_s": 67.1, "frames_per_s": 134.4}}
+{"tag": "c144s100", "variant": "simple_driver", "animators": {"gui_ticks_per_s": 66.5, "syncs_per_s": 66.5, "frames_per_s": 134.3}}
+{"tag": "c144s100", "variant": "flip_discard", "animators": {"gui_ticks_per_s": 66.3, "syncs_per_s": 66.3, "frames_per_s": 134.4}}

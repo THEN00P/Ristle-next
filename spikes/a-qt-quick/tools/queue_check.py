@@ -4,6 +4,12 @@ The app logs every queue edit into its ring buffer; replaying them gives the
 model order at any QPC time. Every duplicated desktop frame carries the
 decoded marker runs (y range and item id) of the queue's left-edge strip.
 
+The run's recorder must not have missed a desktop frame (`recorder_missed`
+is 0); otherwise a clean result is not certified. The ghost deadline is the
+transition plus four refreshes, not two: an edit is logged on the GUI thread
+and reaches the screen 2 to 3 refreshes later (measured), so two would flag
+every normal removal.
+
 A frame is *settled* when no edit happened within the transition time plus
 four refresh periods (presentation latency), and no row is held by a drag. Checks:
 
@@ -124,6 +130,15 @@ def check(d, transition_ms, row_px, drag_windows=()):
     # that never heals.
     end = rows[-1]["present_qpc"] if rows else 0
     final = [p for p in problems if p[0] > end - 1e7 and p[0] - states[-1][0] > settle]
+    missed = sum(1 for r in rows if r["accumulated"] > 1)
+    # `problems` counts findings (a frame out of order usually also has a gap);
+    # the frame counts below count each captured frame once.
     return {"run": d.name, "frames": frames, "settled_frames": settled_frames, "edits": len(states) - 1,
             "problems": len(problems), "by_kind": kinds, "persistent_at_end": len(final),
+            "frames_with_problems": len({p[0] for p in problems}),
+            "frames_broken_at_end": len({p[0] for p in final}),
+            "recorder_missed": missed,
+            # Only a capture without a single missed desktop frame can certify a
+            # run as clean (method rule 2).
+            "certified_clean": not problems and missed == 0,
             "examples": [str(p) for p in problems[:8]]}

@@ -267,7 +267,7 @@ check. Every duplicated frame is decoded and compared against the model order
 replayed from the ring buffer. A frame counts as settled 220 ms (the
 transition) plus four refreshes after the last edit.
 
-| Edits/s configured (measured) | Transitions | Dropped frames/min | Corruption frames | Still broken after edits stop |
+| Edits/s configured (measured) | Transitions | Dropped frames/min | Corruption findings | Findings after edits stop |
 |---|---|---|---|---|
 | 1 (1) | settling | 13 | 0 | 0 |
 | 5 (5) | settling | 0 | 0 | 0 |
@@ -278,6 +278,14 @@ transition) plus four refreshes after the last edit.
 | 1 (1) | plain | 0 | 0 | 0 |
 | 5 (4) | plain | 4 | 944 | **288 frames** |
 | 20 (19) | plain | 4 | 812 | **288 frames** |
+
+The findings columns count checker findings; a frame out of order usually
+also has a gap, so they are about twice the number of affected frames (Codex
+review, round 2). The recorder missed 1 to 13 desktop frames in 54 of these 74
+captures, so a clean row here is not certified frame-complete; the broken rows
+stand, because the corruption was seen. Monday's batch runs the recorder at
+high priority and repeats every capture that misses a frame, and only a
+frame-complete capture certifies a variant as clean.
 
 Plain transitions (opacity and scale in `add`, opacity in `remove`, x and y in
 `displaced`) break at 5 edits per second at every condition, 60 Hz included:

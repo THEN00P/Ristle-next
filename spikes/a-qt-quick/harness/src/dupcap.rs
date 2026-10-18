@@ -118,6 +118,13 @@ pub fn run(args: &[String]) -> Result {
     }
     let (bw, bh) = ((bx1 - bx0) as u32, (by1 - by0) as u32);
 
+    // A corruption check needs every frame, so the recorder outranks the app
+    // (duplication passes are never used for timing).
+    unsafe {
+        use windows::Win32::System::Threading::*;
+        let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
     let (adapter, output) = primary_output()?;
     let mut device = None;
     let mut context = None;

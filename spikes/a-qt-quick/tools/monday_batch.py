@@ -48,9 +48,14 @@ def step_queue():
         for load in BURSTS + RATES:
             secs = 60 if load.startswith("burst") else 8
             name = f"{TAG}_q{fix}_{load.replace(':', '_').replace(',', '_')}"
-            d, out = queue_diag.main(name, load, fix, secs, snaps_after=(600, 2000))
-            log({"step": "queue", "fix": fix, "variant": FIXES[fix], **out})
-            broken += out["problems"] > 0
+            # A capture that missed a desktop frame cannot certify a clean
+            # result, so it is repeated (up to three attempts).
+            for attempt in range(3):
+                d, out = queue_diag.main(f"{name}_a{attempt}", load, fix, secs, snaps_after=(600, 2000))
+                if out["problems"] > 0 or out["recorder_missed"] == 0:
+                    break
+            log({"step": "queue", "fix": fix, "variant": FIXES[fix], "attempts": attempt + 1, **out})
+            broken += not out["certified_clean"]
         if broken == 0:
             clean.append(fix)
     # Full scenario (drags, core edits, keyboard bursts), PresentMon and
@@ -59,7 +64,9 @@ def step_queue():
         for rate in (5, 20, 100):
             pm, qc = Q.run_rate(f"{TAG}f{fix}", rate, fix)
             log({"step": "queue_scenario", "fix": fix, "rate": rate, "dropped_per_min": pm["dropped_per_min"],
-                 "problems": qc["problems"], "persistent_at_end": qc["persistent_at_end"]})
+                 "problems": qc["problems"], "frames_with_problems": qc["frames_with_problems"],
+                 "persistent_at_end": qc["persistent_at_end"], "recorder_missed": qc["recorder_missed"],
+                 "certified_clean": qc["certified_clean"]})
 
 
 def step_rates():
@@ -186,8 +193,10 @@ def summary_md():
     lines = ["# Monday batch summary (generated)", ""]
     q = [r for r in rows if r["step"] == "queue"]
     if q:
-        lines += ["## Queue variants", "", "| variant | load | measured rate | problems | still broken at end |", "|---|---|---|---|---|"]
-        lines += [f"| {r['fix']} {r['variant']} | {r['load']} | {r['measured_rate']} | {r['problems']} {r['by_kind']} | {r['persistent_at_end']} |" for r in q]
+        lines += ["## Queue variants", "", "| variant | load | measured rate | frames with problems | still broken at end | recorder missed | certified clean |",
+                  "|---|---|---|---|---|---|---|"]
+        lines += [f"| {r['fix']} {r['variant']} | {r['load']} | {r['measured_rate']} | {r.get('frames_with_problems')} {r['by_kind']} | "
+                  f"{r['persistent_at_end']} | {r.get('recorder_missed')} | {r.get('certified_clean')} |" for r in q]
     for step in ("queue_scenario", "pages", "soak"):
         rs = [r for r in rows if r["step"] == step]
         if rs:

@@ -39,6 +39,8 @@ def main(name, load, fix=1, secs=8, snaps_after=(600, 1200)):
     qc = queue_check.check(d, Q.TRANSITION_MS, round(Q.ROW * k), [])
     out = {"run": name, "load": load, "fix": fix, "edits": len(edits), "measured_rate": round(rate, 1),
            "problems": qc["problems"], "by_kind": qc["by_kind"], "persistent_at_end": qc["persistent_at_end"],
+           "frames_with_problems": qc["frames_with_problems"], "recorder_missed": qc["recorder_missed"],
+           "certified_clean": qc["certified_clean"],
            "examples": qc["examples"][:4]}
     print(json.dumps(out), flush=True)
     return d, out

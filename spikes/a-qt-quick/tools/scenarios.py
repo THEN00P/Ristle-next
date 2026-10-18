@@ -93,8 +93,9 @@ def measure(name, cfg, script, mode="pm", extra=None, **kw):
 def short(r):
     if r.get("mode") == "dd":
         c = r["cadence"]
-        return {"run": r["run"], "list_updates_per_s": c["updates_per_s_in_motion"], "list_skipped": c["skipped_refreshes"],
-                "list_skipped_per_min": c["skipped_per_min_of_motion"], "list_p99": c["interval_p99_ms"],
+        return {"run": r["run"], "list_updates_per_s": c["updates_per_s"], "list_skipped": c["skipped_refreshes"],
+                "list_skipped_per_min": c["skipped_per_min"], "longest_freeze_ms": c["longest_freeze_ms"],
+                "list_p99": c["interval_p99_ms"],
                 "gui_clock_skipped": r["gui_clock_skipped"], "gui_clock_max": r["gui_clock_max_ms"],
                 "recorder_missed": r["recorder_missed"]}
     keys = ["run", "frames", "expected_frames", "p50_ms", "p99_ms", "max_ms", "dropped", "dropped_per_min",

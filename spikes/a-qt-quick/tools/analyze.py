@@ -208,45 +208,73 @@ def control_dd(d, hz=None):
             "missed_by_recorder": cf["accumulated_gt1"], "stalls": res}
 
 
-def active_windows(d, after_ms=200):
-    """High-velocity phases of scripted flings: finger down until `after_ms`
-    after release. At the tail of a fling content moves less than a pixel
-    per frame, so an unchanged frame there is not a stall."""
-    out, down = [], None
+def active_windows(d, after_ms=200, wheel_gap_ms=300):
+    """Scripted input phases in which the content must keep moving: a touch
+    drag from finger down until `after_ms` after release (later, a fling's
+    tail moves less than a pixel per frame, so an unchanged frame there is not
+    a stall), a wheel or touchpad stream from its first to its last event plus
+    `after_ms`, and a mouse drag from press to release."""
+    out, down, wheel = [], None, None
     for t, q, c in inputs(d):
-        if c.startswith("touch down"):
+        if c.startswith("touch down") or c == "ldown":
             down = q
-        elif c.startswith("touch up") and down is not None:
+        elif (c.startswith("touch up") or c == "lup") and down is not None:
             out.append((down, q + int(after_ms * 1e4)))
             down = None
+        elif c.startswith("wheel"):
+            if wheel and q - wheel[1] <= wheel_gap_ms * 1e4:
+                wheel[1] = q
+            else:
+                if wheel:
+                    out.append((wheel[0], wheel[1] + int(after_ms * 1e4)))
+                wheel = [q, q]
+    if wheel:
+        out.append((wheel[0], wheel[1] + int(after_ms * 1e4)))
     return out
 
 
-def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, motion_gap_ms=100, windows=None):
-    """Duplication pass: how smoothly `region` updated while it was moving.
-    Motion = consecutive changes less than `motion_gap_ms` apart. A hitch is
-    an interval inside motion longer than 1.5 refresh periods; it counts the
-    refreshes the content skipped. Works for any app, so baselines compare."""
+def content_cadence(d, region, t0=0, t1=1 << 62, hz=None, windows=None):
+    """Duplication pass: how smoothly `region` updated while scripted input
+    was moving it. Inside each active window (`active_windows`) every interval
+    between two consecutive changes counts, however long: content that froze
+    and then moved again was stalled. The time after the last change in a
+    window is not counted, because content that stops for good stopped on
+    purpose (a touch catching a fling stops it, and a short reversed drag does
+    not start a new one). An interval longer than 1.5 refresh periods is a
+    hitch; it counts the refreshes the content skipped. Fling tails outside
+    the windows are not measured. Works for any app, so the baselines
+    compare."""
     m = meta(d)
     hz = hz or refresh_hz(m)
     T = 1000 / hz
     _, cols, rows = dupcap(d)
+    windows = active_windows(d) if windows is None else windows
     changes, prev = [], None
     for r in rows:
-        if prev is not None and r[region] != prev and t0 <= r["present_qpc"] <= t1:
+        if prev is not None and r[region] != prev:
             changes.append(r["present_qpc"])
         prev = r[region]
-    pairs = list(zip(changes, changes[1:]))
-    if windows is not None:
-        pairs = [(a, b) for a, b in pairs if any(w0 <= a and b <= w1 for w0, w1 in windows)]
-    iv = [(b - a) / 1e4 for a, b in pairs]
-    motion = [x for x in iv if x < motion_gap_ms]
-    skipped = sum(max(0, round(x / T) - 1) for x in motion if x > 1.5 * T)
-    motion_s = sum(motion) / 1000
-    return {"changes": len(changes), "motion_s": round(motion_s, 2),
-            "updates_per_s_in_motion": round(len(motion) / motion_s, 1) if motion_s else None,
-            "interval_p50_ms": pct(motion, 50), "interval_p99_ms": pct(motion, 99),
-            "skipped_refreshes": skipped, "skipped_per_min_of_motion": round(skipped / motion_s * 60, 1) if motion_s else None,
+    last_frame = rows[-1]["present_qpc"] if rows else 0
+    iv, active_s, n_changes = [], 0.0, 0
+    for w0, w1 in windows:
+        w0, w1 = max(w0, t0), min(w1, t1, last_frame)
+        if w1 <= w0:
+            continue
+        active_s += (w1 - w0) / 1e7
+        inside = [c for c in changes if w0 <= c <= w1]
+        n_changes += len(inside)
+        # Before the first change is input latency; after the last change the
+        # content has stopped. Neither is a stall.
+        for a, b in zip(inside, inside[1:]):
+            iv.append((b - a) / 1e4)
+    skipped = sum(max(0, round(x / T) - 1) for x in iv if x > 1.5 * T)
+    moving_s = sum(iv) / 1000
+    return {"changes": n_changes, "active_s": round(active_s, 2), "moving_s": round(moving_s, 2),
+            "updates_per_s": round(len(iv) / moving_s, 1) if moving_s else None,
+            "interval_p50_ms": pct(iv, 50), "interval_p99_ms": pct(iv, 99),
+            "longest_freeze_ms": round(max(iv, default=0), 1),
+            "skipped_refreshes": skipped,
+            "skipped_per_min": round(skipped / moving_s * 60, 1) if moving_s else None,
             "recorder_missed": sum(1 for r in rows if r["accumulated"] > 1)}
 
 

@@ -4,6 +4,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <dxgi1_4.h>
+#include <psapi.h>
+#pragma comment(lib, "dxgi.lib")
 #else
 // macOS CI smoke builds only: a monotonic clock in 100 ns units stands in
 // for QPC. Timing is only measured on Windows.
@@ -329,4 +332,54 @@ int64_t spike_dump(const QString &path) {
     }
     std::fclose(f);
     return static_cast<int64_t>(total - first);
+}
+
+// Memory sample for long soaks, appended to $SPIKE_MEM_OUT every 10 s by a QML
+// timer (not in the frame path): QPC, private bytes, committed and allocated
+// bytes of all Win32 heaps (the CRT and Qt allocate there), and this process's
+// usage of the primary GPU's local memory. A full heap snapshot (UMDH) needs
+// elevation, which the measuring account does not have.
+void spike_log_memory() {
+    static const QByteArray out = qgetenv("SPIKE_MEM_OUT");
+    if (out.isEmpty())
+        return;
+    unsigned long long private_bytes = 0, heap_committed = 0, heap_allocated = 0, gpu_local = 0;
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc), sizeof(pmc)))
+        private_bytes = pmc.PrivateUsage;
+    const DWORD n = GetProcessHeaps(0, nullptr);
+    std::vector<HANDLE> heaps(n);
+    GetProcessHeaps(n, heaps.data());
+    for (HANDLE h : heaps) {
+        HEAP_SUMMARY s{};
+        s.cb = sizeof(s);
+        if (HeapSummary(h, 0, &s)) {
+            heap_committed += s.cbCommitted;
+            heap_allocated += s.cbAllocated;
+        }
+    }
+    IDXGIFactory1 *factory = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory)))) {
+        IDXGIAdapter1 *adapter = nullptr;
+        if (SUCCEEDED(factory->EnumAdapters1(0, &adapter))) {
+            IDXGIAdapter3 *adapter3 = nullptr;
+            if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter3)))) {
+                DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+                if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+                    gpu_local = info.CurrentUsage;
+                adapter3->Release();
+            }
+            adapter->Release();
+        }
+        factory->Release();
+    }
+#endif
+    FILE *f = std::fopen(out.constData(), "ab");
+    if (!f)
+        return;
+    std::fprintf(f, "%lld,%llu,%llu,%llu,%llu\n", static_cast<long long>(qpc_now()), private_bytes,
+                 heap_committed, heap_allocated, gpu_local);
+    std::fclose(f);
 }

@@ -8,6 +8,7 @@ Item {
 
     required property var queue
     required property Item overlay
+    property real clock: Date.now()
     property alias list: list
 
     Rectangle {
@@ -127,20 +128,35 @@ Item {
         delegate: QueueRow {
             queue: panel.queue
             overlay: panel.overlay
+            clock: panel.clock
         }
 
-        add: Transition {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
-            NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        // Mode 3 drives row opacity from this clock.
+        FrameAnimation {
+            running: Spike.queueFix === 3
+            onTriggered: panel.clock = Date.now()
         }
-        remove: Transition {
-            NumberAnimation { property: "opacity"; to: 0; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
-        }
-        displaced: Spike.queueFix ? displacedSettling : displacedPlain
+
+        // queueFix 0: plain view transitions. 1: plus Qt's documented settling
+        // in displaced. 2 to 4: rows handle appearance themselves (QueueRow)
+        // and the view only moves rows.
+        add: Spike.queueFix >= 2 ? null : addFade
+        remove: Spike.queueFix >= 2 ? null : removeFade
+        displaced: Spike.queueFix === 1 ? displacedSettling : displacedPlain
         move: Transition {
             NumberAnimation { properties: "x,y"; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
         }
-        moveDisplaced: Spike.queueFix ? displacedSettling : displacedPlain
+        moveDisplaced: Spike.queueFix === 1 ? displacedSettling : displacedPlain
+
+        Transition {
+            id: addFade
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        }
+        Transition {
+            id: removeFade
+            NumberAnimation { property: "opacity"; to: 0; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        }
 
         // Plain: what QTBUG-49868 reports break when transitions interrupt
         // each other (rows left dimmed, overlapping, or leaving gaps).

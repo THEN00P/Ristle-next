@@ -22,6 +22,57 @@ Item {
     width: ListView.view.width
     height: Lumen.queueRowHeight
 
+    // Queue transition variants (SPIKE_QUEUE_FIX, see QueuePanel.qml):
+    // 2  the row runs its own fade and scale on creation and its own fade on
+    //    removal (ListView's delayRemove pattern). Left rows dimmed in the
+    //    2026-10-18 diagnosis for a reason not yet found; Monday's batch logs
+    //    the marks below to find it.
+    // 3  opacity is a pure function of time since the row was created or
+    //    removed, so no interrupted animation can leave it half-faded.
+    // 4  no fade or scale at all; only positions animate.
+    required property real clock
+    readonly property int mode: Spike.queueFix
+    readonly property bool ownsTransitions: mode === 2
+    property real born: Date.now()
+    property real died: 0
+    readonly property real timedOpacity: Math.min(1, Math.max(0, (clock - born) / Spike.transitionMs))
+                                         * (died > 0 ? Math.max(0, 1 - (clock - died) / Spike.transitionMs) : 1)
+    opacity: mode === 2 ? 0 : (mode === 3 ? timedOpacity : 1)
+    scale: mode === 2 ? 0.96 : 1
+    Component.onCompleted: if (ownsTransitions) appear.start()
+    // Instrumentation for the mode 2 diagnosis (ring marks 19 to 21).
+    ListView.onAdd: Spike.mark(20, row.itemId)
+    ListView.onRemove: {
+        Spike.mark(19, row.itemId)
+        if (mode === 2)
+            disappear.start()
+        else if (mode === 3)
+            timedRemoval.start()
+    }
+
+    SequentialAnimation {
+        id: timedRemoval
+        PropertyAction { target: row; property: "ListView.delayRemove"; value: true }
+        ScriptAction { script: row.died = Date.now() }
+        PauseAnimation { duration: Spike.transitionMs }
+        PropertyAction { target: row; property: "ListView.delayRemove"; value: false }
+    }
+
+    ParallelAnimation {
+        id: appear
+        onStarted: Spike.mark(22, row.itemId)
+        onFinished: Spike.mark(21, row.itemId * 1000 + Math.round(row.opacity * 999))
+        onStopped: Spike.mark(21, row.itemId * 1000 + Math.round(row.opacity * 999))
+        NumberAnimation { target: row; property: "opacity"; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        NumberAnimation { target: row; property: "scale"; to: 1; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+    }
+    SequentialAnimation {
+        id: disappear
+        PropertyAction { target: row; property: "ListView.delayRemove"; value: true }
+        NumberAnimation { target: row; property: "opacity"; to: 0; duration: Spike.transitionMs; easing.type: Easing.OutCubic }
+        PropertyAction { target: row; property: "ListView.delayRemove"; value: false }
+    }
+
     MouseArea {
         id: dragArea
 

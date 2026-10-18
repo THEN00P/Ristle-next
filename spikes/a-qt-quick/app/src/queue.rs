@@ -27,11 +27,14 @@ pub struct QueueModelRust {
     items: Vec<Item>,
     next_id: u32,
     rng: Rng,
+    pacer: crate::catalog::Pacer,
+    burst_start: Option<std::time::Instant>,
+    burst_done: (u64, i32),
 }
 
 impl Default for QueueModelRust {
     fn default() -> Self {
-        Self { length: 0, items: Vec::new(), next_id: 1, rng: Rng::new(0x1b87_3593) }
+        Self { length: 0, items: Vec::new(), next_id: 1, rng: Rng::new(0x1b87_3593), pacer: Default::default(), burst_start: None, burst_done: (u64::MAX, 0) }
     }
 }
 
@@ -159,6 +162,33 @@ impl qobject::QueueModel {
                 spike_mark(EV_QUEUE_MOVE, ((from as u32) << 16) | to as u32);
             }
         }
+    }
+
+    /// Bursts: every `period_ms`, `count` edits `gap_ms` apart. Called every
+    /// frame. Models a few edits landing inside one transition (Party).
+    pub(crate) fn burst_at(mut self: Pin<&mut Self>, count: i32, gap_ms: i32, period_ms: i32, window: i32) {
+        let now = std::time::Instant::now();
+        let start = *self.as_mut().rust_mut().burst_start.get_or_insert(now);
+        let t = (now - start).as_millis() as u64;
+        let period = period_ms.max(1) as u64;
+        let (k, phase) = (t / period, (t % period) as i32);
+        let due = (phase / gap_ms.max(1) + 1).min(count);
+        let done = {
+            let mut this = self.as_mut().rust_mut();
+            if this.burst_done.0 != k {
+                this.burst_done = (k, 0);
+            }
+            this.burst_done.1
+        };
+        for _ in done..due {
+            self.as_mut().step(window);
+        }
+        self.as_mut().rust_mut().burst_done.1 = due.max(done);
+    }
+
+    pub(crate) fn step_at(mut self: Pin<&mut Self>, rate: i32, window: i32) {
+        let n = self.as_mut().rust_mut().pacer.due(rate as f64);
+        self.steps(n as i32, window);
     }
 
     pub(crate) fn steps(mut self: Pin<&mut Self>, count: i32, window: i32) {

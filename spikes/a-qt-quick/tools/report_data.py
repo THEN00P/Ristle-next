@@ -87,7 +87,7 @@ def dropped(r):
 
 def dropped_per_min(r):
     if r.get("mode") == "dd":
-        return r["cadence"]["skipped_per_min_of_motion"]
+        return r["cadence"]["skipped_per_min"]
     return r["dropped_per_min"]
 
 
@@ -102,12 +102,12 @@ def ramp_details():
             rs = sorted(by[(t, a)], key=lambda r: r["step"])
             out.append(f"\n#### {cond_label(t)} · {a}\n")
             if rs[0].get("mode") == "dd":
-                out.append("| step | load | list updates/s | list skipped (/min of motion) | GUI clock skipped | GUI clock max ms |")
-                out.append("|---|---|---|---|---|---|")
+                out.append("| step | load | list updates/s | list skipped (/min moving) | longest freeze ms | GUI clock skipped | GUI clock max ms |")
+                out.append("|---|---|---|---|---|---|---|")
                 for r in rs:
                     c = r["cadence"]
-                    out.append(f"| {r['step']} | {describe(r)} | {c['updates_per_s_in_motion']} | {c['skipped_refreshes']} "
-                               f"({c['skipped_per_min_of_motion']}) | {r['gui_clock_skipped']} | {fmt(r['gui_clock_max_ms'])} |")
+                    out.append(f"| {r['step']} | {describe(r)} | {c['updates_per_s']} | {c['skipped_refreshes']} "
+                               f"({c['skipped_per_min']}) | {c['longest_freeze_ms']} | {r['gui_clock_skipped']} | {fmt(r['gui_clock_max_ms'])} |")
                 continue
             out.append("| step | load | frames/expected | p50 | p99 | max | dropped/min | GPU busy p50/p99 | ring GUI/render excess |")
             out.append("|---|---|---|---|---|---|---|---|---|")
@@ -122,17 +122,34 @@ def ramp_details():
 def queue():
     qc = load("queue_checks.jsonl")
     pm = {r["run"]: r for r in load("summary.jsonl") if r.get("scenario") == "queue"}
-    out = ["| condition | transitions | edits/s | PresentMon dropped/min (p99, max ms) | frames checked (settled) | corruption frames | still broken after edits stop | insert/remove input-to-photon p50/p99 ms |",
+    out = ["| condition | transitions | edits/s configured (measured) | PresentMon dropped/min (p99, max ms) | frames checked (settled) | corruption frames | still broken after edits stop | insert/remove input-to-photon p50/p99 ms |",
            "|---|---|---|---|---|---|---|---|"]
     for t in ORDER:
         for r in sorted([x for x in qc if x["tag"] == t], key=lambda x: (not x["documented_settling"], x["rate"])):
             p = pm.get(r["run"].replace("_dd", "_pm"), {})
             lat = r.get("latency", {})
-            out.append(f"| {cond_label(t)} | {'settling' if r['documented_settling'] else 'plain'} | {r['rate']} | "
+            out.append(f"| {cond_label(t)} | {'settling' if r['documented_settling'] else 'plain'} | {r['rate']} ({measured_rate(r['run'])}) | "
                        f"{p.get('dropped_per_min', '–')} ({fmt(p.get('p99_ms'))}, {fmt(p.get('max_ms'))}) | "
                        f"{r['frames']} ({r['settled_frames']}) | {r['problems']} {kinds(r['by_kind'])} | {r['persistent_at_end']} | "
                        f"{fmt(lat.get('p50_ms'))}/{fmt(lat.get('p99_ms'))} |")
     return "\n".join(out)
+
+
+def measured_rate(run):
+    """Edits per second the core actually applied between F2 on and F2 off
+    (from the ring buffer). Runs before the 2026-10-18 pacing fix batched
+    edits per 16 ms tick, so 100 and 200 ran faster than labelled."""
+    import analyze
+    from spikelib import RUNS
+    d = RUNS / run
+    if not (d / "ring.csv").exists():
+        return "–"
+    ins = analyze.inputs(d)
+    f2 = [q for t, q, c in ins if c == "key 113 down"]
+    if len(f2) < 2:
+        return "–"
+    ev = [q for q, k, a, t in analyze.ring(d)["events"] if k in (13, 14, 15) and f2[0] <= q <= f2[1]]
+    return round(len(ev) / ((f2[1] - f2[0]) / 1e7))
 
 
 def kinds(k):
@@ -181,14 +198,13 @@ def text():
 
 def baselines():
     rows = load("baselines.jsonl")
-    out = ["| condition | app | input | content updates/s while moving | skipped refreshes per min of motion (all / fast phase) | PresentMon target | frames/expected, dropped |",
-           "|---|---|---|---|---|---|---|"]
+    out = ["| condition | app | input | content updates/s while moving | skipped refreshes per min moving | longest freeze ms | PresentMon target | frames/expected, dropped |",
+           "|---|---|---|---|---|---|---|---|"]
     for t in ORDER:
         for r in [x for x in rows if x["tag"] == t]:
             c, p = r["cadence"], r["presentmon"]
-            act = c.get("active", {}).get("skipped_per_min_of_motion", "–")
-            out.append(f"| {cond_label(t)} | {r['app']} | {r['input']} | {c['updates_per_s_in_motion']} | "
-                       f"{c['skipped_per_min_of_motion']} / {act} | {r['presentmon_target']} | {p['frames']}/{p['expected_frames']}, {p['dropped']} |")
+            out.append(f"| {cond_label(t)} | {r['app']} | {r['input']} | {c['updates_per_s']} | "
+                       f"{c['skipped_per_min']} | {c['longest_freeze_ms']} | {r['presentmon_target']} | {p['frames']}/{p['expected_frames']}, {p['dropped']} |")
     return "\n".join(out)
 
 

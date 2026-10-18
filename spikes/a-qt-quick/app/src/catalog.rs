@@ -63,6 +63,27 @@ pub fn liked(seed: u32) -> bool {
     mix(seed ^ 0x11) % 5 == 0
 }
 
+/// Turns a rate into whole operations per call from elapsed time, so a timer
+/// that fires every frame produces exactly `rate` operations per second. A
+/// call after a pause catches up at most 50 ms.
+#[derive(Default)]
+pub struct Pacer {
+    last: Option<std::time::Instant>,
+    owed: f64,
+}
+
+impl Pacer {
+    pub fn due(&mut self, rate: f64) -> u32 {
+        let now = std::time::Instant::now();
+        let dt = self.last.map_or(0.0, |l| (now - l).as_secs_f64().min(0.05));
+        self.last = Some(now);
+        self.owed += rate * dt;
+        let n = self.owed.floor();
+        self.owed -= n;
+        n as u32
+    }
+}
+
 pub struct Rng(u32);
 
 impl Rng {

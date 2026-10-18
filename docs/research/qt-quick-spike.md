@@ -5,45 +5,55 @@ Spike A, 2026-10-17 to 2026-10-18. Code and harness: `spikes/a-qt-quick/`
 ADR 0002: is Qt Quick smooth enough for Ristle's desktop app, measured with
 `docs/research/frame-timing-method.md`, or does GPUI have to be evaluated?
 
-**Verdict: no-go as the method defines it, so evaluate GPUI.** Two binding
-criteria fail and a third is not met within an hour:
+**Verdict: go, conditional.** Qt Quick passes the frame-timing method on
+the discrete GPU at 60 and 144 Hz and 100 to 150 % scaling, with four
+settings that are not Qt's defaults. Two open conditions are settled by the
+measurement batch scheduled for 2026-10-19 (`tools/monday_batch.py`):
 
-1. **Software rendering.** The method requires no dropped frames with 1,000
-   rows and artwork under software rendering. Every software path Qt offers
-   drops frames while scrolling. WARP drops 140 to 1,700 frames per minute.
-   Mesa llvmpipe freezes the GUI clock for 5 to 31 frames per 9-second run at
-   60 Hz and skips more than 1,000 refreshes per minute of motion at 144 Hz.
-   The Qt Quick software adaptation skipped 3 to 30 GUI-clock frames per run
-   at 60 Hz (exploratory runs only). The cause is structural. Qt Quick redraws the whole window every frame,
-   and a CPU rasteriser cannot do that for a 1280 × 800 window at 60 Hz.
-2. **Fresh page creation at 144 Hz sits at the knee.** Building a page that
-   was not cached costs 3 to 5 frames at 144 Hz (22 dropped frames per minute
-   with artwork rows, 71 with per-row glow), so the production envelope is not
-   4× below its knee. Cached pages switch without drops.
-3. **Memory is not flat after warm-up.** In a 60-minute soak on D3D12 private
-   memory rose 13 MB in the first 20 minutes and 3 MB in the last 35. It is
-   levelling off, but not flat, and the cause is not known.
+1. **Queue corruption needs a robust fix.** Qt's documented pattern for
+   interrupted list transitions removes most of it, but not all: a burst of
+   three edits 30 ms apart can still leave an inserted row stuck at about 25 %
+   opacity until some later edit displaces it. That is a realistic Party case.
+   Two variants built so that no interrupted animation can leave a half-faded
+   row (opacity as a pure function of time, and position-only animation) are
+   ready; the batch runs them against bursts and paced rates.
+2. **Memory has to be flat in a 3-hour soak.** Private memory still rose 3 MB
+   in the last 35 minutes of a 60-minute soak. The user expects caches filling,
+   not a leak. The batch runs 3 hours with a memory log every 10 s (private
+   bytes, Win32 heaps, GPU memory) and the QML garbage collector's statistics.
 
-Everything else passes on the discrete GPU, but only with four settings that
-are not Qt's defaults:
+This verdict follows two decisions the user made on 2026-10-18 after the first
+version of this report:
+
+- **Software rendering is no longer a pass/fail gate.** People without GPU
+  rendering accept worse performance. It only has to stay usable, meaning no
+  freeze of 100 ms or more while scrolling 1,000 rows with artwork
+  (`frame-timing-method.md`, rule 4). Qt Quick meets that: the worst frame was
+  51 ms on WARP and 50 ms on Mesa llvmpipe. It still drops many frames there
+  (WARP 140 to 1,700 per minute) because Qt Quick redraws the whole window
+  every frame.
+- **Fresh page creation is not a deal breaker.** Building a page that was not
+  cached costs 3 to 5 frames at 144 Hz, and most apps cap at 60 fps. Cached
+  pages switch without drops. The batch still measures asynchronous
+  incubation, but the verdict does not depend on it.
+
+GPUI becomes an optional comparison rather than a requirement.
+
+The four settings:
 
 | Setting | Why | Without it |
 |---|---|---|
 | D3D12 backend (`QSG_RHI_BACKEND=d3d12`) | Qt's default D3D11 backend drops single frames at 144 Hz | 20 to 50 dropped frames per minute at any load, 734 in the 30-minute soak (13 with D3D12) |
 | No `Animator` types | A running render-thread Animator halves the GUI thread's frame rate on every flip-model backend | Scrolling, list transitions and the sidebar run at 27 of 60 or 67 of 144 frames per second while PresentMon reports a perfect present rate |
-| Queue transitions drive opacity and scale home in `displaced` (Qt's documented "interrupted transitions" pattern) | Plain add/remove/displaced transitions corrupt the list when edits interrupt each other (QTBUG-49868 reproduced) | Rows left dimmed, overlapping or missing, permanently, from 5 edits per second |
+| Queue rows never left half-faded (Qt's documented settling pattern now; one of the two robust variants after Monday) | Plain add/remove/displaced transitions corrupt the list when edits interrupt each other (QTBUG-49868 reproduced) | Rows left dimmed, overlapping or missing, permanently, from 5 edits per second |
 | `NativeRendering` for text | The default distance-field text is softer than every native renderer | Acutance 0.42 instead of 0.53 at 100 % |
 
 None of these is a workaround of the kind Elisa carries: transitions stay on,
-and all four are one line of configuration or a documented QML pattern. ADR
-0002's own trigger ("animated list insert, remove and reorder, or Windows text
+and each is a line of configuration or a documented QML pattern. ADR 0002's
+own trigger ("animated list insert, remove and reorder, or Windows text
 sharpness, can only be achieved with workarounds of the kind Elisa carries")
-is therefore not met. The no-go comes from the method's stricter software
-rendering, 4× and memory criteria, which ADR 0002 did not anticipate. I recommend
-running GPUI through the same harness before phase 4. If GPUI fails the
-software criterion as well, which is likely for any GPU-first toolkit, the
-criterion needs revisiting with the user, and Qt Quick with the four settings
-is then the best measured option. See "Recommendation" at the end.
+has not fired. If Monday's batch finds no robust queue fix, it fires for the
+queue, and that would reopen the GPUI comparison.
 
 ## Setup
 
@@ -98,6 +108,17 @@ All of it is out of process except the ring buffer, and every timestamp is QPC
   (0.14 %), about 3 per run on the hardware path. A missed frame looks like a
   skipped refresh in the cadence numbers, so Qt's cadence figures below are
   upper bounds.
+- **Content cadence** (duplication pass) counts, inside each scripted input
+  window (a touch drag until 200 ms after release, a wheel or touchpad stream,
+  a mouse drag), every interval between two changes of the measured region,
+  however long. An interval over 1.5 refreshes is a hitch. Time before the
+  first change (input latency) and after the last one (the content stopped on
+  purpose, for example when a touch catches a fling) is not counted. The
+  first version of this report dropped every interval of 100 ms or more, which
+  hid long freezes (Codex review, round 1). Recounted, Qt's figures did not
+  change materially (longest freeze 7 to 37 ms on hardware), and File
+  Explorer's 2,000 px/s flings got worse (freezes of 120 to 168 ms now count).
+  `results/cadence_recompute.txt` lists every old and new figure.
 - **`harness input`** sends `SendInput` keys, mouse and wheel events and
   `InjectTouchInput` touch drags at fixed times (sleep, then spin for the last
   2 ms) and logs the QPC time of each.
@@ -228,6 +249,14 @@ all cores, the discrete GPU, 60 and 144 Hz, 100 to 150 %. Results below are
 D3D12 at 144 Hz unless marked. D3D11 and 60 Hz tables are in
 `results/tables.md` and `results/ramps.md`.
 
+Edit rates of 60 per second and more were generated by applying
+`round(rate × 0.016)` edits per 16 ms tick, so the steps labelled 100 and 200
+ran at about 125 and 188 per second for model churn and at a measured 120 and
+181 per second for the queue (Codex review, round 1). The tables now show both
+numbers. The churn steps of 1,000 per second and more were exact. The core now
+paces edits by elapsed time (`catalog::Pacer`), and Monday's batch re-runs the
+affected steps.
+
 ### 1. Animated queue
 
 Each run: two mouse drag reorders, then 6 s of random inserts, removes and
@@ -238,28 +267,66 @@ check. Every duplicated frame is decoded and compared against the model order
 replayed from the ring buffer. A frame counts as settled 220 ms (the
 transition) plus four refreshes after the last edit.
 
-| Edits/s | Transitions | Dropped frames/min | Corruption frames | Still broken after edits stop |
+| Edits/s configured (measured) | Transitions | Dropped frames/min | Corruption frames | Still broken after edits stop |
 |---|---|---|---|---|
-| 1 | settling | 13 | 0 | 0 |
-| 5 | settling | 0 | 0 | 0 |
-| 20 | settling | 0 | 1 (one ghost frame) | 0 |
-| 50 | settling | 0 | 0 | 0 |
-| 100 | settling | 0 | 798 | **286 frames** |
-| 200 | settling | 4 | 164 | 0 |
-| 1 | plain | 0 | 0 | 0 |
-| 5 | plain | 4 | 944 | **288 frames** |
-| 20 | plain | 4 | 812 | **288 frames** |
+| 1 (1) | settling | 13 | 0 | 0 |
+| 5 (5) | settling | 0 | 0 | 0 |
+| 20 (19) | settling | 0 | 1 (one ghost frame) | 0 |
+| 50 (48) | settling | 0 | 0 | 0 |
+| 100 (120) | settling | 0 | 798 | **286 frames** |
+| 200 (181) | settling | 4 | 164 | 0 |
+| 1 (1) | plain | 0 | 0 | 0 |
+| 5 (4) | plain | 4 | 944 | **288 frames** |
+| 20 (19) | plain | 4 | 812 | **288 frames** |
 
 Plain transitions (opacity and scale in `add`, opacity in `remove`, x and y in
 `displaced`) break at 5 edits per second at every condition, 60 Hz included:
 rows stay at partial opacity, overlap, or leave gaps, and the damage never
-heals. Snapshots of it are in `results/raw/diagnostics.7z`
-(`diag_queue20_snaps/`). With the documented
-pattern (the displaced transition also animates opacity and scale to 1) the
-queue is clean through 50 edits per second at all conditions. The knee is
-between 50 and 100, at least 10× above the envelope. The 200-per-second run
-healed, the 100-per-second run did not, so the knee itself is not sharp.
-Drag reorder never produced a problem.
+heals. Snapshots are in `results/raw/diagnostics.7z` (`diag_queue20_snaps/`).
+Qt's documented pattern (the displaced transition also animates opacity and
+scale to 1) cleans up most of it, but not all.
+
+**What breaks, and why the documented pattern is not enough** (diagnosis on
+2026-10-18, `results/raw/queue_diag.7z`). Every damaged row was a freshly
+inserted row whose `add` transition (opacity 0 to 1, scale 0.96 to 1) was cut
+short by the next edit. Qt stops a running view transition when the next
+model change arrives. The settling pattern repairs only rows the next edit
+*displaces*. An edit that does not move the half-faded row leaves it at its
+intermediate opacity, and nothing repairs it until some later edit happens to
+displace it. Positions were never wrong. The tests:
+
+| Load (paced in the core) | Settling pattern | Row-owned animations (variant 2) |
+|---|---|---|
+| 121 edits/s, one per frame | clean | – |
+| bursts of 2 or 3 edits in the same frame, every 500 ms | clean | – |
+| bursts of 3 edits 30 ms apart, every 500 ms (about 6 edits/s) | **one row at about 25 % opacity until the next burst** (28 frames) | **three rows stuck dimmed for good** |
+| bursts of 5 edits 15 ms apart, every 400 ms | 13 flagged frames, one ghost | – |
+
+The burst case is the realistic one: a Party host and a guest adding tracks
+at almost the same moment. Same-frame edits are safe because Qt applies them
+in one layout pass. The old 100-per-second step broke because it applied two
+edits per tick on most ticks and one on the rest, so consecutive frames kept
+interrupting each other.
+
+A first robust candidate, rows that run their own fade on creation and use
+ListView's documented `delayRemove` pattern on removal, made it worse: three
+inserted rows stayed dimmed permanently. Its fade animation did not report
+stopping, so the cause is not yet understood. Monday's batch records the
+animation's start and stop marks to find it. Two further variants are built
+so that no interrupted animation can leave a row half-faded:
+
+- **Time-bound opacity (variant 3):** a row's opacity is a pure function of
+  the clock and the time the row was created or removed, recomputed every
+  frame. There is no animation to interrupt.
+- **Motion only (variant 4):** rows appear and disappear without fading or
+  scaling; only positions animate. The guidelines' "queue insert, remove and
+  reorder are animated" is still met by the motion of the other rows.
+
+Monday's batch runs variants 0 to 4 against bursts of 2 to 5 edits 0 to 30 ms
+apart (60 bursts each) and against paced rates of 5 to 200 per second, then
+the full queue scenario for every variant that comes out clean. Condition (a)
+of the verdict is met if variant 3 or 4 is clean everywhere. Drag reorder
+never produced a problem in any variant.
 
 Input-to-photon for an insert from the keyboard (first key of each burst,
 SendInput to the DWM present of the first changed frame): median 24 ms at
@@ -274,7 +341,7 @@ run; a drop is a present interval above 1.5 refreshes):
 |---|---|---|---|
 | Rows | 1k, 10k, 100k, 1M, 10M, 40M | none (0 drops at 40M) | 10k |
 | Delegate weight | text, artwork, RectangularShadow glow, MultiEffect glow per row | none (0 to 2 drops per run) | artwork + hover |
-| Model churn during fling | 1, 10, 100, 1,000, 3,000, 10,000, 30,000 per s | 3,000 per s (209/min) | 1 per s, 3,000× below |
+| Model churn during fling | 1, 10, 100 (ran 125), 1,000, 3,000, 10,000, 30,000 per s | 3,000 per s (209/min) | 1 per s, 3,000× below |
 | Fling velocity | 1,000 to 12,000 px/s (Qt's cap) | none | |
 | Wheel, touchpad | 5 to 40 notches/s, 1,000 to 20,000 px/s | none | |
 | Artwork | cached, uncached on 1, 4, 16 threads | none | |
@@ -322,11 +389,13 @@ Twelve switches between the track table and the library grid, 900 ms apart:
 | fresh, one logical core | MultiEffect per row | 104 (25.4) | 82 |
 
 A fresh page builds every visible delegate in one frame. At 144 Hz that is
-3 to 5 refreshes. This is the second criterion that fails: the envelope (first
-visit to a page with artwork rows) is at the knee. Keeping pages alive
-(`StackLayout` with visibility, as `Main.qml` does) removes it, and
-`ListView`'s `asynchronous` delegate incubation would spread the cost. Both are
-phase 4 design rules rather than proof that the first visit is smooth.
+3 to 5 refreshes, so the first visit to a page sits at its knee. The user
+decided this is not a deal breaker (most apps cap at 60 fps, where a fresh
+page with artwork rows drops nothing). Keeping pages alive (`StackLayout`
+with visibility, as `Main.qml` does) removes the cost after the first visit.
+Monday's batch measures `Loader { asynchronous: true }` with a Lumen skeleton
+against the synchronous build (`SPIKE_ASYNC_PAGES`): dropped frames, and the
+time until the page is loaded and until its content stops changing.
 Input-to-photon: 11 to 23 ms at 144 Hz, 22 to 47 ms at 60 Hz.
 
 ### 5. Text sharpness
@@ -395,9 +464,31 @@ Drops show no upward trend. Memory is not flat. In the 60-minute run it rose
 13 MB in the first 20 minutes and 3 MB in the last 35 (about 0.09 MB/min; the
 five-minute medians from minute 25 are 432.6, 434.0, 434.1, 435.0, 435.6, 436.8
 and 437.2 MB). It is levelling off, but the method's "flat after warm-up" is
-not met within an hour. Whether this is caches filling (pipeline, glyph and
-pixmap caches all grow with new content) or a leak needs a longer run and a
-heap profile, which I did not do.
+not met within an hour. The user expects caches (pipeline, glyph and pixmap
+caches all grow with new content), not a leak. Monday's batch runs 3 hours
+with the app logging, every 10 s, private bytes, the committed and allocated
+bytes of all Win32 heaps, and its share of GPU memory, with the QML garbage
+collector's statistics in the log. A full heap snapshot (UMDH) needs
+elevation, which the measuring account does not have; the start and end heap
+summaries are the closest available. A flat heap with growing GPU memory
+points at caches, a growing heap at a leak.
+
+## Software rendering
+
+The method no longer gates on software rendering; it has to stay usable (no
+freeze of 100 ms or more while scrolling 1,000 rows with artwork).
+
+| Path | Worst frame or freeze | Dropped frames |
+|---|---|---|
+| WARP (`QSG_RHI_PREFER_SOFTWARE_RENDERER`), 12 runs at 1,000 rows | 51 ms | 140 to 1,700 per minute |
+| Mesa llvmpipe (`QT_OPENGL=software`), 40 runs | 46 ms longest content freeze, GUI clock at most 50 ms | 0 to 60 skipped refreshes per minute at 60 Hz, 1,100 to 4,900 at 144 Hz |
+| Qt Quick software adaptation (exploratory runs only) | GUI clock at most 50 ms | 3 to 30 skipped GUI-clock frames per 9 s run |
+
+All three are usable by that definition. The heaviest combined WARP load in
+the extension (1M rows, MultiEffect per row, 1,000 churn edits per second, one
+core) reached 139 ms, far outside what a software-rendered machine would run.
+Every software path drops frames because Qt Quick redraws the whole window
+each frame. A future fallback would pick llvmpipe over WARP.
 
 ## Baselines
 
@@ -409,33 +500,49 @@ installed `react-native` package to run Metro. Getting it running needs a full
 File Explorer, a 3,000-file folder in Details view, placed at the same client
 rect and driven by the same scripts. It presents through composition, so the
 comparison metric is content cadence in the list region from the duplication
-pass (refreshes skipped while the list moves, counted in the fast phase of
-each fling only), plus PresentMon on `dwm.exe` by process id:
+pass (the corrected metric above), plus PresentMon on `dwm.exe` by process id:
 
-| | Fling 2,000 px/s | Fling 8,000 px/s | Updates/s while moving |
+| | Fling 2,000 px/s: skipped per min moving, longest freeze | Fling 8,000 px/s | Updates/s while moving |
 |---|---|---|---|
-| Qt, 144 Hz D3D12 | 62 skipped per min of motion | 36 | 143 |
-| File Explorer, 144 Hz | 4,316 | 5,499 | 54 to 67 |
-| Qt, 60 Hz | 0 | 0 to 92 | 60 |
-| File Explorer, 60 Hz | 352 to 566 | 1,156 to 1,483 | 44 to 55 |
+| Qt, 144 Hz D3D12 | 62, 14 ms | 36, 14 ms | 143 |
+| File Explorer, 144 Hz | 3,688 to 5,064, up to 168 ms | 4,210 to 5,627, up to 91 ms | 50 to 82 |
+| Qt, 60 Hz | 0, 17 ms | 0 to 92, up to 33 ms | 58 to 60 |
+| File Explorer, 60 Hz | 953 to 1,165, up to 167 ms | 1,156 to 1,483, up to 100 ms | 35 to 44 |
 
-Explorer's list updates at 44 to 67 frames per second during a touch fling at
+With the wheel, Explorer jumps once per notch (10 updates per second at 10
+notches per second, 100 ms apart) where Qt animates the scroll.
+Explorer's list updates at 35 to 83 frames per second during a touch fling at
 any refresh rate. On this machine it is not a smoothness bar Qt has to reach.
 It is far below what Qt already does.
 
 ## Recommendation
 
-1. Treat Qt Quick as failed against the method as written, and run GPUI
-   through the same harness. The harness is generic (PresentMon, duplication,
-   scripted input) and only needs the ring buffer hooks re-done for GPUI.
-2. Decide with the user whether the software-rendering criterion stays. It
-   fails for a structural reason (full redraw every frame) that applies to any
-   toolkit that renders through one GPU swap chain, so GPUI may fail it the
-   same way. A toolkit that passes it would need damage-region rendering.
-3. If Qt Quick goes ahead, phase 4 adopts the four settings above as rules,
-   plus: pages stay alive after first visit (or build with asynchronous
-   incubation), no per-row `MultiEffect` (use `RectangularShadow`, which
-   costs nothing measurable), and the D3D12 memory cost is accepted.
+1. Go with Qt Quick for the desktop app, once Monday's batch has settled the
+   two conditions: a queue variant with no corruption under bursts and paced
+   rates, and memory that is flat over 3 hours (or growth explained by caches
+   that stop growing).
+2. Phase 4 adopts the four settings as rules, plus: the queue uses the robust
+   variant the batch confirms, pages stay alive after their first visit (or
+   load asynchronously behind a skeleton, depending on the batch), no per-row
+   `MultiEffect` (use `RectangularShadow`, which costs nothing measurable), and
+   the D3D12 memory cost is accepted.
+3. GPUI is an optional comparison. The harness is generic (PresentMon,
+   duplication, scripted input) and only needs the ring-buffer hooks redone
+   for it. If no queue variant comes out clean on Monday, that comparison is
+   no longer optional.
+
+## Monday's batch
+
+`spikes/a-qt-quick/tools/monday_batch.py` runs everything still open, about
+4.5 hours, unattended, at 144 Hz / 100 % on D3D12 (it restores the display
+mode it found): the queue variants against bursts and paced rates, the full
+queue scenario for the clean variants, the re-paced churn ramp, fresh page
+switches with and without asynchronous incubation, and the 3-hour soak with
+its memory log. Results land in `results/monday.jsonl` and
+`results/monday_summary.md`, raw runs in `results/raw/monday.7z`. From
+`spikes/a-qt-quick/tools`, with nothing heavy running:
+
+    C:\Users\loren\spike-a-tools\venv\Scripts\python.exe -u monday_batch.py
 
 ## Raw data
 
@@ -446,7 +553,9 @@ files (`control`, `queue_checks`, `latency`, `baselines`, `text`, `memory`,
 condition with every run's PresentMon CSV, ring-buffer dump, duplication log,
 input log, process samples and metadata (`d12c144s100long.7z` is the
 60-minute soak, `diagnostics.7z` the Animator, software-rendering and queue
-snapshot runs plus the driver logs). Summaries of the exploratory runs from
+snapshot runs plus the driver logs, `queue_diag.7z` the 2026-10-18 queue
+diagnosis). `cadence_recompute.txt` lists every cadence figure before and
+after the metric correction. Summaries of the exploratory runs from
 before the final build are in `results/exploratory/`; their raw files were not
 kept and nothing above relies on them except the Qt Quick software
 adaptation figures, which are marked.

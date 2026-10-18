@@ -14,11 +14,12 @@ pub struct TrackModelRust {
     seeds: Vec<u32>,
     next_seed: u32,
     rng: Rng,
+    pacer: catalog::Pacer,
 }
 
 impl Default for TrackModelRust {
     fn default() -> Self {
-        Self { rows: 0, seeds: Vec::new(), next_seed: 0, rng: Rng::new(0x2545_f491) }
+        Self { rows: 0, seeds: Vec::new(), next_seed: 0, rng: Rng::new(0x2545_f491), pacer: Default::default() }
     }
 }
 
@@ -80,6 +81,11 @@ impl qobject::TrackModel {
             self.as_mut().end_reset_model();
         }
         self.rows_changed();
+    }
+
+    pub(crate) fn churn_at(mut self: Pin<&mut Self>, rate: i32, around: i32) {
+        let ops = self.as_mut().rust_mut().pacer.due(rate as f64);
+        self.churn(ops as i32, around);
     }
 
     pub(crate) fn churn(mut self: Pin<&mut Self>, ops: i32, around: i32) {

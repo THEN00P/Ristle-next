@@ -41,5 +41,7 @@ void spike_stall_gui(int ms);
 void spike_request_gui_stall(int ms);
 // Arms a busy-wait of `ms` milliseconds at the next beforeRendering.
 void spike_request_render_stall(int ms);
+// Appends one memory sample to $SPIKE_MEM_OUT (long soaks).
+void spike_log_memory();
 // Writes the ring buffer as CSV. Returns the number of events written.
 int64_t spike_dump(const QString &path);

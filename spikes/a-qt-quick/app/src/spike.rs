@@ -21,6 +21,7 @@ pub mod ffi {
         fn spike_stall_gui(ms: i32);
         fn spike_request_gui_stall(ms: i32);
         fn spike_request_render_stall(ms: i32);
+        fn spike_log_memory();
     }
 
     extern "RustQt" {
@@ -32,6 +33,8 @@ pub mod ffi {
         #[qproperty(bool, art_cache, cxx_name = "artCache", READ, CONSTANT)]
         #[qproperty(i32, glow, READ, CONSTANT)]
         #[qproperty(bool, fresh_pages, cxx_name = "freshPages", READ, CONSTANT)]
+        #[qproperty(bool, async_pages, cxx_name = "asyncPages", READ, CONSTANT)]
+        #[qproperty(bool, memory_log, cxx_name = "memoryLog", READ, CONSTANT)]
         #[qproperty(i32, queue_length, cxx_name = "queueLength", READ, CONSTANT)]
         #[qproperty(i32, transition_ms, cxx_name = "transitionMs", READ, CONSTANT)]
         #[qproperty(i32, churn_per_second, cxx_name = "churnPerSecond", READ, CONSTANT)]
@@ -42,6 +45,9 @@ pub mod ffi {
         #[qproperty(bool, specimen, READ, CONSTANT)]
         #[qproperty(i32, start_page, cxx_name = "startPage", READ, CONSTANT)]
         #[qproperty(i32, quit_after_ms, cxx_name = "quitAfterMs", READ, CONSTANT)]
+        #[qproperty(i32, burst_count, cxx_name = "burstCount", READ, CONSTANT)]
+        #[qproperty(i32, burst_gap_ms, cxx_name = "burstGapMs", READ, CONSTANT)]
+        #[qproperty(i32, burst_period_ms, cxx_name = "burstPeriodMs", READ, CONSTANT)]
         type Spike = super::SpikeRust;
     }
 
@@ -58,6 +64,9 @@ pub mod ffi {
         fn stall_render(self: &Spike, ms: i32);
         #[qinvokable]
         fn mark(self: &Spike, kind: u32, arg: u32);
+        /// Appends a memory sample to $SPIKE_MEM_OUT.
+        #[qinvokable]
+        fn log_memory(self: &Spike);
     }
 }
 
@@ -71,6 +80,8 @@ pub struct SpikeRust {
     art_cache: bool,
     glow: i32,
     fresh_pages: bool,
+    async_pages: bool,
+    memory_log: bool,
     queue_length: i32,
     transition_ms: i32,
     churn_per_second: i32,
@@ -81,6 +92,9 @@ pub struct SpikeRust {
     specimen: bool,
     start_page: i32,
     quit_after_ms: i32,
+    burst_count: i32,
+    burst_gap_ms: i32,
+    burst_period_ms: i32,
 }
 
 impl Default for SpikeRust {
@@ -93,6 +107,8 @@ impl Default for SpikeRust {
             // 0 = none, 1 = glow on the play control, 2 = glow + blurred backdrop.
             glow: env("SPIKE_GLOW", 1),
             fresh_pages: env("SPIKE_FRESH_PAGES", 0) != 0,
+            async_pages: env("SPIKE_ASYNC_PAGES", 0) != 0,
+            memory_log: std::env::var_os("SPIKE_MEM_OUT").is_some(),
             queue_length: env("SPIKE_QUEUE", 40),
             transition_ms: env("SPIKE_TRANSITION_MS", 220),
             churn_per_second: env("SPIKE_CHURN", 0),
@@ -108,6 +124,9 @@ impl Default for SpikeRust {
             start_page: env("SPIKE_PAGE", 0),
             // CI smoke runs quit on their own so the ring buffer gets dumped.
             quit_after_ms: env("SPIKE_QUIT_AFTER_MS", 0),
+            burst_count: env("SPIKE_BURST_COUNT", 0),
+            burst_gap_ms: env("SPIKE_BURST_GAP_MS", 30),
+            burst_period_ms: env("SPIKE_BURST_PERIOD_MS", 1000),
         }
     }
 }
@@ -127,5 +146,9 @@ impl ffi::Spike {
 
     fn mark(&self, kind: u32, arg: u32) {
         ffi::spike_mark(kind, arg);
+    }
+
+    fn log_memory(&self) {
+        ffi::spike_log_memory();
     }
 }

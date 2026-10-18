@@ -100,6 +100,11 @@ pub mod qobject {
         /// Applies `ops` inserts, removes and moves within 20 rows of `around`.
         #[qinvokable]
         fn churn(self: Pin<&mut TrackModel>, ops: i32, around: i32);
+        /// Called every frame: applies `rate` edits per second, paced by
+        /// elapsed time.
+        #[qinvokable]
+        #[cxx_name = "churnAt"]
+        fn churn_at(self: Pin<&mut TrackModel>, rate: i32, around: i32);
     }
 
     // ---- QueueModel ----
@@ -197,6 +202,12 @@ pub mod qobject {
         /// `count` steps at once (edit rates above the frame rate).
         #[qinvokable]
         fn steps(self: Pin<&mut QueueModel>, count: i32, window: i32);
+        /// Called every frame: `rate` random edits per second, paced by
+        /// elapsed time.
+        #[qinvokable]
+        fn step_at(self: Pin<&mut QueueModel>, rate: i32, window: i32);
+        #[qinvokable]
+        fn burst_at(self: Pin<&mut QueueModel>, count: i32, gap_ms: i32, period_ms: i32, window: i32);
     }
 }
 

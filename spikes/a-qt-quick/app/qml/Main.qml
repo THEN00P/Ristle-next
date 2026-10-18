@@ -62,11 +62,32 @@ Window {
             tracks: trackModel
         }
 
-        // Fresh pages: every switch builds the page from scratch.
+        // Fresh pages: every switch builds the page from scratch. With
+        // SPIKE_ASYNC_PAGES the page incubates over several frames and a
+        // skeleton shows until it is ready (Lumen: loading uses skeletons).
         Loader {
+            id: freshLoader
             anchors.fill: parent
             active: Spike.freshPages
+            asynchronous: Spike.asyncPages
             sourceComponent: root.page === 0 ? tablePage : libraryPage
+            onLoaded: Spike.mark(16, 100 + root.page)
+        }
+        Rectangle {
+            anchors.fill: parent
+            visible: Spike.freshPages && freshLoader.status !== Loader.Ready
+            color: Lumen.base
+            radius: 10
+            border.color: Lumen.hairline
+            Column {
+                x: 32
+                y: 32
+                spacing: 14
+                Repeater {
+                    model: 9
+                    Rectangle { width: 420 - (index % 3) * 60; height: 18; radius: 4; color: Lumen.raised }
+                }
+            }
         }
         Component {
             id: tablePage
@@ -94,10 +115,17 @@ Window {
     }
 
     Timer {
-        interval: Spike.queueOpsPerSecond >= 60 ? 16 : 1000 / Math.max(1, Spike.queueOpsPerSecond)
+        interval: 8
         repeat: true
         running: Spike.queueOpsPerSecond > 0 && root.queueChurn
-        onTriggered: queueModel.steps(Spike.queueOpsPerSecond >= 60 ? Math.round(Spike.queueOpsPerSecond * 0.016) : 1, 8)
+        onTriggered: queueModel.stepAt(Spike.queueOpsPerSecond, 8)
+    }
+
+    Timer {
+        interval: 4
+        repeat: true
+        running: Spike.burstCount > 0 && root.queueChurn
+        onTriggered: queueModel.burstAt(Spike.burstCount, Spike.burstGapMs, Spike.burstPeriodMs, 8)
     }
 
     // Instrumentation, bottom-right corner: two 8 px clocks the duplication
@@ -126,6 +154,14 @@ Window {
             color: "white"
             OpacityAnimator on opacity { from: 0; to: 1; duration: 1000; loops: Animation.Infinite; running: Spike.heartbeat && Spike.animators }
         }
+    }
+
+    Timer {
+        interval: 10000
+        repeat: true
+        triggeredOnStart: true
+        running: Spike.memoryLog
+        onTriggered: Spike.logMemory()
     }
 
     Timer {

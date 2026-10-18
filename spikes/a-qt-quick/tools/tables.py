@@ -39,7 +39,14 @@ def describe(r):
     for k, label in (("SPIKE_ROWS", "rows"), ("SPIKE_WEIGHT", "weight"), ("SPIKE_CHURN", "churn/s"),
                      ("SPIKE_QUEUE_OPS", "queue ops/s"), ("SPIKE_GLOW", "glow"), ("SPIKE_FRESH_PAGES", "fresh")):
         if k in c:
-            parts.append(f"{label} {c[k]}")
+            v = c[k]
+            # Before the pacing fix (runs without SPIKE_PACED) rates of 60/s and
+            # more ran as round(rate * 0.016) edits per 16 ms tick.
+            if k in ("SPIKE_CHURN", "SPIKE_QUEUE_OPS") and int(v) >= 60 and not c.get("SPIKE_PACED"):
+                actual = round(round(int(v) * 0.016) / 0.016)
+                parts.append(f"{label} {v}" + (f" (ran {actual})" if actual != int(v) else ""))
+            else:
+                parts.append(f"{label} {v}")
     if c.get("SPIKE_ART_CACHE") == 0:
         parts.append(f"uncached art ×{c.get('SPIKE_ART_THREADS', 4)}")
     if c.get("QSG_RHI_PREFER_SOFTWARE_RENDERER"):

@@ -118,12 +118,12 @@ Item {
         }
     }
 
-    // Model churn load axis: inserts, removes and moves near the visible rows.
+    // Model churn load axis: inserts, removes and moves near the visible rows,
+    // paced in the core so the configured rate is exact.
     Timer {
-        interval: Spike.churnPerSecond >= 60 ? 16 : 1000 / Math.max(1, Spike.churnPerSecond)
+        interval: 8
         repeat: true
         running: Spike.churnPerSecond > 0 && page.visible
-        onTriggered: page.tracks.churn(Spike.churnPerSecond >= 60 ? Math.round(Spike.churnPerSecond * 0.016) : 1,
-                                       list.indexAt(10, list.contentY + list.height / 2))
+        onTriggered: page.tracks.churnAt(Spike.churnPerSecond, list.indexAt(10, list.contentY + list.height / 2))
     }
 }

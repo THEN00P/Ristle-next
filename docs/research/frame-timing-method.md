@@ -70,8 +70,12 @@ Load axes, one at a time and then combined:
 | GPU | discrete → integrated → software rendering (WARP / `QSG_RHI_BACKEND`) |
 
 **Pass:** the production envelope must sit at least **4× below the knee** on
-the user's machine, and must have no drops at all under software rendering, with
-1,000 rows and artwork.
+the user's machine.
+
+**Software rendering is not a pass/fail gate** (decided 2026-10-18, after spike
+A). People without GPU rendering expect and accept worse performance. It only
+has to stay usable: with 1,000 rows and artwork, scrolling must not freeze for
+100 ms or more. Its dropped-frame rates are reported, not judged.
 
 ## Rule 5: script the input, fix the conditions
 

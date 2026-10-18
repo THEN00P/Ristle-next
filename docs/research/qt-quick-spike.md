@@ -76,6 +76,11 @@ conditions), the diagnosis and the extension. Background CPU was 0.6 to 28 % (me
 `results/summary.jsonl`). No emulator, Gradle or build ran during timing.
 Raycast, T3 Code, ChatGPT, Claude and Wispr Flow stayed open.
 
+macOS: the `spike-a` job in `spike-c-ios.yml` (run 39109678018, macos-15)
+builds the same app against Qt 6.11.3 and runs it for 6 s. It used the Metal
+backend and rendered 362 frames with no QML errors. No timing on macOS; that
+waits for the user's Mac.
+
 ## The harness
 
 All of it is out of process except the ring buffer, and every timestamp is QPC

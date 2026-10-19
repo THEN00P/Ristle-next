@@ -19,6 +19,7 @@ import argparse
 import os
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -89,10 +90,30 @@ def inventory() -> dict[str, dict[str, str]]:
 
 
 def rust_tests(crate: str) -> set[str]:
+    """Test names written in the crate's sources (fast, used without --strict)."""
     names: set[str] = set()
     for path in (CRATES / crate).rglob("*.rs"):
         names.update(RUST_TEST.findall(path.read_text(encoding="utf-8")))
     return names
+
+
+def _listed(package: str, ignored: bool) -> set[str]:
+    cmd = ["cargo", "test", "-q", "-p", package, "--all-targets", "--", "--list", "--format", "terse"]
+    if ignored:
+        cmd.append("--ignored")
+    out = subprocess.run(cmd, cwd=CRATES, capture_output=True, text=True, check=True).stdout
+    return {line.rsplit(": ", 1)[0].rsplit("::", 1)[-1] for line in out.splitlines() if line.endswith(": test")}
+
+
+def executed_tests(crate: str) -> set[str]:
+    """Tests the harness actually compiles and runs: listed by `cargo test`, minus
+    `#[ignore]`d ones. A test behind an inactive `#[cfg]` is not compiled, so it
+    never appears. This is what `--strict` (the phase exit) counts."""
+    manifest = (CRATES / crate / "Cargo.toml").read_text(encoding="utf-8")
+    package = re.search(r'^name\s*=\s*"([^"]+)"', manifest, re.MULTILINE)
+    if not package:
+        sys.exit(f"no package name in {crate}/Cargo.toml")
+    return _listed(package.group(1), ignored=False) - _listed(package.group(1), ignored=True)
 
 
 def main() -> int:
@@ -131,7 +152,12 @@ def main() -> int:
             continue
         crate = row["crate"]
         if crate not in found:
-            found[crate] = rust_tests(crate) if (CRATES / crate).is_dir() else set()
+            if not (CRATES / crate).is_dir():
+                found[crate] = set()
+            elif args.strict:
+                found[crate] = executed_tests(crate)
+            else:
+                found[crate] = rust_tests(crate)
         if row["rust"] not in found[crate]:
             pending.append((row["milestone"], crate, row["rust"], name))
     ported = sum(r["status"] == "port" for r in rows.values()) - len(pending)

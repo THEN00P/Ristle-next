@@ -976,18 +976,14 @@ Plugins, which go to their own repositories (ADR 0010).
 | `maincloud_native_identity_rows_fencing_and_outcomes` | retire | | | Runs against SpacetimeDB maincloud, replaced by the Relay (ADR 0007). |
 
 
-## 9. Open questions for the user
+## 9. Decisions on the open questions (2026-10-19)
 
-1. **Party core in phase 2 or phase 5?** The plan builds `ristle-protocol`
-   and `ristle-party` in phase 2 (M8) against an in-memory Relay, because the
-   logic is core and 40 legacy tests need no server. The alternative moves
-   M8 to phase 5 and those 40 rows to `phase 5`. I recommend phase 2: M8 runs
-   alongside M7b and does not delay the exit.
-2. **Four rows open past phase 2.** File Share audio framing, its receive
-   cache, the ICE transfer and TURN admission need the transport or the
-   server. Is it acceptable that phase 2 exits with these marked `phase 5`
-   rather than retired?
-3. **No import from Ristle legacy.** The plan starts a new database and
-   imports nothing (Ristle Playlists, Recently Played, settings). Two
-   migration tests are retired on that basis. Should Ristle Playlists be
-   importable from a legacy database?
+1. **Party core in phase 2.** `ristle-protocol` and `ristle-party` are built in
+   M8 against an in-memory Relay, as recommended. The logic is core, and the
+   40 legacy tests need no server.
+2. **Four rows stay open past phase 2.** File Share audio framing, its receive
+   cache, the ICE transfer and TURN admission are marked `phase 5`. Phase 2
+   exits with them open, not retired.
+3. **No import from Ristle legacy (user decision).** Ristle starts with a new
+   database and imports nothing: no Ristle Playlists, no Recently Played, no
+   settings. Nothing of value is lost. The two migration tests stay retired.

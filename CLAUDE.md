@@ -26,8 +26,8 @@ before relying on it, and update it when you learn something new.
 
 ## Next-run orientation
 
-- **Git Bash rewrites leading-slash API paths.** Use `gh api users/...`, not
-  `gh api /users/...`. Reading GitHub billing needs the `user` scope, which the
+- **Git Bash rewrites leading-slash arguments.** Use `gh api users/...`, not
+  `gh api /users/...`, and `powercfg -list`, not `powercfg /list`. Reading GitHub billing needs the `user` scope, which the
   current `gh` login lacks.
 - **wasmtime ≥ 49 needs Rust ≥ 1.96.** The global toolchain is older, so pin it
   per workspace with `rust-toolchain.toml` rather than updating it globally.
@@ -80,3 +80,23 @@ before relying on it, and update it when you learn something new.
   `gh api graphql --paginate`, or the newest threads stay unseen and
   unresolved. Resolve threads with the GraphQL `resolveReviewThread`
   mutation after replying.
+- **Qt without an account:** aqtinstall 3.3.0 from PyPI cannot read the Qt
+  6.11+ repository layout. Install it from git main
+  (`pip install git+https://github.com/miurahr/aqtinstall`). cxx-qt 0.10:
+  declare `QAbstractListModel` in one bridge only (two declarations give
+  duplicate cast symbols at link time), and a QML property named `on...` is
+  parsed as a signal handler. Check a `qproperty`'s type before QML compares
+  it: a `bool` compared with `=== 1` is silently false (this voided a day of
+  spike A variant runs).
+- **Frame timing on Windows** (spike A harness, `spikes/a-qt-quick/`):
+  PresentMon works without elevation (the account is in Performance Log
+  Users) but cannot target `dwm.exe` by name (use `--process_id`), and it
+  loses a process's presents while any Desktop Duplication session runs, so
+  never record both at once. A touch-injecting process must outlive the
+  measurement: when it exits, Qt rebuilds its device list on the GUI thread
+  (~15 ms). Measure Qt with render-thread Animators off (see
+  `docs/research/qt-quick-spike.md`).
+- **Unattended multi-hour runs:** background Bash tasks die after 2 h and with
+  the session, so start long drivers detached (`Start-Process`) and wait on
+  their log. `wmic` is gone on this Windows build; find processes by command
+  line with `Get-CimInstance Win32_Process`.

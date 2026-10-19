@@ -1,0 +1,5 @@
+target/
+app/assets/art/
+runs/
+__pycache__/
+app/.qmlls.ini

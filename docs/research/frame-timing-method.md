@@ -11,7 +11,12 @@ all of the rules below.
   On Windows, use **PresentMon**. It reads ETW events from the graphics stack and
   logs every `Present` call with its QPC timestamps, the time each frame actually
   reached the display, and frames that were dropped. It runs in another process,
-  so an app stall cannot delay its clock.
+  so an app stall cannot delay its clock. **A dropped frame is counted on
+  the screen:** a `MsBetweenDisplayChange` interval longer than 1.5 refresh
+  periods, counting the refreshes missed. Gaps between presents
+  (`MsBetweenPresents`) are reported beside it but do not decide: a frame
+  presented on time can still be lost before the screen, and a late present
+  can still reach the screen in time when frames are queued.
   On macOS, use Instruments (Animation Hitches and Core Animation) once a Mac is
   available.
 - **Secondary evidence is in-app timestamps, and it is used only for
@@ -70,8 +75,12 @@ Load axes, one at a time and then combined:
 | GPU | discrete → integrated → software rendering (WARP / `QSG_RHI_BACKEND`) |
 
 **Pass:** the production envelope must sit at least **4× below the knee** on
-the user's machine, and must have no drops at all under software rendering, with
-1,000 rows and artwork.
+the user's machine.
+
+**Software rendering is not a pass/fail gate** (decided 2026-10-18, after spike
+A). People without GPU rendering expect and accept worse performance. It only
+has to stay usable: with 1,000 rows and artwork, scrolling must not freeze for
+100 ms or more. Its dropped-frame rates are reported, not judged.
 
 ## Rule 5: script the input, fix the conditions
 

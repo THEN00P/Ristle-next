@@ -208,8 +208,14 @@ pub enum Advance { TrackEnded, Skip }
 
 /// Serializable, restores exactly; `CanonicalQueue::restore` rejects corrupt
 /// state (duplicate ids, cursor out of range).
-pub struct QueueState { /* collection, cursor, requests, play_next_count, current,
-                           repeat, shuffle (seed + original order), next_id */ }
+pub struct QueueState { pub collection: Vec<QueueEntry>, pub cursor: Option<usize>,
+                        pub requests: Vec<QueueEntry>, pub play_next_count: usize,
+                        pub current: Option<Current>, pub repeat: RepeatMode,
+                        pub shuffle: Option<u64>,  // seed; original order = entry id order
+                        pub next_id: EntryId }
+/// The playing entry is the collection entry at the cursor, or a request
+/// taken from the lane, which then lives nowhere else.
+pub enum Current { AtCursor, Detached(Box<QueueEntry>) }
 
 impl CanonicalQueue {
     pub fn start_collection(&mut self, entries: Vec<CollectionEntry>, start: usize) -> StartOutcome;
@@ -233,10 +239,20 @@ impl CanonicalQueue {
     pub fn restore(state: QueueState) -> Result<Self, CorruptState>;
 }
 
-/// A collection walked without fetching it whole.
-pub enum Slot { Resolved { entry: SlotId, track: TrackRef }, Position { entry: SlotId, offset: u64 } }
-pub struct SequenceState { /* descriptor, slots, order, cursor, materialized_end,
-                              shuffle seed, played-in-this-pass, revision */ }
+/// A collection walked without fetching it whole. One slot per occurrence;
+/// `track: None` (a bare position) only in offset-addressed sources.
+pub struct Slot { pub id: SlotId, pub source: usize, pub offset: u64, pub track: Option<TrackRef> }
+/// Routing is stored once per sequence; slots name a source by index.
+pub enum SequenceSource { Collection(CollectionDescriptor), RistlePlaylist(PlaylistId), Fixed }
+/// What the user opened, for display only (legacy trap 5).
+pub enum Opened { RistlePlaylist(PlaylistId), Provider { connection: ConnectionId, target: Target },
+                  LikedTracks, Search { query: String } }
+pub struct SequenceDescriptor { pub id: SequenceId, pub title: String, pub opened: Opened,
+                                pub sources: Vec<SequenceSource> }
+pub struct SequenceState { pub descriptor: SequenceDescriptor, pub slots: Vec<Slot>,  // natural order
+                           pub order: Vec<SlotId>, pub cursor: Option<usize>, pub materialized_end: usize,
+                           pub shuffle: Option<u64>, pub played: BTreeSet<TrackRef>,
+                           pub revision: u64, pub next_slot: SlotId }
 impl Sequence {
     pub fn start(descriptor: SequenceDescriptor, slots: Vec<Slot>, at: StartAt, shuffle: Option<u64>) -> Result<Self, InvalidSequence>;
     pub fn set_shuffle(&mut self, seed: Option<u64>);   // keeps current and consumed prefix

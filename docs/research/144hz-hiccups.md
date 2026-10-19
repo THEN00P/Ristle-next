@@ -192,7 +192,11 @@ the floor on its own.
 ## The one test (phase 4)
 
 Run the existing D3D12 light-load fling ramp at 144 Hz / 100 %
-(`ramps.run_axis(tag, "rows")`, four 8 s runs, about 2 minutes) twice: once
+(`ramps.run_axis(tag, "rows")`, four 8 s runs, about 2 minutes) twice. The
+ramp driver does **not** select the backend itself (`spikelib.BASE_ENV` is
+empty; only `matrix_d3d12.py` sets it), so set `QSG_RHI_BACKEND=d3d12` in
+the environment for both passes and check `RhiBackend` in each run's
+metadata before comparing. Run it once
 as now, once with the NVIDIA Control Panel's per-program power management
 mode for `qtspike.exe` set to "Prefer maximum performance". Compare on-screen
 drops per minute (`tools/display_drops.py`) and the GPU busy p90 of all

@@ -64,7 +64,7 @@ def analyse(r):
                     k = "late"
                 elif any(not x["MsUntilDisplayed"] for x in between):
                     k = "collision"
-                    drop_phases += [phase(x["qpc"]) for x in between]
+                    drop_phases += [phase(x["qpc"]) for x in between if not x["MsUntilDisplayed"]]
                 else:
                     k = "held"
                 kinds[k] += n

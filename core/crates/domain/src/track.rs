@@ -243,8 +243,8 @@ pub struct Track {
     pub capabilities: PlaybackCapabilities,
     /// Whether it can play.
     pub availability: Availability,
-    /// The Track's page on the Provider, for "Open on <Provider>" and
-    /// sharing.
+    /// The Track's page on the Provider, offered as "Open on Spotify" (with
+    /// the Provider's name) and for sharing.
     pub url: Option<String>,
     /// Authoritative recording id, used to group equivalent search results.
     /// Never used to substitute one Track for another.

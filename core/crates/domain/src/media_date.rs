@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Why a [`MediaDate`] is invalid.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidMediaDate {
-    /// Year 0 does not exist.
-    #[error("year 0 does not exist")]
-    Year,
+    /// The year is outside 1..=9999, the years a four-digit date can
+    /// name.
+    #[error("year {0} is outside 1..=9999")]
+    Year(u16),
     /// The month is outside 1..=12.
     #[error("month {0} does not exist")]
     Month(u8),
@@ -53,7 +54,7 @@ pub enum DatePrecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "MediaDateRepr", into = "MediaDateRepr")]
 pub struct MediaDate {
-    /// The year, from 1.
+    /// The year, 1 to 9999.
     pub year: u16,
     /// The month, 1 to 12, when known.
     pub month: Option<u8>,
@@ -71,8 +72,8 @@ impl MediaDate {
 
     /// Whether the date exists, for values built field by field.
     pub fn check(&self) -> Result<(), InvalidMediaDate> {
-        if self.year == 0 {
-            return Err(InvalidMediaDate::Year);
+        if !(1..=9999).contains(&self.year) {
+            return Err(InvalidMediaDate::Year(self.year));
         }
         match (self.month, self.day) {
             (None, None) => Ok(()),
@@ -208,7 +209,15 @@ mod tests {
 
     #[test]
     fn rejects_dates_that_do_not_exist() {
-        assert_eq!(MediaDate::new(0, None, None), Err(InvalidMediaDate::Year));
+        assert_eq!(
+            MediaDate::new(0, None, None),
+            Err(InvalidMediaDate::Year(0))
+        );
+        assert_eq!(
+            MediaDate::new(10_000, None, None),
+            Err(InvalidMediaDate::Year(10_000))
+        );
+        assert!(MediaDate::new(9999, Some(12), Some(31)).is_ok());
         assert_eq!(
             MediaDate::new(2020, Some(13), None),
             Err(InvalidMediaDate::Month(13))

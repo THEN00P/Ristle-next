@@ -1,0 +1,88 @@
+{
+ "144": {
+  "runs": 124,
+  "minutes": 16.9,
+  "drops_by_kind": {
+   "held": 398,
+   "late": 14,
+   "collision": 17
+  },
+  "drops_per_min": 25.3,
+  "present_phase_hist_pct": [
+   93.4,
+   5.6,
+   0.9,
+   0.1,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "collision_present_phase_hist_pct": [
+   100.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "present_interval_mean_ms": 6.9556,
+  "present_interval_sd_ms": 0.289,
+  "refresh_ms": 6.9514,
+  "grid_resid_p99_ms": 0.322,
+  "latency_refreshes_pct": {
+   "1": 0.0,
+   "2": 63.8,
+   "3": 36.0,
+   "4": 0.3,
+   "5": 0.0
+  },
+  "drop_spacing_s_median": 0.18
+ },
+ "60": {
+  "runs": 73,
+  "minutes": 10.0,
+  "drops_by_kind": {},
+  "drops_per_min": 0.0,
+  "present_phase_hist_pct": [
+   97.9,
+   1.4,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.7
+  ],
+  "collision_present_phase_hist_pct": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "present_interval_mean_ms": 16.6806,
+  "present_interval_sd_ms": 0.296,
+  "refresh_ms": 16.6803,
+  "grid_resid_p99_ms": 0.232,
+  "latency_refreshes_pct": {
+   "1": 0.0,
+   "2": 79.8,
+   "3": 20.2
+  },
+  "drop_spacing_s_median": null
+ }
+}

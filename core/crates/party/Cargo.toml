@@ -1,0 +1,17 @@
+[package]
+name = "ristle-party"
+description = "Ristle Party logic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ristle-domain.workspace = true
+ristle-queue.workspace = true
+ristle-protocol.workspace = true
+
+[lints]
+workspace = true

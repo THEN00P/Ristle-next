@@ -1,0 +1,21 @@
+[package]
+name = "ristle-ffi"
+description = "The UniFFI facade."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# The binding namespace (`uniffi.ristle_core`, `libristle_core.so`).
+name = "ristle_core"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+ristle-app.workspace = true
+ristle-domain.workspace = true
+
+[lints]
+workspace = true

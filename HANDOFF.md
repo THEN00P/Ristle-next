@@ -1,7 +1,10 @@
 # Handoff
 
-Current phase: **1, design and spikes.** Decisions are recorded in ADRs
-0001–0012. Next come the Plugin API design and five spikes (A–E).
+Current phase: **2, the Rust core.** The plan, its milestones and
+workstreams, and the test-port checklist are in `docs/plan/phase-2.md`. The
+`core/` workspace and its CI exist; implementation threads start from a
+milestone in that plan once the user has reviewed it. Spike E and the
+open spike items below still run alongside.
 
 Spikes are the only disposable work in this repository. Each lives in
 `spikes/<letter>-<name>/` and is deleted once its findings are written into the

@@ -1,0 +1,5 @@
+# wasmtime >= 49 needs Rust >= 1.96. Pinned per workspace, never globally.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

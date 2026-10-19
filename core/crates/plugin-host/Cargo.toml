@@ -1,0 +1,16 @@
+[package]
+name = "ristle-plugin-host"
+description = "The WASM Plugin host."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ristle-domain.workspace = true
+ristle-net.workspace = true
+
+[lints]
+workspace = true

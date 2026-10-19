@@ -100,3 +100,8 @@ before relying on it, and update it when you learn something new.
   the session, so start long drivers detached (`Start-Process`) and wait on
   their log. `wmic` is gone on this Windows build; find processes by command
   line with `Get-CimInstance Win32_Process`.
+- **`../Ristle` does not resolve from a T3 worktree** (they live under
+  `~/.t3/worktrees/`). Ristle legacy is at `~/Documents/Ristle`; pass it to
+  `docs/plan/legacy_tests.py` as `RISTLE_LEGACY`. Some legacy tests wrap
+  their name onto the line after `RISTLE_TEST(`, so a one-line grep misses
+  them.

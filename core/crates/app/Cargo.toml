@@ -1,0 +1,23 @@
+[package]
+name = "ristle-app"
+description = "Orchestration: the application core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ristle-domain.workspace = true
+ristle-queue.workspace = true
+ristle-storage.workspace = true
+ristle-net.workspace = true
+ristle-plugin-host.workspace = true
+ristle-media.workspace = true
+ristle-audio.workspace = true
+ristle-protocol.workspace = true
+ristle-party.workspace = true
+
+[lints]
+workspace = true

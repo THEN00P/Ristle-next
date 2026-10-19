@@ -137,6 +137,7 @@ def check(d, transition_ms, row_px, drag_windows=()):
             "problems": len(problems), "by_kind": kinds, "persistent_at_end": len(final),
             "frames_with_problems": len({p[0] for p in problems}),
             "frames_broken_at_end": len({p[0] for p in final}),
+            "problem_qpcs": sorted({p[0] for p in problems}),
             "recorder_missed": missed,
             # Only a capture without a single missed desktop frame can certify a
             # run as clean (method rule 2).

@@ -3,8 +3,8 @@
 ## Status
 
 Accepted (2026-10-08). The desktop toolkit is subject to spike A. Spike A
-(2026-10-18): Qt Quick is a conditional go, pending the queue fix and the
-3-hour soak (see the amendment at the end).
+(2026-10-18, completed 2026-10-19): Qt Quick is a go; both conditions of the
+first verdict are met (see the amendment at the end).
 
 ## Context
 
@@ -45,23 +45,32 @@ Rules for Qt Quick:
   text sharpness, can only be achieved with workarounds of the kind Elisa
   carries, re-evaluate GPUI before building the desktop app.
 
-## Amendment (2026-10-18): spike A result
+## Amendment (2026-10-18, completed 2026-10-19): spike A result
 
 Spike A measured Qt Quick 6.11.3 with the frame-timing method
-(`docs/research/qt-quick-spike.md`). **Result: go, conditional.** Qt Quick
-stays the desktop toolkit if the measurement batch of 2026-10-19
-(`spikes/a-qt-quick/tools/monday_batch.py`) settles two conditions:
+(`docs/research/qt-quick-spike.md`). **Result: go.** The first verdict was
+conditional on two measurements, both run on 2026-10-19:
 
-1. A queue transition variant with no corruption under bursts of edits a few
-   milliseconds apart and under paced rates up to 200 per second. Qt's
-   documented settling pattern still leaves a row half-faded after three edits
-   30 ms apart; two variants that cannot leave a row half-faded are ready.
-2. Memory flat over a 3-hour soak, or growth that the logged heap and GPU
-   figures show to be caches that stop growing.
+1. **A queue variant with no corruption under bursts and paced rates: met by
+   motion-only transitions.** Queue rows appear and disappear without fading
+   or scaling; the other rows slide. Across 30 duplication captures (bursts of
+   2 to 5 edits 0 to 30 ms apart, paced rates of 5 to 200 per second, and the
+   full queue scenario with drag reorders) the checker found nothing. The
+   paced-rate captures are certified frame-complete. The burst and scenario
+   captures each missed 5 to 34 of up to 8,600 desktop frames, so they are not
+   certified by the method's letter; every defect the other variants produced
+   lasted at least 15 frames. Every fading variant still breaks: Qt's
+   documented settling pattern leaves a row missing or out of order for up to
+   0.7 s a few times a minute under bursts.
+2. **Memory flat over a 3-hour soak: met.** After 30 minutes the Win32 heap's
+   allocated bytes grow 0.8 MB per hour, GPU memory not at all, and private
+   bytes stay within 446 to 456 MB. Dropped frames stay at about 0.4 per
+   minute with no upward trend once the soak's own memory sampling is
+   excluded.
 
-If no queue variant comes out clean, the trigger this ADR names (animated list
-edits only with Elisa-style workarounds) has fired, and GPUI is evaluated with
-the same harness. Otherwise GPUI is an optional comparison.
+The trigger this ADR names (animated list edits only with Elisa-style
+workarounds) has not fired: motion-only transitions are plain QML. GPUI is
+an optional comparison.
 
 Decisions taken with the user on 2026-10-18: software rendering only has to
 stay usable (no freeze of 100 ms or more), and slow fresh-page creation at
@@ -82,13 +91,17 @@ Rules for the Qt Quick app, replacing and extending the ones above:
 - **Do not use `Animator` types.** This reverses the rule above. A running
   Animator makes every GUI-thread frame span two vsyncs on all flip-model
   backends, so every other animation runs at half rate.
-- Queue and other animated lists must never leave a row half-faded. Use the
-  variant the 2026-10-19 batch confirms; until then, at least Qt's documented
-  handling of interrupted transitions (drive opacity and scale back to 1 in
-  `displaced`).
+- Animated lists whose edits can interrupt each other (the queue, anything a
+  Party or sync edits) animate position only: no opacity or scale in `add`,
+  `remove` or `displaced`. Qt stops a running view transition when the next
+  edit arrives, and no fading variant tested (Qt's documented settling
+  pattern, row-owned animations, opacity computed from the clock) came out
+  clean.
 - Set `NativeRendering` for text. The default distance-field text is softer
   than every native renderer at every scale.
-- Keep pages alive after their first visit, or load them asynchronously
-  behind a skeleton (decided by the batch).
+- Keep pages alive after their first visit, and build a page that is not
+  alive yet with `Loader { asynchronous: true }` behind a skeleton. That
+  removes every dropped frame (27 and 77 per minute synchronous at 144 Hz) at
+  the cost of 25 ms more until the page is populated.
 - No `MultiEffect` per list row. `RectangularShadow` gives the same glow at no
   measurable cost.

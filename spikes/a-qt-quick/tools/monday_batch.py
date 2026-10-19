@@ -17,17 +17,20 @@ display mode it found and writes results/monday_summary.md.
 
 Usage (from spikes/a-qt-quick/tools, nothing else running):
     C:\\Users\\loren\\spike-a-tools\\venv\\Scripts\\python.exe -u monday_batch.py
-Steps can be picked: monday_batch.py queue rates pages soak
+Steps can be picked: monday_batch.py queue rates pages soak (motion: the
+full queue scenario for variant 4; MONDAY_TAG=<tag> keeps a re-run apart)
 """
-import csv, json, statistics, subprocess, sys, time, traceback
+import csv, json, os, statistics, subprocess, sys, time, traceback
 import analyze, queue_check, queue_diag, queue_scenario as Q, ramps, spikelib
 import misc_scenarios, ui_scenarios
 from matrix import set_condition
 from scenarios import SUMMARY, measure, short
 from spikelib import RUNS, ROOT, display, harness, run
 
-TAG = "mon"
-OUT = ROOT / "results" / "monday.jsonl"
+# MONDAY_TAG separates a re-run from earlier results (run names, jsonl, summary).
+TAG = os.environ.get("MONDAY_TAG", "mon")
+STEM = "monday" if TAG == "mon" else f"monday_{TAG}"
+OUT = ROOT / "results" / f"{STEM}.jsonl"
 spikelib.BASE_ENV = {"QSG_RHI_BACKEND": "d3d12", "SPIKE_PACED": 1}
 
 FIXES = {0: "plain", 1: "settling (Qt docs)", 2: "row-owned animations", 3: "time-bound opacity", 4: "motion only"}
@@ -67,6 +70,21 @@ def step_queue():
                  "problems": qc["problems"], "frames_with_problems": qc["frames_with_problems"],
                  "persistent_at_end": qc["persistent_at_end"], "recorder_missed": qc["recorder_missed"],
                  "certified_clean": qc["certified_clean"]})
+
+
+def step_motion():
+    # The full scenario for the motion-only variant (4), added after the
+    # 2026-10-19 re-run: it was clean at every load but its burst captures
+    # missed desktop frames, so step_queue did not pick it.
+    for rate in (5, 20, 100):
+        for attempt in range(3):
+            pm, qc = Q.run_rate(f"{TAG}f4a{attempt}", rate, 4)
+            if qc["problems"] > 0 or qc["recorder_missed"] == 0:
+                break
+        log({"step": "queue_scenario", "fix": 4, "rate": rate, "attempts": attempt + 1,
+             "dropped_per_min": pm["dropped_per_min"], "problems": qc["problems"],
+             "frames_with_problems": qc["frames_with_problems"], "persistent_at_end": qc["persistent_at_end"],
+             "recorder_missed": qc["recorder_missed"], "certified_clean": qc["certified_clean"]})
 
 
 def step_rates():
@@ -201,15 +219,15 @@ def summary_md():
         rs = [r for r in rows if r["step"] == step]
         if rs:
             lines += ["", f"## {step}", ""] + ["- " + json.dumps(r) for r in rs]
-    (ROOT / "results" / "monday_summary.md").write_text("\n".join(lines) + "\n")
+    (ROOT / "results" / f"{STEM}_summary.md").write_text("\n".join(lines) + "\n")
 
 
 def archive():
-    subprocess.run(["7z", "a", "-t7z", "-mx=9", "-bso0", "-bsp0", str(ROOT / "results" / "raw" / "monday.7z"),
+    subprocess.run(["7z", "a", "-t7z", "-mx=9", "-bso0", "-bsp0", str(ROOT / "results" / "raw" / f"{STEM}.7z"),
                     f"{TAG}*"], cwd=RUNS)
 
 
-STEPS = {"queue": step_queue, "rates": step_rates, "pages": step_pages, "soak": step_soak}
+STEPS = {"queue": step_queue, "motion": step_motion, "rates": step_rates, "pages": step_pages, "soak": step_soak}
 
 if __name__ == "__main__":
     original = display()

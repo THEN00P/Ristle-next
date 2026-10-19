@@ -41,7 +41,7 @@ pub mod ffi {
         #[qproperty(i32, queue_ops_per_second, cxx_name = "queueOpsPerSecond", READ, CONSTANT)]
         #[qproperty(bool, heartbeat, READ, CONSTANT)]
         #[qproperty(bool, animators, READ, CONSTANT)]
-        #[qproperty(bool, queue_fix, cxx_name = "queueFix", READ, CONSTANT)]
+        #[qproperty(i32, queue_fix, cxx_name = "queueFix", READ, CONSTANT)]
         #[qproperty(bool, specimen, READ, CONSTANT)]
         #[qproperty(i32, start_page, cxx_name = "startPage", READ, CONSTANT)]
         #[qproperty(i32, quit_after_ms, cxx_name = "quitAfterMs", READ, CONSTANT)]
@@ -88,7 +88,7 @@ pub struct SpikeRust {
     queue_ops_per_second: i32,
     heartbeat: bool,
     animators: bool,
-    queue_fix: bool,
+    queue_fix: i32,
     specimen: bool,
     start_page: i32,
     quit_after_ms: i32,
@@ -119,7 +119,7 @@ impl Default for SpikeRust {
             // is blocked (hiding GUI stalls from PresentMon). Off by default.
             animators: env("SPIKE_ANIMATORS", 0) != 0,
             // Qt's documented handling of interrupted view transitions.
-            queue_fix: env("SPIKE_QUEUE_FIX", 1) != 0,
+            queue_fix: env("SPIKE_QUEUE_FIX", 1),
             specimen: env("SPIKE_SPECIMEN", 0) != 0,
             start_page: env("SPIKE_PAGE", 0),
             // CI smoke runs quit on their own so the ring buffer gets dumped.

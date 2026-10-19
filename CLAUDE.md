@@ -85,7 +85,9 @@ before relying on it, and update it when you learn something new.
   (`pip install git+https://github.com/miurahr/aqtinstall`). cxx-qt 0.10:
   declare `QAbstractListModel` in one bridge only (two declarations give
   duplicate cast symbols at link time), and a QML property named `on...` is
-  parsed as a signal handler.
+  parsed as a signal handler. Check a `qproperty`'s type before QML compares
+  it: a `bool` compared with `=== 1` is silently false (this voided a day of
+  spike A variant runs).
 - **Frame timing on Windows** (spike A harness, `spikes/a-qt-quick/`):
   PresentMon works without elevation (the account is in Performance Log
   Users) but cannot target `dwm.exe` by name (use `--process_id`), and it

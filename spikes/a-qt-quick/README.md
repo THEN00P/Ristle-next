@@ -28,9 +28,10 @@ F5–F9 and Shift+F5–F9 injected GUI and render stalls.
 - `tools/report_data.py` turns `results/*.jsonl` into `results/tables.md` and
   `results/ramps.md`. `tools/text_analysis.py <tag>` measures text crops.
 
-`tools/monday_batch.py` runs the measurements still open after the Codex
+`tools/monday_batch.py` ran the measurements left open after the Codex
 review (queue variants, re-paced rates, async page incubation, the 3-hour
-soak with a memory log). See the report's "Monday's batch" section.
+soak with a memory log; `MONDAY_TAG` keeps a re-run apart). See the report's
+"The 2026-10-19 batch" section.
 
 Raw runs (PresentMon CSVs, ring-buffer dumps, duplication logs) are in
 `results/raw/*.7z`, one archive per condition.

@@ -45,14 +45,16 @@ walkthrough. The WIT is final once spike E confirms the Spotify playback path.
 Goal: certify Qt Quick for the desktop app, or trigger an evaluation of GPUI.
 Rust models through cxx-qt, logic-free QML, Lumen styling.
 
-**Status 2026-10-18: conditional go for Qt Quick** (ADR 0002 amendment).
+**Status 2026-10-19: go for Qt Quick** (ADR 0002 amendment).
 Results: `docs/research/qt-quick-spike.md`, code and harness in
 `spikes/a-qt-quick/`. Passes on the discrete GPU with four non-default
-settings (D3D12, no Animators, queue rows never left half-faded, native text).
-Open until the 2026-10-19 batch (`spikes/a-qt-quick/tools/monday_batch.py`):
-a robust queue transition variant and a flat 3-hour soak. Software rendering
-is no longer a gate (frame-timing method, rule 4). Ristle legacy could not be
-measured (its debug build needs Metro). GPUI is an optional comparison.
+settings (D3D12, no Animators, position-only list transitions, native text).
+Both conditions of the 2026-10-18 verdict were met on 2026-10-19: motion-only
+queue transitions came out clean under bursts and paced rates (burst captures
+not frame-complete, see the report), and memory was flat over a 3-hour soak.
+Software rendering is no longer a gate (frame-timing method, rule 4). Ristle
+legacy could not be measured (its debug build needs Metro). GPUI is an
+optional comparison.
 
 **Measurement follows `docs/research/frame-timing-method.md` with no
 shortcuts.** Its positive control (injected stalls must be detected) runs first.

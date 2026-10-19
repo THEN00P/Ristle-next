@@ -335,14 +335,16 @@ int64_t spike_dump(const QString &path) {
 }
 
 // Memory sample for long soaks, appended to $SPIKE_MEM_OUT every 10 s by a QML
-// timer (not in the frame path): QPC, private bytes, committed and allocated
-// bytes of all Win32 heaps (the CRT and Qt allocate there), and this process's
-// usage of the primary GPU's local memory. A full heap snapshot (UMDH) needs
-// elevation, which the measuring account does not have.
-void spike_log_memory() {
-    static const QByteArray out = qgetenv("SPIKE_MEM_OUT");
-    if (out.isEmpty())
-        return;
+// timer: QPC, private bytes, committed and allocated bytes of all Win32 heaps
+// (the CRT and Qt allocate there), and this process's usage of the primary
+// GPU's local memory. A full heap snapshot (UMDH) needs elevation, which the
+// measuring account does not have.
+//
+// The sample is taken on its own thread. On the GUI thread, HeapSummary's walk
+// grew slow enough after two hours to drop a frame at every sample (the
+// 2026-10-19 soak); it still takes each heap's lock, so an allocation can
+// wait for it briefly.
+static void log_memory_sample(const QByteArray &out) {
     unsigned long long private_bytes = 0, heap_committed = 0, heap_allocated = 0, gpu_local = 0;
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS_EX pmc{};
@@ -382,4 +384,15 @@ void spike_log_memory() {
     std::fprintf(f, "%lld,%llu,%llu,%llu,%llu\n", static_cast<long long>(qpc_now()), private_bytes,
                  heap_committed, heap_allocated, gpu_local);
     std::fclose(f);
+}
+
+void spike_log_memory() {
+    static const QByteArray out = qgetenv("SPIKE_MEM_OUT");
+    static std::atomic<bool> busy{false};
+    if (out.isEmpty() || busy.exchange(true))
+        return;
+    std::thread([] {
+        log_memory_sample(out);
+        busy = false;
+    }).detach();
 }

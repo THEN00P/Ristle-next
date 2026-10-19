@@ -45,7 +45,10 @@ walkthrough. The WIT is final once spike E confirms the Spotify playback path.
 Goal: certify Qt Quick for the desktop app, or trigger an evaluation of GPUI.
 Rust models through cxx-qt, logic-free QML, Lumen styling.
 
-**Status 2026-10-19: go for Qt Quick** (ADR 0002 amendment).
+**Status 2026-10-19: Qt Quick is the desktop toolkit** (ADR 0002 accepted for
+desktop; React Native and GPUI rejected by the user). The 144 Hz hiccups are
+traced in `docs/research/144hz-hiccups.md` (late GPU completion against DWM's
+composition deadline) and do not block.
 Results: `docs/research/qt-quick-spike.md`, code and harness in
 `spikes/a-qt-quick/`. Passes on the discrete GPU with four non-default
 settings (D3D12, no Animators, position-only list transitions, native text).

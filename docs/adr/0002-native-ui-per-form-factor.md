@@ -2,11 +2,11 @@
 
 ## Status
 
-Accepted (2026-10-08). The desktop toolkit is subject to spike A. Spike A
-(2026-10-18, completed 2026-10-19): Qt Quick is a go; both conditions of the
-first verdict are met. Certified at 60 Hz; at 144 Hz with an unattributed
-floor of single dropped frames that phase 4 checks (see the amendment at the
-end).
+Accepted (2026-10-08). Accepted for desktop (2026-10-19): Qt Quick is the
+desktop toolkit, React Native and GPUI are rejected (see "Amendment
+(2026-10-19): desktop decision" at the end). Spike A certified Qt Quick at
+60 Hz; the 144 Hz hiccups are being investigated
+(`docs/research/144hz-hiccups.md`) and do not block.
 
 ## Context
 
@@ -45,7 +45,8 @@ Rules for Qt Quick:
   add-on modules unless the licence decision allows it.
 - If spike A shows that animated list insert, remove and reorder, or Windows
   text sharpness, can only be achieved with workarounds of the kind Elisa
-  carries, re-evaluate GPUI before building the desktop app.
+  carries, re-evaluate GPUI before building the desktop app. (Superseded: the
+  trigger did not fire, and the user rejected GPUI on 2026-10-19.)
 
 ## Amendment (2026-10-18, completed 2026-10-19): spike A result
 
@@ -130,3 +131,22 @@ Rules for the Qt Quick app, replacing and extending the ones above:
   populated.
 - No `MultiEffect` per list row. `RectangularShadow` gives the same glow at no
   measurable cost.
+
+## Amendment (2026-10-19): desktop decision
+
+Decisions the user took after spike A:
+
+- **React Native is out for good**, on desktop and as a fallback. The user
+  found it bad all round in Ristle legacy: transparency, mouse events, big
+  lists, gradients and more.
+- **GPUI is rejected.** The user tried it hands-on: scrolling behaved oddly
+  and its antialiasing felt alien next to native Windows text. It is no
+  longer an optional comparison, and spike A's harness is not kept for it.
+- **Qt Quick is the desktop toolkit**, with the four settings (D3D12, no
+  `Animator` types, position-only list transitions, `NativeRendering` text)
+  and the phase 4 rules in the spike A amendment above.
+- **The 144 Hz hiccups are to be investigated and ideally removed, but they
+  do not block.** `docs/research/144hz-hiccups.md` traces them in the
+  recorded data: 93 % are frames whose GPU work finishes after DWM's
+  composition deadline, not two presents colliding in one refresh. It names
+  one short phase 4 test (the GPU power mode) for the most likely fix.

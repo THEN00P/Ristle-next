@@ -13,7 +13,10 @@ every normal removal.
 A frame is *settled* when no edit happened within the transition time plus
 four refresh periods (presentation latency), and no row is held by a drag. Checks:
 
-  settled frames  rows form one contiguous run sequence with the row pitch,
+  settled frames  as many full rows as the model can show in the strip (all
+                  of them at the top of the list, one fewer when scrolled),
+                  so an empty or undecodable queue counts (Codex review,
+                  final round); rows form one contiguous run sequence with the row pitch,
                   their ids are a contiguous slice of the model order, every
                   marker is fully opaque (a decoded run of full row height),
                   and nothing else is visible (no ghosts)
@@ -73,6 +76,11 @@ def check(d, transition_ms, row_px, drag_windows=()):
                 removed_at[id_] = q
         prev = order
     _, cols, rows = analyze.dupcap(d)
+    # Height of the marker strip: the extent of every run decoded in the capture.
+    spans = [parse_runs(r["markers"]) for r in rows]
+    y_top = min((x[0] for rs in spans for x in rs), default=0)
+    y_bottom = max((x[1] for rs in spans for x in rs), default=0)
+    fit = (y_bottom - y_top + 1) // row_px
     # Transition time plus presentation latency (2-3 frames measured) plus one.
     settle = (transition_ms + 4 * T) * 1e4
     problems, settled_frames, frames = [], 0, 0
@@ -116,6 +124,10 @@ def check(d, transition_ms, row_px, drag_windows=()):
         partial = [x for x in inner if abs((x[1] - x[0] + 1) - row_px) > 2]
         if partial:
             problems.append((q, "partial-row", partial[:3]))
+        at_top = bool(full) and full[0][0] == y_top and full[0][2] == order[0]
+        visible = min(len(order), fit if at_top or not full else fit - 1)
+        if len(full) < visible:
+            problems.append((q, "missing-rows", len(full), visible))
         if full:
             start = order.index(full[0][2]) if full[0][2] in order else None
             if start is None or [x[2] for x in full] != order[start:start + len(full)]:

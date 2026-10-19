@@ -5,14 +5,22 @@ Spike A, 2026-10-17 to 2026-10-19. Code and harness: `spikes/a-qt-quick/`
 ADR 0002: is Qt Quick smooth enough for Ristle's desktop app, measured with
 `docs/research/frame-timing-method.md`, or does GPUI have to be evaluated?
 
-**Verdict: go.** Qt Quick passes the frame-timing method on the discrete GPU
-at 60 and 144 Hz and 100 to 150 % scaling, with four settings that are not
-Qt's defaults. The first version of this verdict (2026-10-18) was conditional
-on two measurements, both run on 2026-10-19 (`tools/monday_batch.py`):
+**Verdict: go, narrowed to what was measured.** Qt Quick passes the
+frame-timing method on the discrete GPU at 60 Hz, at 100, 125 and 150 %
+scaling with D3D11 and at 100 % with D3D12, with four settings that are not
+Qt's defaults. At 144 Hz it shows a floor of single dropped frames that
+reach the screen at every load, light loads included (see "Display drops"
+below), so the method's knee cannot be shown there: load raises the drop
+rate only at the knees listed in the scenarios, far above the production
+envelope, and the source of the floor (Qt or the compositor) is not
+attributed. D3D12 at 60 Hz with 125 and 150 % scaling was not measured (D3D11
+passed there, and D3D12 passed all three scales at 144 Hz); phase 4 checks
+it. The first version of this verdict (2026-10-18) was conditional on two
+measurements, both run on 2026-10-19 (`tools/monday_batch.py`):
 
 1. **A robust queue fix: met by motion-only transitions**, with one
    reservation. Rows appear and disappear without fading or scaling, and the
-   other rows slide. The checker found nothing in 30 duplication captures:
+   other rows slide. The checker found nothing in 29 duplication captures:
    bursts of 2 to 5 edits 0 to 30 ms apart, paced rates of 5 to 200 per
    second, and the full queue scenario with drag reorders. The paced-rate
    captures are certified frame-complete. The burst and scenario captures each
@@ -22,9 +30,32 @@ on two measurements, both run on 2026-10-19 (`tools/monday_batch.py`):
    Qt's documented settling pattern included.
 2. **Memory flat over 3 hours: met.** After 30 minutes the heap's allocated
    bytes grow 0.8 MB per hour, GPU memory not at all, and private bytes stay
-   within 446 to 456 MB. Dropped frames stay at about 0.4 per minute with no
-   upward trend, once the frames dropped by the soak's own memory sampling
-   are excluded (see the soak section).
+   within 446 to 456 MB. Dropped frames that reach the screen stay at
+   12 per minute with no upward trend (see the soak section).
+
+**Correction (Codex review, final round): drops are now counted on the
+screen.** Earlier versions counted a dropped frame when two of the app's
+`Present` calls were more than 1.5 refreshes apart. A frame can also be lost
+after an on-time present, when the compositor shows the previous frame
+again, and a late present can still reach the screen in time when frames are
+queued. Every figure below now gives display drops (`MsBetweenDisplayChange`
+above 1.5 refreshes, `tools/display_drops.py`, recomputed from the recorded
+PresentMon files, no new runs) next to the present-based ones. The
+headline changes:
+
+| Claim | Present-based (before) | On screen (now) |
+|---|---|---|
+| Light loads at 60 Hz, every measured condition | 0 to 0.6 per minute | 0 per minute (holds) |
+| Light loads at 144 Hz, D3D11 (100 / 125 / 150 %) | 16 / 6 / 9 per minute | 26 / 23 / 43 per minute |
+| Light loads at 144 Hz, D3D12 (100 / 125 / 150 %) | 1 / 2 / 2 per minute | 27 / 19 / 13 per minute |
+| 30-minute soak, D3D11 vs D3D12 | 734 vs 13 drops | 1,079 vs 629 drops (36 vs 21 per minute) |
+| 60-minute soak, D3D12 | 25 drops | 1,378 drops (23 per minute), flat |
+| 3-hour soak, D3D12 | 485 drops, rising after 2 h | 2,198 drops (12 per minute), flat |
+| "D3D12 fixes D3D11's drops at 144 Hz" | 50× fewer | equal at 100 % and 125 % light load, fewer at 150 % and in the soaks |
+| "No drops up to 40M rows, any fling, wheel, artwork" at 144 Hz | 0 | the 144 Hz floor (1 to 9 per 8 s run) at every step, no rise with load |
+
+Load-driven knees above the floor stay where they were, except model churn,
+whose on-screen knee moves from 3,000 to 30,000 edits per second.
 
 This verdict follows two decisions the user made on 2026-10-18 after the first
 version of this report:
@@ -33,13 +64,14 @@ version of this report:
   rendering accept worse performance. It only has to stay usable, meaning no
   freeze of 100 ms or more while scrolling 1,000 rows with artwork
   (`frame-timing-method.md`, rule 4). Qt Quick meets that: the worst frame was
-  51 ms on WARP and 50 ms on Mesa llvmpipe. It still drops many frames there
-  (WARP 140 to 1,700 per minute) because Qt Quick redraws the whole window
-  every frame.
+  51 ms on WARP and 50 ms on Mesa llvmpipe. It still drops frames there
+  (WARP misses 140 to 1,700 presents per minute; 0 to 677 frames per minute
+  reach the screen late) because Qt Quick redraws the whole window every
+  frame.
 - **Fresh page creation is not a deal breaker.** Building a page that was not
   cached costs 3 to 5 frames at 144 Hz, and most apps cap at 60 fps. Cached
-  pages switch without drops. Asynchronous incubation, measured afterwards,
-  removes the drops entirely.
+  pages switch without drops beyond the 144 Hz floor. Asynchronous
+  incubation, measured afterwards, removes the drops the build causes.
 
 GPUI becomes an optional comparison rather than a requirement.
 
@@ -47,7 +79,7 @@ The four settings:
 
 | Setting | Why | Without it |
 |---|---|---|
-| D3D12 backend (`QSG_RHI_BACKEND=d3d12`) | Qt's default D3D11 backend drops single frames at 144 Hz | 20 to 50 dropped frames per minute at any load, 734 in the 30-minute soak (13 with D3D12) |
+| D3D12 backend (`QSG_RHI_BACKEND=d3d12`) | D3D11 misses more presents at 144 Hz; on screen the gain is smaller than first reported | 36 instead of 21 dropped frames per minute on screen in the 30-minute soak, 43 instead of 13 at 150 % light load; equal at 100 and 125 % light load |
 | No `Animator` types | A running render-thread Animator halves the GUI thread's frame rate on every flip-model backend | Scrolling, list transitions and the sidebar run at 27 of 60 or 67 of 144 frames per second while PresentMon reports a perfect present rate |
 | Position-only list transitions (no opacity or scale in `add`, `remove`, `displaced`) | Qt stops a running view transition when the next edit arrives; a row cut off mid-fade stays wrong (QTBUG-49868 reproduced) | Plain transitions: rows left dimmed, overlapping or missing for good from 5 edits per second. Qt's settling pattern: a row missing or out of order for up to 0.7 s, a few times a minute under bursts |
 | `NativeRendering` for text | The default distance-field text is softer than every native renderer | Acutance 0.42 instead of 0.53 at 100 % |
@@ -85,7 +117,8 @@ The price is design, not code: inserted and removed queue rows do not fade.
 
 Run counts: 872 measured runs (567 PresentMon passes, the rest duplication
 passes) in the main matrix (D3D11, six conditions), the D3D12 pass (four
-conditions), the diagnosis and the extension. Background CPU was 0.6 to 28 % (median about 3 %, recorded per run in
+conditions: 144 Hz at 100, 125 and 150 %, 60 Hz at 100 % only), the
+diagnosis and the extension. Background CPU was 0.6 to 28 % (median about 3 %, recorded per run in
 `results/summary.jsonl`). No emulator, Gradle or build ran during timing.
 Raycast, T3 Code, ChatGPT, Claude and Wispr Flow stayed open.
 
@@ -218,29 +251,66 @@ half rate while any Animator anywhere in the window runs, and PresentMon
 reports a full present rate. ADR 0002's rule "use Animator types for motion
 that must survive a busy GUI thread" has to be reversed: no Animators.
 
-### D3D11 drops single frames at 144 Hz
+### D3D11 and D3D12 at 144 Hz
 
-At 143.856 Hz the default backend dropped 20 to 50 frames per minute at every
-load, including 1,000 rows and slow flings. Each drop was one frame in which
+At 143.856 Hz the default backend missed 20 to 50 presents per minute at
+every load, including 1,000 rows and slow flings. Each was one frame in which
 the GUI phase (from `afterAnimating` to sync) lasted exactly one refresh
-interval: a wait on the render thread's throttle, not work. The diagnosis at
-base load (wheel, touchpad, fling):
+interval: a wait on the render thread's throttle, not work. D3D12 removed
+almost all of those. Counted on the screen, the difference is much smaller:
+both backends show the 144 Hz floor described under "Display drops". The
+diagnosis at base load (wheel, touchpad, fling; one 8 s run each, so one drop
+reads as 7.5 per minute), present-based / on screen, per minute:
 
 | Variant | Wheel | Touchpad | Fling |
 |---|---|---|---|
-| D3D11 (default) | 40/min | 33/min | 0 |
-| **D3D12** | **0** | **0** | 7/min |
-| `QT_D3D_MAX_FRAME_LATENCY=1` | 40 | 106 | 15 |
-| `QT_D3D_MAX_FRAME_LATENCY=3` | 13 | 20 | 0 |
-| `QT_D3D_NO_VBLANK_THREAD=1` | 27 | 40 | 7 |
-| `QSG_USE_SIMPLE_ANIMATION_DRIVER=1` | 27 | 13 | 0 |
-| `QT_D3D_FLIP_DISCARD=1` | 20 | 33 | 7 |
-| `QSG_RENDER_LOOP=basic` | 4,217 | 4,705 | 4,553 (renders at 72 frames per second) |
+| D3D11 (default) | 40 / 80 | 33 / 53 | 0 / 7 |
+| D3D12 | 0 / 27 | 0 / 66 | 7 / 15 |
+| `QT_D3D_MAX_FRAME_LATENCY=1` | 40 / 67 | 106 / 139 | 15 / 22 |
+| `QT_D3D_MAX_FRAME_LATENCY=3` | 13 / 54 | 20 / 40 | 0 / 15 |
+| `QT_D3D_NO_VBLANK_THREAD=1` | 27 / 54 | 40 / 46 | 7 / 7 |
+| `QSG_USE_SIMPLE_ANIMATION_DRIVER=1` | 27 / 54 | 13 / 40 | 0 / 7 |
+| `QT_D3D_FLIP_DISCARD=1` | 20 / 54 | 33 / 86 | 7 / 22 |
+| `QSG_RENDER_LOOP=basic` | 4,217 / 4,244 | 4,705 / 4,712 | 4,553 / 4,553 (renders at 72 frames per second) |
 
-The 30-minute soak confirms it: 734 dropped frames on D3D11, 13 on D3D12. The
-cost of D3D12 is memory, 311 MB private at idle instead of 150 MB, and 60 ms
-more to the first frame (590 ms instead of 530 ms). At 60 Hz the backends
-behave the same.
+The soaks are the larger sample: 36 dropped frames per minute on screen with
+D3D11 over 30 minutes, 21 with D3D12 (present-based: 734 against 13 drops).
+Pooled over every light-load ramp step, the two backends are equal at 100 %
+(26 and 27 per minute) and 125 % (23 and 19), and D3D12 is better at 150 %
+(43 and 13). D3D12 stays the recommendation on that evidence, but the gain is
+about a third, not the fiftyfold the present counts suggested. Its cost is
+memory, 311 MB private at idle instead of 150 MB, and 60 ms more to the first
+frame (590 ms instead of 530 ms). At 60 Hz the backends behave the same, and
+neither drops a frame on screen at light load.
+
+### Display drops: a floor at 144 Hz
+
+Counted on the screen, every light-load run at 144 Hz drops frames: 1 to 9 per
+8 s run (median 2 to 6), each a single frame (the longest display interval is
+two refreshes, 13.9 to 14.2 ms), on both backends and at every scale. The
+rate does not rise with load until the knees in the scenarios. At 60 Hz the
+same runs drop nothing on screen. Pooled over the light-load ramp steps
+(rows, weight, artwork, churn, CPU, fling, wheel, touchpad; discrete GPU):
+
+| Condition | D3D11 present / on screen, per minute | D3D12 present / on screen, per minute |
+|---|---|---|
+| 144 Hz, 100 % | 15.8 / 25.8 (34 runs) | 1.2 / 26.8 (36 runs) |
+| 144 Hz, 125 % | 5.7 / 23.4 (13 runs) | 2.3 / 18.8 (13 runs) |
+| 144 Hz, 150 % | 8.6 / 42.8 (13 runs) | 1.7 / 12.5 (13 runs) |
+| 60 Hz, 100 % | 0 / 0 (34 runs) | 0.6 / 0 (13 runs) |
+| 60 Hz, 125 % | 0 / 0 (13 runs) | not measured |
+| 60 Hz, 150 % | 0 / 0 (13 runs) | not measured |
+
+The app presents on schedule when these drops happen: in the D3D12 runs at
+100 %, 89 of the 126 drops pair with a frame that was presented about 7 ms
+after the previous one and never shown, with normal CPU and GPU time. The
+frame is lost between the present and the screen. Whether the compositor
+loses it or the present lands on the edge of its latch cannot be told from
+these recordings, and DWM's own present stream cannot be compared because it
+composes only when something changes. Phase 4 attributes the floor with a
+minimal native flip-model swap chain at 144 Hz on the same machine. For
+scale: File Explorer's list skips 950 to 5,600 refreshes per minute while
+scrolling on the same display (see "Baselines").
 
 ## Scenarios
 
@@ -252,15 +322,20 @@ all cores, the discrete GPU, 60 and 144 Hz, 100 to 150 %. Results below are
 D3D12 at 144 Hz unless marked. D3D11 and 60 Hz tables are in
 `results/tables.md` and `results/ramps.md`.
 
+Dropped-frame figures in this section are present-based / on screen unless
+marked; the 144 Hz on-screen figures include the floor above.
+
 Edit rates of 60 per second and more were generated by applying
 `round(rate × 0.016)` edits per 16 ms tick, so the steps labelled 100 and 200
 ran at about 125 and 188 per second for model churn and at a measured 120 and
 181 per second for the queue (Codex review, round 1). The tables now show both
 numbers. The churn steps of 1,000 per second and more were exact. The core now
 paces edits by elapsed time (`catalog::Pacer`). Re-run paced on 2026-10-19,
-the churn ramp from 1 to 1,000 per second dropped no frame during an
-8,000 px/s fling (max frame 8.3 to 9.9 ms), and the queue rates are in the
-variant table below.
+the churn ramp from 1 to 1,000 per second missed no present during an
+8,000 px/s fling (max frame 8.3 to 9.9 ms) and dropped 7 to 30 frames per
+minute on screen, the 144 Hz floor. The longest GUI-thread delay in any paced
+run was 14.3 ms, so the pacer's 50 ms catch-up cap never dropped an edit.
+The queue rates are in the variant table below.
 
 ### 1. Animated queue
 
@@ -272,17 +347,17 @@ check. Every duplicated frame is decoded and compared against the model order
 replayed from the ring buffer. A frame counts as settled 220 ms (the
 transition) plus four refreshes after the last edit.
 
-| Edits/s configured (measured) | Transitions | Dropped frames/min | Corruption findings | Findings after edits stop |
+| Edits/s configured (measured) | Transitions | Dropped frames/min, present / on screen | Corruption findings | Findings after edits stop |
 |---|---|---|---|---|
-| 1 (1) | settling | 13 | 0 | 0 |
-| 5 (5) | settling | 0 | 0 | 0 |
-| 20 (19) | settling | 0 | 1 (one ghost frame) | 0 |
-| 50 (48) | settling | 0 | 0 | 0 |
-| 100 (120) | settling | 0 | 798 | **286 frames** |
-| 200 (181) | settling | 4 | 164 | 0 |
-| 1 (1) | plain | 0 | 0 | 0 |
-| 5 (4) | plain | 4 | 944 | **288 frames** |
-| 20 (19) | plain | 4 | 812 | **288 frames** |
+| 1 (1) | settling | 13 / 26 | 0 | 0 |
+| 5 (5) | settling | 0 / 26 | 0 | 0 |
+| 20 (19) | settling | 0 / 13 | 1 (one ghost frame) | 0 |
+| 50 (48) | settling | 0 / 22 | 0 | 0 |
+| 100 (120) | settling | 0 / 40 | 798 | **286 frames** |
+| 200 (181) | settling | 4 / 40 | 164 | 0 |
+| 1 (1) | plain | 0 / 22 | 0 | 0 |
+| 5 (4) | plain | 4 / 31 | 944 | **288 frames** |
+| 20 (19) | plain | 4 / 40 | 812 | **288 frames** |
 
 The findings columns count checker findings; a frame out of order usually
 also has a gap, so they are about twice the number of affected frames (Codex
@@ -314,11 +389,22 @@ second; each paced rate is 8 s. Counts are captured frames with a finding
 
 | Variant | Bursts 2×30 ms, 3×30 ms, 5×15 ms | Bursts 3×0 ms | Paced 5, 20, 50, 100, 200 per s | Broken when edits stop |
 |---|---|---|---|---|
-| 0 plain transitions | 6,040 to 6,290 | 427 | 22, 561, 0, 0, 0 | yes, for good |
+| 0 plain transitions | 6,240 to 6,390 | 427 | 22, 561, 559, 558, 558 | yes, for good (from 20 per s) |
 | 1 settling (Qt's documented pattern) | 197 to 209 (2 to 4 episodes per minute, a row missing or out of order for up to 0.7 s) | 0 (2 ghost frames) | 0, 1 (ghost), 0, 558, 559 | yes at 100 and 200 per s |
-| 2 row-owned fades (`delayRemove`) | 723 to 1,109 (34 to 52 gaps per minute, about 150 ms each) | 753 | 23, 7, 1, 2, 22 | no |
-| 3 opacity computed from the clock | 717 to 1,117 (same pattern) | 753 | 22, 9, 4, 2, 25 | no |
+| 2 row-owned fades (`delayRemove`) | 723 to 1,109 (34 to 52 gaps per minute, about 150 ms each) | 772 | 23, 11, 1, 2, 22 | no |
+| 3 opacity computed from the clock | 717 to 1,117 (same pattern) | 772 | 22, 13, 4, 2, 25 | no |
 | **4 motion only** | **0** | **0** | **0** (certified frame-complete) | no |
+
+Counts are from the checker as amended in the Codex review's final round: a
+settled frame must also show as many fully decodable rows as the model can
+fill (all ten at the top of the list), so a blank or dimmed queue counts.
+Re-run on every 2026-10-19 capture (`results/queue_recheck.jsonl`), it
+changes one cell materially: plain transitions at 50, 100 and 200 paced
+edits per second leave all but one to three rows dimmed for good, which the
+first checker missed because a dimmed row's marker does not decode (it had
+reported 0). Variant 4 stays at zero in all 29 captures. In the matrix
+captures of 2026-10-17 and 18 the new test only fired on frames already
+flagged, so the table above stands.
 
 Variants 2 and 3 never leave a row broken, but rows stay faint about 150 ms
 beyond the transition window after most bursts. That was not investigated
@@ -329,7 +415,8 @@ good, as plain transitions do at 5 and 20.
 
 The full queue scenario (drag reorders, core edits, 12 keyboard edits 50 ms
 apart) for variant 4 at 5, 20 and 100 edits per second: no finding, 0 to
-4.4 dropped frames per minute. Drag reorder never produced a finding in any
+4.4 missed presents and 13 to 40 dropped frames per minute on screen (the
+144 Hz floor). Drag reorder never produced a finding in any
 variant. Settling in the same scenario: clean at 5 and
 20 per second, 82 frames with findings at 100.
 
@@ -357,23 +444,26 @@ SendInput to the DWM present of the first changed frame): median 24 ms at
 ### 2. Track table, ramped to 1M rows and beyond
 
 Knee per axis, D3D12 at 144 Hz (each step is an 8 s fling, wheel or touchpad
-run; a drop is a present interval above 1.5 refreshes):
+run). On screen every step carries the 144 Hz floor of 1 to 9 dropped frames
+per run, so the knee is where the rate rises above it:
 
-| Axis | Ramp | Knee | Envelope vs knee |
-|---|---|---|---|
-| Rows | 1k, 10k, 100k, 1M, 10M, 40M | none (0 drops at 40M) | 10k |
-| Delegate weight | text, artwork, RectangularShadow glow, MultiEffect glow per row | none (0 to 2 drops per run) | artwork + hover |
-| Model churn during fling | 1, 10, 100 (ran 125), 1,000, 3,000, 10,000, 30,000 per s | 3,000 per s (209/min) | 1 per s, 3,000× below |
-| Fling velocity | 1,000 to 12,000 px/s (Qt's cap) | none | |
-| Wheel, touchpad | 5 to 40 notches/s, 1,000 to 20,000 px/s | none | |
-| Artwork | cached, uncached on 1, 4, 16 threads | none | |
-| CPU | all cores, 2 cores, 1 logical core, power saver, both, then with MultiEffect per row and churn up to 1,000/s | none alone (1 drop per run on 1 core with power saver, MultiEffect per row and 1,000 churn/s) | all cores |
-| GPU | RTX 4070, iGPU (across adapters), WARP | iGPU (112/min) | discrete only |
-| Combined | 10M rows, MultiEffect per row, uncached art, 1,000 churn/s, 1 core, power saver | breaks: 6,460/min, p50 23 ms (artwork decode threads share the one core) | every factor far above the envelope |
+| Axis | Ramp | Knee (present-based) | On screen | Envelope vs knee |
+|---|---|---|---|---|
+| Rows | 1k, 10k, 100k, 1M, 10M, 40M | none (0 at 40M) | floor at every step (15 to 52/min), no rise | 10k |
+| Delegate weight | text, artwork, RectangularShadow glow, MultiEffect glow per row | none (0 to 2 per run) | floor (2 to 9 per run), no rise | artwork + hover |
+| Model churn during fling | 1, 10, 100 (ran 125), 1,000, 3,000, 10,000, 30,000 per s | 3,000 per s (209/min) | 30,000 per s (537/min); 7 to 52/min up to 10,000 | 1 per s, 3,000× below |
+| Fling velocity | 1,000 to 12,000 px/s (Qt's cap) | none | floor, no rise | |
+| Wheel, touchpad | 5 to 40 notches/s, 1,000 to 20,000 px/s | none | floor, no rise | |
+| Artwork | cached, uncached on 1, 4, 16 threads | none | floor, no rise | |
+| CPU | all cores, 2 cores, 1 logical core, power saver, both, then with MultiEffect per row and churn up to 1,000/s | none alone (1 per run on 1 core with power saver, MultiEffect per row and 1,000 churn/s) | floor, no rise (7 to 45/min) | all cores |
+| GPU | RTX 4070, iGPU (across adapters), WARP | iGPU (112/min) | iGPU (112/min); WARP 45/min | discrete only |
+| Combined | 10M rows, MultiEffect per row, uncached art, 1,000 churn/s, 1 core, power saver | breaks: 6,460/min, p50 23 ms (artwork decode threads share the one core) | breaks: 6,229/min | every factor far above the envelope |
 
-At 60 Hz no CPU-side axis dropped a frame through the method's ramp ranges.
-Only the combined ramp broke there, with 1M rows, MultiEffect per row, 100
-churn ops/s and uncached artwork pinned to one logical core (1,180 drops/min).
+At 60 Hz no CPU-side axis dropped a frame through the method's ramp ranges,
+counted either way. Only the combined ramp broke there, with 1M rows,
+MultiEffect per row, 100 churn ops/s and uncached artwork pinned to one
+logical core (1,180 missed presents and 642 dropped frames on screen per
+minute).
 
 The scrollbar works at 1M rows (`c59s100_scrollbar/` in
 `results/raw/c59s100.7z`): dragging the thumb
@@ -388,12 +478,12 @@ row count: p50 6.9 ms, p99 7.4 ms, max 8.1 to 8.8 ms from 1k to 1M rows.
 Twelve toggles of the animated sidebar width (200 ms) while the table relayouts
 every frame:
 
-| Load | 144 Hz D3D12, drops/min | 60 Hz, drops/min |
+| Load | 144 Hz D3D12, drops/min present / on screen | 60 Hz, drops/min present / on screen |
 |---|---|---|
-| 1M rows, artwork | 0 | 0 |
-| 1M rows, MultiEffect per row | 0 | 0 |
-| same, one logical core | 0 | 76 |
-| same, WARP | 344 | 186 |
+| 1M rows, artwork | 0 / 27 | 0 / 0 |
+| 1M rows, MultiEffect per row | 0 / 21 | 0 / 0 |
+| same, one logical core | 0 / 7 | 76 / 0 |
+| same, WARP | 344 / 268 | 186 / 0 |
 
 Input-to-photon from Ctrl+B to the first changed sidebar frame: 11 to 19 ms at
 144 Hz, 21 to 31 ms at 60 Hz.
@@ -402,13 +492,13 @@ Input-to-photon from Ctrl+B to the first changed sidebar frame: 11 to 19 ms at
 
 Twelve switches between the track table and the library grid, 900 ms apart:
 
-| Pages | Rows | 144 Hz D3D12, drops/min (max frame ms) | 60 Hz, drops/min |
+| Pages | Rows | 144 Hz D3D12, drops/min present / on screen (max frame ms) | 60 Hz, drops/min present / on screen |
 |---|---|---|---|
-| cached | artwork | 0 (8.1) | 0 |
-| cached | MultiEffect per row | 0 (8.6) | 0 |
-| fresh | artwork | 22 (11.5) | 0 |
-| fresh | MultiEffect per row | 71 (20.5) | 5 |
-| fresh, one logical core | MultiEffect per row | 104 (25.4) | 82 |
+| cached | artwork | 0 / 33 (8.1) | 0 / 0 |
+| cached | MultiEffect per row | 0 / 5 (8.6) | 0 / 0 |
+| fresh | artwork | 22 / 27 (11.5) | 0 / 0 |
+| fresh | MultiEffect per row | 71 / 27 (20.5) | 5 / 0 |
+| fresh, one logical core | MultiEffect per row | 104 / 55 (25.4) | 82 / 0 |
 
 A fresh page builds every visible delegate in one frame. At 144 Hz that is
 3 to 5 refreshes, so the first visit to a page sits at its knee. The user
@@ -419,15 +509,17 @@ Asynchronous incubation (`Loader { asynchronous: true }` with a Lumen
 skeleton, `SPIKE_ASYNC_PAGES`), measured on 2026-10-19 at 144 Hz with D3D12,
 twelve fresh-page switches each:
 
-| Rows | Build | Dropped frames/min | Max frame | Page loaded, median (max) | Content settled, median (max) |
+| Rows | Build | Dropped frames/min, present / on screen | Max frame | Page loaded, median (max) | Content settled, median (max) |
 |---|---|---|---|---|---|
-| artwork | synchronous | 27 | 12.2 ms | 4 ms (5) | 11 ms (14) |
-| artwork | asynchronous | **0** | 8.3 ms | 15 ms (18) | 34 ms (38) |
-| MultiEffect per row | synchronous | 77 | 22.8 ms | 8 ms (9) | 20 ms (26) |
-| MultiEffect per row | asynchronous | **0** | 10.1 ms | 26 ms (34) | 46 ms (54) |
+| artwork | synchronous | 27 / 5 | 12.2 ms | 4 ms (5) | 11 ms (14) |
+| artwork | asynchronous | **0** / 5 | 8.3 ms | 15 ms (18) | 34 ms (38) |
+| MultiEffect per row | synchronous | 77 / 55 | 22.8 ms | 8 ms (9) | 20 ms (26) |
+| MultiEffect per row | asynchronous | **0** / 11 | 10.1 ms | 26 ms (34) | 46 ms (54) |
 
-Incubation removes every dropped frame for about 25 ms more until the page
-is populated; the skeleton shows within the first frame either way.
+Incubation removes the frames the page build drops (on screen, 55 down to 11
+per minute for the heavy rows; the artwork rows sat at the floor either way)
+for about 25 ms more until the page is populated; the skeleton shows within
+the first frame either way.
 Input-to-photon: 11 to 23 ms at 144 Hz, 22 to 47 ms at 60 Hz.
 
 ### 5. Text sharpness
@@ -466,11 +558,12 @@ flinging:
 
 | GPU | Glow off | Glow | Glow + blurred backdrop |
 |---|---|---|---|
-| RTX 4070, 144 Hz D3D12: GPU busy p50 / p99 ms, drops/min | 2.0 / 6.2, 0 | 2.1 / 5.6, 0 | 2.4 / 6.3, 0 |
-| iGPU, 144 Hz: drops/min | 157 | 201 | 134 |
-| WARP, 144 Hz: drops/min | 1,021 | 753 | 253 |
+| RTX 4070, 144 Hz D3D12: GPU busy p50 / p99 ms, drops/min present / on screen | 2.0 / 6.2, 0 / 15 | 2.1 / 5.6, 0 / 7 | 2.4 / 6.3, 0 / 22 |
+| iGPU, 144 Hz: drops/min present / on screen | 157 / 164 | 201 / 201 | 134 / 134 |
+| WARP, 144 Hz: drops/min present / on screen | 1,021 / 60 | 753 / 52 | 253 / 82 |
 
-The glow costs about 0.1 ms of GPU time and no frames on the discrete GPU.
+The glow costs about 0.1 ms of GPU time and no frames above the 144 Hz floor
+on the discrete GPU.
 GPU busy at 60 Hz reads 5.7 ms with or without glow because the GPU sits at a
 low clock. The iGPU fails at 144 Hz with or without glow. Its frames cross
 adapters here, so this says little about a laptop iGPU driving its own panel.
@@ -486,11 +579,12 @@ the core at 5 per second, eight page switches, six sidebar toggles and wheel
 scrolling, at 144 Hz with the 10,000-row table. Memory includes the 96 MB
 ring buffer, pre-touched at launch.
 
-| Run | Dropped frames | Per minute | Private memory after warm-up |
-|---|---|---|---|
-| D3D11, 30 min | 734 (352 first half, 382 second) | 12 to 32, flat | 261 → 264 MB, +0.18 MB/min |
-| D3D12, 30 min | 13 (7, 6) | 0 to 3 | 426 → 435 MB, +0.48 MB/min |
-| D3D12, 60 min | 25 (16, 9) | 0 to 3 | 427 → 437 MB, +0.16 MB/min |
+| Run | Missed presents | Dropped frames on screen (by half or quarter) | Per minute on screen | Private memory after warm-up |
+|---|---|---|---|---|
+| D3D11, 30 min | 734 (352, 382) | 1,079 (524, 555) | 36, flat | 261 → 264 MB, +0.18 MB/min |
+| D3D12, 30 min | 13 (7, 6) | 629 (320, 309) | 21, flat | 426 → 435 MB, +0.48 MB/min |
+| D3D12, 60 min | 25 (16, 9) | 1,378 (323, 353, 369, 333) | 23, flat | 427 → 437 MB, +0.16 MB/min |
+| D3D12, 3 h (2026-10-19) | 485 | 2,198 (162 to 201 per 15 min) | 12, flat | 447 → 452 MB (below) |
 
 Drops show no upward trend in these runs, but memory rose 3 MB in the last
 35 minutes of the 60-minute run, so a 3-hour soak was run on 2026-10-19 with
@@ -512,12 +606,13 @@ at all; private bytes follow the committed heap (3.1 MB per hour, falling in
 the last quarter hour). That is flat within a few MB, and what grows is heap
 the allocator keeps committed, not live allocations.
 
-Dropped frames per 15 minutes rose from about 10 to about 95 after two hours.
-329 of the 349 late drops fall within 30 ms of a memory sample, 10 s apart:
-the sampling ran on the GUI thread, and `HeapSummary`'s walk of every heap
-grew slow enough to cost a frame. Without the frames next to a sample, the
-soak drops 3 to 10 frames per 15 minutes from start to end (67 in 3 hours,
-0.4 per minute), with no trend. The sampling now runs on its own thread.
+On screen the 3-hour soak drops 162 to 201 frames per 15 minutes from start
+to end (12 per minute), with no trend. Missed presents rose from about 10 to
+about 95 per 15 minutes after two hours; 329 of the 349 late ones fall within
+30 ms of a memory sample, 10 s apart: the sampling ran on the GUI thread, and
+`HeapSummary`'s walk of every heap grew slow enough to delay a present. Those
+late presents still reached the screen in time (queued frames absorbed
+them). The sampling now runs on its own thread.
 
 ## Software rendering
 
@@ -526,10 +621,14 @@ freeze of 100 ms or more while scrolling 1,000 rows with artwork).
 
 | Path | Worst frame or freeze | Dropped frames |
 |---|---|---|
-| WARP (`QSG_RHI_PREFER_SOFTWARE_RENDERER`), 12 runs at 1,000 rows | 51 ms | 140 to 1,700 per minute |
+| WARP (`QSG_RHI_PREFER_SOFTWARE_RENDERER`), 12 runs at 1,000 rows | 51 ms | 140 to 1,700 missed presents per minute; 0 to 677 on screen |
 | Mesa llvmpipe (`QT_OPENGL=software`), 40 runs | 46 ms longest content freeze, GUI clock at most 50 ms | 0 to 60 skipped refreshes per minute at 60 Hz, 1,100 to 4,900 at 144 Hz |
 | Qt Quick software adaptation (exploratory runs only) | GUI clock at most 50 ms | 3 to 30 skipped GUI-clock frames per 9 s run |
 
+The WARP column counts missed presents. On screen WARP drops far fewer,
+because queued frames absorb late presents: the 12 runs at 1,000 rows drop 7
+to 677 frames per minute on screen at 144 Hz and none at 60 Hz. The content cadence from the
+duplication pass (the llvmpipe row) is the better measure of what moves.
 All three are usable by that definition. The heaviest combined WARP load in
 the extension (1M rows, MultiEffect per row, 1,000 churn edits per second, one
 core) reached 139 ms, far outside what a software-rendered machine would run.
@@ -563,7 +662,9 @@ It is far below what Qt already does.
 
 ## Recommendation
 
-1. Go with Qt Quick for the desktop app.
+1. Go with Qt Quick for the desktop app. Certified at 60 Hz; at 144 Hz with
+   a floor of about one dropped frame every 2 to 5 s whose source is not
+   attributed.
 2. Phase 4 adopts the four settings as rules (ADR 0002 amendment), plus:
    pages stay alive after their first visit and are built asynchronously
    behind a skeleton the first time, no per-row `MultiEffect` (use
@@ -572,7 +673,11 @@ It is far below what Qt already does.
 3. GPUI is an optional comparison. The harness is generic (PresentMon,
    duplication, scripted input) and only needs the ring-buffer hooks redone
    for it.
-4. The duplication recorder misses a few frames per minute at 144 Hz. A
+4. Phase 4 checks, before the 144 Hz claim is relied on: a minimal native
+   flip-model swap chain at 144 Hz on the same machine, to tell whether the
+   floor is Qt's or the compositor's; and D3D12 at 60 Hz with 125 and 150 %
+   scaling, which this spike did not measure.
+5. The duplication recorder misses a few frames per minute at 144 Hz. A
    harness kept for later work should capture in shorter windows, or move
    frame acquisition to a thread that does nothing else, so that long
    corruption runs can be certified frame-complete.
@@ -602,7 +707,10 @@ input log, process samples and metadata (`d12c144s100long.7z` is the
 snapshot runs plus the driver logs, `queue_diag.7z` the 2026-10-18 queue
 diagnosis, whose variant runs are void, see the queue section; `monday.7z`,
 `monday_soak.7z.*` and `monday_fixq.7z` the 2026-10-19 batch). `cadence_recompute.txt` lists every cadence figure before and
-after the metric correction. Summaries of the exploratory runs from
+after the metric correction. `display_drops.jsonl` gives present and
+on-screen drops per PresentMon run (`tools/display_drops.py`), and
+`queue_recheck.jsonl` the amended queue check on every 2026-10-19 and matrix
+queue capture (`tools/queue_recheck.py`). Summaries of the exploratory runs from
 before the final build are in `results/exploratory/`; their raw files were not
 kept and nothing above relies on them except the Qt Quick software
 adaptation figures, which are marked.

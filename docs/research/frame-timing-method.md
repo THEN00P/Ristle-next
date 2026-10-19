@@ -11,7 +11,12 @@ all of the rules below.
   On Windows, use **PresentMon**. It reads ETW events from the graphics stack and
   logs every `Present` call with its QPC timestamps, the time each frame actually
   reached the display, and frames that were dropped. It runs in another process,
-  so an app stall cannot delay its clock.
+  so an app stall cannot delay its clock. **A dropped frame is counted on
+  the screen:** a `MsBetweenDisplayChange` interval longer than 1.5 refresh
+  periods, counting the refreshes missed. Gaps between presents
+  (`MsBetweenPresents`) are reported beside it but do not decide: a frame
+  presented on time can still be lost before the screen, and a late present
+  can still reach the screen in time when frames are queued.
   On macOS, use Instruments (Animation Hitches and Core Animation) once a Mac is
   available.
 - **Secondary evidence is in-app timestamps, and it is used only for

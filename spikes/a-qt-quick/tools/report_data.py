@@ -13,7 +13,15 @@ ORDER = ["c144s100", "c59s100", "c144s125", "c59s125", "c144s150", "c59s150",
 
 def load(name):
     p = R / name
-    return [json.loads(l) for l in open(p)] if p.exists() else []
+    rows = [json.loads(l) for l in open(p)] if p.exists() else []
+    if name == "summary.jsonl":
+        # Display drops (MsBetweenDisplayChange) next to present drops, from
+        # tools/display_drops.py (Codex review, final round).
+        disp = {r["run"]: r for r in load("display_drops.jsonl")}
+        for r in rows:
+            r.update({k: v for k, v in disp.get(r["run"], {}).items()
+                      if k in ("display_dropped", "display_dropped_per_min", "display_max_ms")})
+    return rows
 
 
 def cond_label(tag):
@@ -74,15 +82,19 @@ def knees():
                 cells.append("–")
                 continue
             k = next((r for r in rs if dropped(r) > 0), None)
-            cells.append(f"**{describe(k)}** ({dropped_per_min(k)}/min)" if k else "no drops")
+            kd = next((r for r in rs if dropped(r, display=True) > 0), None)
+            cell = f"**{describe(k)}** ({dropped_per_min(k)}/min)" if k else "no drops"
+            if rs[0].get("mode") != "dd":
+                cell += f"; display: **{describe(kd)}** ({kd['display_dropped_per_min']}/min)" if kd else "; display: no drops"
+            cells.append(cell)
         out.append(f"| {a} | " + " | ".join(cells) + " |")
     return "\n".join(out)
 
 
-def dropped(r):
+def dropped(r, display=False):
     if r.get("mode") == "dd":
         return r["gui_clock_skipped"] + r["cadence"]["skipped_refreshes"]
-    return r["dropped"]
+    return r.get("display_dropped", 0) if display else r["dropped"]
 
 
 def dropped_per_min(r):
@@ -109,12 +121,12 @@ def ramp_details():
                     out.append(f"| {r['step']} | {describe(r)} | {c['updates_per_s']} | {c['skipped_refreshes']} "
                                f"({c['skipped_per_min']}) | {c['longest_freeze_ms']} | {r['gui_clock_skipped']} | {fmt(r['gui_clock_max_ms'])} |")
                 continue
-            out.append("| step | load | frames/expected | p50 | p99 | max | dropped/min | GPU busy p50/p99 | ring GUI/render excess |")
-            out.append("|---|---|---|---|---|---|---|---|---|")
+            out.append("| step | load | frames/expected | p50 | p99 | max | dropped/min presents (display) | display max | GPU busy p50/p99 | ring GUI/render excess |")
+            out.append("|---|---|---|---|---|---|---|---|---|---|")
             for r in rs:
                 out.append(f"| {r['step']} | {describe(r)} | {r['frames']}/{r['expected_frames']} | {fmt(r['p50_ms'])} | "
-                           f"{fmt(r['p99_ms'])} | {fmt(r['max_ms'])} | {r['dropped_per_min']} | "
-                           f"{fmt(r['gpu_busy_p50_ms'])}/{fmt(r['gpu_busy_p99_ms'])} | "
+                           f"{fmt(r['p99_ms'])} | {fmt(r['max_ms'])} | {r['dropped_per_min']} ({r.get('display_dropped_per_min', '–')}) | "
+                           f"{fmt(r.get('display_max_ms'))} | {fmt(r['gpu_busy_p50_ms'])}/{fmt(r['gpu_busy_p99_ms'])} | "
                            f"{fmt(r.get('ring_gui_excess_max_ms'))}/{fmt(r.get('ring_render_excess_max_ms'))} |")
     return "\n".join(out)
 
@@ -122,14 +134,14 @@ def ramp_details():
 def queue():
     qc = load("queue_checks.jsonl")
     pm = {r["run"]: r for r in load("summary.jsonl") if r.get("scenario") == "queue"}
-    out = ["| condition | transitions | edits/s configured (measured) | PresentMon dropped/min (p99, max ms) | frames checked (settled) | corruption frames | still broken after edits stop | insert/remove input-to-photon p50/p99 ms |",
+    out = ["| condition | transitions | edits/s configured (measured) | PresentMon dropped/min presents [display] (p99, max ms) | frames checked (settled) | corruption frames | still broken after edits stop | insert/remove input-to-photon p50/p99 ms |",
            "|---|---|---|---|---|---|---|---|"]
     for t in ORDER:
         for r in sorted([x for x in qc if x["tag"] == t], key=lambda x: (not x["documented_settling"], x["rate"])):
             p = pm.get(r["run"].replace("_dd", "_pm"), {})
             lat = r.get("latency", {})
             out.append(f"| {cond_label(t)} | {'settling' if r['documented_settling'] else 'plain'} | {r['rate']} ({measured_rate(r['run'])}) | "
-                       f"{p.get('dropped_per_min', '–')} ({fmt(p.get('p99_ms'))}, {fmt(p.get('max_ms'))}) | "
+                       f"{p.get('dropped_per_min', '–')} [{p.get('display_dropped_per_min', '–')}] ({fmt(p.get('p99_ms'))}, {fmt(p.get('max_ms'))}) | "
                        f"{r['frames']} ({r['settled_frames']}) | {r['problems']} {kinds(r['by_kind'])} | {r['persistent_at_end']} | "
                        f"{fmt(lat.get('p50_ms'))}/{fmt(lat.get('p99_ms'))} |")
     return "\n".join(out)
@@ -159,23 +171,23 @@ def kinds(k):
 def ui():
     lat = load("latency.jsonl")
     pm = {r["run"]: r for r in load("summary.jsonl") if r.get("scenario") in ("sidebar", "pages")}
-    out = ["| condition | scenario | load | PresentMon dropped/min | p99 / max frame ms | input-to-photon p50 / p99 ms |",
+    out = ["| condition | scenario | load | PresentMon dropped/min presents [display] | p99 / max frame ms | input-to-photon p50 / p99 ms |",
            "|---|---|---|---|---|---|"]
     for t in ORDER:
         for l in [x for x in lat if x["tag"] == t]:
             p = pm.get(f"{t}_{l['scenario']}_{l['step']}_pm", {})
-            out.append(f"| {cond_label(t)} | {l['scenario']} | {describe(p) if p else ''} | {p.get('dropped_per_min', '–')} | "
+            out.append(f"| {cond_label(t)} | {l['scenario']} | {describe(p) if p else ''} | {p.get('dropped_per_min', '–')} [{p.get('display_dropped_per_min', '–')}] | "
                        f"{fmt(p.get('p99_ms'))} / {fmt(p.get('max_ms'))} | {fmt(l['p50_ms'])} / {fmt(l['p99_ms'])} |")
     return "\n".join(out)
 
 
 def glow():
     rows = [r for r in load("summary.jsonl") if r.get("scenario") == "glow"]
-    out = ["| condition | load | GPU busy p50 / p99 ms | frame p99 / max ms | dropped/min |", "|---|---|---|---|---|"]
+    out = ["| condition | load | GPU busy p50 / p99 ms | frame p99 / max ms | dropped/min presents [display] |", "|---|---|---|---|---|"]
     for t in ORDER:
         for r in sorted([x for x in rows if tag_of(x["run"]) == t], key=lambda x: x["step"]):
             out.append(f"| {cond_label(t)} | {describe(r)} | {fmt(r['gpu_busy_p50_ms'])} / {fmt(r['gpu_busy_p99_ms'])} | "
-                       f"{fmt(r['p99_ms'])} / {fmt(r['max_ms'])} | {r['dropped_per_min']} |")
+                       f"{fmt(r['p99_ms'])} / {fmt(r['max_ms'])} | {r['dropped_per_min']} [{r.get('display_dropped_per_min', '–')}] |")
     return "\n".join(out)
 
 
@@ -229,13 +241,19 @@ def soak_section():
         hz = analyze.refresh_hz(m)
         frames = analyze.presentmon(d)
         t0 = frames[0]["qpc"]
-        per_min = defaultdict(int)
+        per_min, disp_min = defaultdict(int), defaultdict(int)
         T = 1000 / hz
         for f in frames[1:]:
             if f["MsBetweenPresents"] > 1.5 * T:
                 per_min[int((f["qpc"] - t0) / 6e8)] += round(f["MsBetweenPresents"] / T) - 1
+        shown = [f for f in frames if f["MsUntilDisplayed"]]
+        for f in shown[1:]:
+            x = f["MsBetweenDisplayChange"]
+            if x and x > 1.5 * T:
+                disp_min[int((f["qpc"] - t0) / 6e8)] += round(x / T) - 1
         mins = int((frames[-1]["qpc"] - t0) / 6e8) + 1
         drops = [per_min.get(i, 0) for i in range(mins)]
+        disp = [disp_min.get(i, 0) for i in range(mins)]
         rows = list(csv.DictReader(open(d / "proc.csv")))
         q0 = int(rows[0]["qpc"])
         mem = [((int(r["qpc"]) - q0) / 6e8, float(r["private_mb"])) for r in rows]
@@ -249,7 +267,8 @@ def soak_section():
         half = len(drops) // 2
         out.append(f"**{cond_label(tag.replace('d12', '').replace('long', ''))}{' (D3D12)' if tag.startswith('d12') else ' (D3D11)'}**: "
                    f"{len(frames)} presents in {mins} min; dropped frames per minute: {drops}. "
-                   f"First half {sum(drops[:half])}, second half {sum(drops[half:])}. Private memory after warm-up: "
+                   f"First half {sum(drops[:half])}, second half {sum(drops[half:])}. Display drops per minute "
+                   f"(MsBetweenDisplayChange): {disp}, first half {sum(disp[:half])}, second half {sum(disp[half:])}. Private memory after warm-up: "
                    f"{first:.1f} MB (minutes 5–10) → {last:.1f} MB (last 5 min), slope {slope:+.3f} MB/min, "
                    f"min {min(v for _, v in warm):.1f}, max {max(v for _, v in warm):.1f} MB.")
     return "\n\n".join(out)

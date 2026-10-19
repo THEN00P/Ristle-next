@@ -83,19 +83,26 @@ def pct(xs, p):
 
 
 def frame_stats(frames, t0, t1, hz):
-    """Frame-time stats for presents in [t0, t1] (QPC). A drop is a display
-    interval longer than 1.5 refresh periods; it counts the vsyncs missed."""
+    """Frame-time stats for presents in [t0, t1] (QPC). `dropped` counts
+    present intervals longer than 1.5 refresh periods (the vsyncs missed);
+    `display_dropped` counts the same for the intervals between frames
+    reaching the screen, which is what decides (frame-timing method, rule 1)."""
     T = 1000 / hz
     fs = [f for f in frames if t0 <= f["qpc"] <= t1]
     bp = [f["MsBetweenPresents"] for f in fs[1:]]
     bd = [f["MsBetweenDisplayChange"] for f in fs[1:] if f["MsBetweenDisplayChange"]]
     drops = sum(max(0, round(x / T) - 1) for x in bp if x > 1.5 * T)
+    shown = [f for f in fs if f["MsUntilDisplayed"]]
+    bs = [f["MsBetweenDisplayChange"] for f in shown[1:] if f["MsBetweenDisplayChange"]]
+    display_drops = sum(max(0, round(x / T) - 1) for x in bs if x > 1.5 * T)
     dur_s = (t1 - t0) / QPC
     return {
         "frames": len(fs), "expected_frames": round(dur_s * hz), "duration_s": round(dur_s, 3),
         "p50_ms": pct(bp, 50), "p99_ms": pct(bp, 99), "max_ms": max(bp, default=None),
         "display_p99_ms": pct(bd, 99), "display_max_ms": max(bd, default=None),
         "dropped": drops, "dropped_per_min": round(drops / dur_s * 60, 2) if dur_s else None,
+        "display_dropped": display_drops,
+        "display_dropped_per_min": round(display_drops / dur_s * 60, 2) if dur_s else None,
         "until_displayed_p50_ms": pct([f["MsUntilDisplayed"] for f in fs if f["MsUntilDisplayed"]], 50),
         "gpu_busy_p50_ms": pct([f["MsGPUBusy"] for f in fs if f["MsGPUBusy"] is not None], 50),
         "gpu_busy_p99_ms": pct([f["MsGPUBusy"] for f in fs if f["MsGPUBusy"] is not None], 99),

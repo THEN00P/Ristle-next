@@ -12,8 +12,8 @@
 //! level 28, which makes Android 9 the minimum for playback.
 //!
 //! An AAudio stream is disconnected when its device goes away (headphones
-//! unplugged, Bluetooth connected). The output then reopens a stream on the
-//! new route at the same rate and format, so the engine's format holds,
+//! unplugged, Bluetooth connected), and is unusable after any other error
+//! too. The output then reopens a stream on the current route at the same rate and format, so the engine's format holds,
 //! and keeps it playing or paused as before.
 
 // The data callback receives the output buffer as a raw pointer.
@@ -29,7 +29,7 @@ use ndk::audio::{
     AudioPerformanceMode, AudioSharingMode, AudioStream, AudioStreamBuilder, AudioUsage,
 };
 
-use super::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
+use super::{AudioOutput, OutputError, OutputInfo, OutputRequest, Render};
 
 /// Reopen attempts after a disconnect before the failure is reported: about
 /// 10 s with the delays below.
@@ -151,7 +151,7 @@ fn run(
             .and_then(|rate| i32::try_from(rate).ok()),
         channels: i32::from(request.channels.max(1)),
     };
-    let (mut stream, settings) = match open_stream(requested, &render, &errors, &reopen) {
+    let (mut stream, settings) = match open_stream(requested, &render, &reopen) {
         Ok((stream, info)) => {
             let settings = Settings {
                 sample_rate: i32::try_from(info.sample_rate).ok(),
@@ -202,7 +202,7 @@ fn run(
                 // Close the disconnected stream first: its callbacks stop
                 // before the new stream's start.
                 drop(stream.take());
-                match open_stream(settings, &render, &errors, &reopen) {
+                match open_stream(settings, &render, &reopen) {
                     Ok((new, info)) => {
                         tracing::info!(rate = info.sample_rate, "audio output reopened");
                         retry = None;
@@ -242,13 +242,11 @@ fn run(
 fn open_stream(
     settings: Settings,
     render: &SharedRender,
-    errors: &OutputErrors,
     reopen: &mpsc::Sender<Command>,
 ) -> Result<(AudioStream, OutputInfo), OutputError> {
     let channels = settings.channels;
     let samples_per_frame = usize::try_from(channels).unwrap_or(1).max(1);
     let callback_render = Arc::clone(render);
-    let errors = errors.clone();
     let reopen = reopen.clone();
     let mut builder = AudioStreamBuilder::new()
         .map_err(aaudio)?
@@ -277,13 +275,13 @@ fn open_stream(
             AudioCallbackResult::Continue
         }))
         .error_callback(Box::new(move |_stream, error| {
-            // AAudio forbids closing or reopening from this callback; the
-            // output thread does it.
-            if error == AudioError::Disconnected {
-                let _ = reopen.send(Command::Reopen);
-            } else {
-                errors.report(OutputError::Backend(error.to_string()));
+            // After any error the stream is unusable and must be closed,
+            // which AAudio forbids from this callback: the output thread
+            // reopens it, and reports only if that keeps failing.
+            if error != AudioError::Disconnected {
+                tracing::warn!(%error, "audio output stream failed");
             }
+            let _ = reopen.send(Command::Reopen);
         }));
     if let Some(rate) = settings.sample_rate {
         builder = builder.sample_rate(rate);
@@ -351,7 +349,7 @@ pub fn probe() -> Result<Opened, OutputError> {
         sample_rate: None,
         channels: 2,
     };
-    let (stream, _) = open_stream(settings, &render, &OutputErrors::new(|_| {}), &reopen)?;
+    let (stream, _) = open_stream(settings, &render, &reopen)?;
     Ok(Opened {
         performance_mode: format!("{:?}", stream.performance_mode()),
         content_type: format!("{:?}", stream.content_type()),

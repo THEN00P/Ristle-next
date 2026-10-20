@@ -173,39 +173,86 @@ fn open_stream(
     Ok((stream, info))
 }
 
-/// Picks the stream configuration: the device's default (its mixer's own
-/// rate and sample format, so the platform does not resample), with the
-/// requested rate and channel count where the device supports them in the
-/// same sample format.
+/// Sample formats the output renders, best first.
+const FORMATS: [SampleFormat; 7] = [
+    SampleFormat::F32,
+    SampleFormat::I32,
+    SampleFormat::I16,
+    SampleFormat::F64,
+    SampleFormat::U16,
+    SampleFormat::I8,
+    SampleFormat::U8,
+];
+
+/// Picks the stream configuration. The device's default sample format and
+/// rate come first (the mixer's own, so the platform does not resample);
+/// the requested channel count and rate where the device supports them in
+/// that format. A default format the output cannot render is replaced by
+/// the best one the device offers.
 fn choose_config(
     default: &SupportedStreamConfig,
     supported: &[SupportedStreamConfigRange],
     request: &OutputRequest,
 ) -> SupportedStreamConfig {
-    let rate = request
-        .preferred_rate
-        .filter(|rate| {
-            supported.iter().any(|range| {
-                range.sample_format() == default.sample_format()
-                    && range.channels() == default.channels()
-                    && (range.min_sample_rate()..=range.max_sample_rate()).contains(rate)
+    let format = if FORMATS.contains(&default.sample_format()) {
+        default.sample_format()
+    } else {
+        FORMATS
+            .into_iter()
+            .find(|format| {
+                supported
+                    .iter()
+                    .any(|range| range.sample_format() == *format)
             })
-        })
-        .unwrap_or(default.sample_rate());
-    supported
-        .iter()
-        .filter(|range| {
-            range.channels() == request.channels && range.sample_format() == default.sample_format()
-        })
-        .find_map(|range| range.try_with_sample_rate(rate))
-        .unwrap_or_else(|| {
+            .unwrap_or(default.sample_format())
+    };
+    let in_format = |channels: u16| -> Vec<SupportedStreamConfigRange> {
+        supported
+            .iter()
+            .filter(|range| range.sample_format() == format && range.channels() == channels)
+            .copied()
+            .collect()
+    };
+    let mut ranges = in_format(request.channels);
+    if ranges.is_empty() {
+        ranges = in_format(default.channels());
+    }
+    if ranges.is_empty() {
+        ranges = supported
+            .iter()
+            .filter(|range| range.sample_format() == format)
+            .copied()
+            .collect();
+    }
+    // The preferred rate if this layout supports it, then the default rate,
+    // then the supported rate nearest the default.
+    let rates = request
+        .preferred_rate
+        .into_iter()
+        .chain([default.sample_rate()]);
+    for rate in rates {
+        if let Some(config) = ranges
+            .iter()
+            .find_map(|range| (*range).try_with_sample_rate(rate))
+        {
+            return config;
+        }
+    }
+    ranges
+        .into_iter()
+        .map(|range| {
+            let rate = default
+                .sample_rate()
+                .clamp(range.min_sample_rate(), range.max_sample_rate());
             SupportedStreamConfig::new(
-                default.channels(),
+                range.channels(),
                 rate,
-                *default.buffer_size(),
-                default.sample_format(),
+                *range.buffer_size(),
+                range.sample_format(),
             )
         })
+        .min_by_key(|config| config.sample_rate().abs_diff(default.sample_rate()))
+        .unwrap_or(*default)
 }
 
 /// A device that takes `f32` gets the engine's buffer directly.
@@ -321,6 +368,35 @@ mod tests {
         assert_eq!(chosen.sample_rate(), 44_100);
         let chosen = choose_config(&default(2, 48_000), &supported, &request(Some(8_000)));
         assert_eq!(chosen.sample_rate(), 48_000);
+    }
+
+    #[test]
+    fn checks_the_preferred_rate_against_the_requested_layout() {
+        // Stereo only at 44.1 kHz; the 6-channel default runs at 48 kHz.
+        let supported = [
+            range(6, 48_000, 48_000, SampleFormat::F32),
+            range(2, 44_100, 44_100, SampleFormat::F32),
+        ];
+        let chosen = choose_config(&default(6, 48_000), &supported, &request(Some(44_100)));
+        assert_eq!((chosen.channels(), chosen.sample_rate()), (2, 44_100));
+        // Without a preference, stereo still wins, at its nearest rate.
+        let chosen = choose_config(&default(6, 48_000), &supported, &request(None));
+        assert_eq!((chosen.channels(), chosen.sample_rate()), (2, 44_100));
+    }
+
+    #[test]
+    fn replaces_a_default_format_it_cannot_render() {
+        let supported = [
+            range(2, 48_000, 48_000, SampleFormat::I24),
+            range(2, 48_000, 48_000, SampleFormat::I16),
+        ];
+        let default =
+            SupportedStreamConfig::new(2, 48_000, SupportedBufferSize::Unknown, SampleFormat::I24);
+        let chosen = choose_config(&default, &supported, &request(None));
+        assert_eq!(
+            (chosen.sample_format(), chosen.sample_rate()),
+            (SampleFormat::I16, 48_000)
+        );
     }
 
     #[test]

@@ -239,6 +239,8 @@ pub struct PlaylistView {
     pub public: Option<bool>,
     /// The connected account may change it.
     pub editable: bool,
+    /// The [`FolderView`] that holds it in the owner's library, by id.
+    pub folder: Option<String>,
     /// The playlist's page on the Provider. HTTPS only.
     pub url: Option<String>,
 }

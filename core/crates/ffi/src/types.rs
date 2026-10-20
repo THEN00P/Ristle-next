@@ -160,6 +160,7 @@ pub struct PlaylistView {
     pub updated: Option<MediaDate>,
     pub public: Option<bool>,
     pub editable: bool,
+    pub folder: Option<String>,
     pub url: Option<String>,
 }
 

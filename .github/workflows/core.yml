@@ -125,6 +125,5 @@ jobs:
       - name: cargo-ndk
         run: cargo install --locked cargo-ndk@4.1.2
       - name: cargo ndk check
+        # The runner's ANDROID_NDK_ROOT names its NDK.
         run: cargo ndk -t arm64-v8a check --locked -p ristle-ffi
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}

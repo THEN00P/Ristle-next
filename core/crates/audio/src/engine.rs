@@ -204,17 +204,9 @@ impl Engine {
     pub fn set_current(&self, track: TrackToken, stream: Box<dyn MediaStream>, start_ms: u64) {
         let shared = self.shared();
         let mut feed = lock(&self.control.feed);
-        // Empty the other slot first, so the render callback cannot switch
-        // into it while the current slot changes; then check that it did not
-        // switch before that.
-        let current = loop {
-            let current = shared.current.load(Ordering::Acquire);
-            feed.clear(shared, 1 - current);
-            if shared.current.load(Ordering::Acquire) == current {
-                break current;
-            }
-        };
-        feed.restart(shared, current, Some(track), Some(stream), start_ms);
+        let slots = shared.hold();
+        feed.clear(shared, slots.other());
+        feed.restart(shared, slots.current(), Some(track), Some(stream), start_ms);
         shared.bump_sequence();
     }
 
@@ -223,11 +215,11 @@ impl Engine {
     pub fn set_next(&self, track: TrackToken, stream: Box<dyn MediaStream>) -> Result<(), Error> {
         let shared = self.shared();
         let mut feed = lock(&self.control.feed);
-        let current = shared.current.load(Ordering::Acquire);
-        if feed.slots[current].record.token.is_none() {
+        let slots = shared.hold();
+        if feed.slots[slots.current()].record.token.is_none() {
             return Err(Error::NoCurrent);
         }
-        feed.restart(shared, 1 - current, Some(track), Some(stream), 0);
+        feed.restart(shared, slots.other(), Some(track), Some(stream), 0);
         Ok(())
     }
 
@@ -235,8 +227,8 @@ impl Engine {
     pub fn clear_next(&self) {
         let shared = self.shared();
         let mut feed = lock(&self.control.feed);
-        let current = shared.current.load(Ordering::Acquire);
-        feed.clear(shared, 1 - current);
+        let slots = shared.hold();
+        feed.clear(shared, slots.other());
     }
 
     /// Stops and drops both Tracks, for when the Track that should play
@@ -246,9 +238,9 @@ impl Engine {
         let mut feed = lock(&self.control.feed);
         shared.playing.store(false, Ordering::Release);
         lock(&self.control.output).pause();
-        let current = shared.current.load(Ordering::Acquire);
-        feed.clear(shared, 1 - current);
-        feed.clear(shared, current);
+        let slots = shared.hold();
+        feed.clear(shared, slots.other());
+        feed.clear(shared, slots.current());
         shared.bump_sequence();
     }
 
@@ -259,25 +251,22 @@ impl Engine {
     pub fn promote_next(&self) -> bool {
         let shared = self.shared();
         let mut feed = lock(&self.control.feed);
-        let current = shared.current.load(Ordering::Acquire);
-        let other = 1 - current;
+        let mut slots = shared.hold();
+        let other = slots.other();
         let record = feed.slots[other].record;
+        // Right after a Gapless Transition the other slot still holds the
+        // Track that just finished, until the decode thread clears it.
         let ready = record.token.is_some()
             && !record.failed
+            && !shared.has_played(other, record.seq)
             && (record.end.is_some() || shared.slots[other].ring.readable() > 0);
         if !ready {
             return false;
         }
-        if shared
-            .current
-            .compare_exchange(current, other, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            feed.clear(shared, current);
-            shared.bump_sequence();
-        }
-        // Otherwise the render callback switched first, at the end of the
-        // current Track: the next Track is current either way.
+        let previous = slots.current();
+        slots.switch();
+        feed.clear(shared, previous);
+        shared.bump_sequence();
         true
     }
 
@@ -286,7 +275,7 @@ impl Engine {
     pub fn play(&self) -> Result<(), Error> {
         let shared = self.shared();
         let feed = lock(&self.control.feed);
-        let record = feed.slots[shared.current.load(Ordering::Acquire)].record;
+        let record = feed.slots[shared.current()].record;
         if record.token.is_none() {
             return Err(Error::NoCurrent);
         }
@@ -312,7 +301,8 @@ impl Engine {
     pub fn seek(&self, position_ms: u64) -> Result<u64, Error> {
         let shared = self.shared();
         let mut feed = lock(&self.control.feed);
-        let current = shared.current.load(Ordering::Acquire);
+        let slots = shared.hold();
+        let current = slots.current();
         let Some(track) = feed.slots[current].record.token else {
             return Err(Error::NoCurrent);
         };
@@ -337,15 +327,16 @@ impl Engine {
         let shared = self.shared();
         let feed = lock(&self.control.feed);
         let sequence = shared.sequence.load(Ordering::Acquire);
-        let current = shared.current.load(Ordering::Acquire);
+        let current = shared.current();
         let record = feed.slots[current].record;
         let next = feed.slots[1 - current].record;
+        let next_played = shared.has_played(1 - current, next.seq);
         let ring = &shared.slots[current].ring;
         let position = record.start_frame + ring.read_position().saturating_sub(record.start);
         let ended = record.token.is_some() && shared.ended.load(Ordering::Acquire) == record.seq;
         EngineState {
             current: record.token,
-            next: next.token.filter(|_| !next.failed),
+            next: next.token.filter(|_| !next.failed && !next_played),
             playing: shared.playing.load(Ordering::Acquire),
             buffering: record.token.is_some()
                 && !ended
@@ -370,10 +361,7 @@ impl Engine {
     pub fn wait_until_buffered(&self, timeout: std::time::Duration) -> bool {
         self.wait(timeout, |engine| {
             let feed = lock(&engine.control.feed);
-            feed.buffered(
-                engine.shared(),
-                engine.shared().current.load(Ordering::Acquire),
-            )
+            feed.buffered(engine.shared(), engine.shared().current())
         })
     }
 
@@ -383,7 +371,7 @@ impl Engine {
     pub fn wait_until_next_buffered(&self, timeout: std::time::Duration) -> bool {
         self.wait(timeout, |engine| {
             let feed = lock(&engine.control.feed);
-            let other = 1 - engine.shared().current.load(Ordering::Acquire);
+            let other = 1 - engine.shared().current();
             feed.buffered(engine.shared(), other)
         })
     }

@@ -42,6 +42,8 @@ pub(crate) struct Record {
 }
 
 const NONE: u64 = u64::MAX;
+const SLOT: usize = 1;
+const HELD: usize = 2;
 const FLAG_OCCUPIED: u64 = 1;
 const FLAG_FAILED: u64 = 2;
 
@@ -130,6 +132,38 @@ impl RecordCell {
     }
 }
 
+/// The control side's pin on the current slot; see [`Shared::hold`].
+pub(crate) struct Hold<'a> {
+    shared: &'a Shared,
+    slot: usize,
+}
+
+impl Hold<'_> {
+    /// The current slot. It cannot change while held, except through
+    /// [`Hold::switch`].
+    pub(crate) fn current(&self) -> usize {
+        self.slot
+    }
+
+    pub(crate) fn other(&self) -> usize {
+        1 - self.slot
+    }
+
+    /// Makes the other slot current (promoting the prepared next Track).
+    pub(crate) fn switch(&mut self) {
+        self.slot = 1 - self.slot;
+        self.shared
+            .current
+            .store(self.slot | HELD, Ordering::Release);
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        self.shared.current.fetch_and(!HELD, Ordering::AcqRel);
+    }
+}
+
 pub(crate) struct Slot {
     pub(crate) ring: Ring,
     pub(crate) record: RecordCell,
@@ -138,10 +172,14 @@ pub(crate) struct Slot {
 pub(crate) struct Shared {
     pub(crate) info: OutputInfo,
     pub(crate) slots: [Slot; 2],
-    /// The slot the render callback reads. Changed by compare-exchange only:
-    /// by the callback at a Gapless Transition, by the control side when
-    /// promoting the prepared next Track.
-    pub(crate) current: AtomicUsize,
+    /// Bit 0: the slot the render callback reads. Bit 1 (`HELD`): the
+    /// control side has pinned it. The callback switches slots at a Gapless
+    /// Transition by compare-exchange from an unheld value, so it cannot
+    /// switch while the control side works on the slots.
+    current: AtomicUsize,
+    /// Per slot, the `seq` of the record the callback finished there, so
+    /// the control side never treats a finished Track as the next one.
+    played: [AtomicU64; 2],
     pub(crate) playing: AtomicBool,
     /// Target gain, as `f32` bits.
     pub(crate) volume: AtomicU32,
@@ -166,6 +204,7 @@ impl Shared {
             info,
             slots: [slot(), slot()],
             current: AtomicUsize::new(0),
+            played: [AtomicU64::new(0), AtomicU64::new(0)],
             playing: AtomicBool::new(false),
             volume: AtomicU32::new(1.0_f32.to_bits()),
             ended: AtomicU64::new(0),
@@ -173,6 +212,38 @@ impl Shared {
             wake_requested: AtomicBool::new(false),
             decoder: OnceLock::new(),
         }
+    }
+
+    /// The slot the render callback reads.
+    pub(crate) fn current(&self) -> usize {
+        self.current.load(Ordering::Acquire) & SLOT
+    }
+
+    /// Pins the current slot until the returned guard drops. Call with the
+    /// feed lock held, so there is one holder at a time.
+    pub(crate) fn hold(&self) -> Hold<'_> {
+        let slot = self.current.fetch_or(HELD, Ordering::AcqRel) & SLOT;
+        Hold { shared: self, slot }
+    }
+
+    /// The callback's Gapless Transition: switches from `from` to the other
+    /// slot, unless the slot is held or was already switched.
+    pub(crate) fn try_switch(&self, from: usize) -> bool {
+        self.current
+            .compare_exchange(from, 1 - from, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Records that the callback finished `seq` in `slot`. The callback
+    /// calls it before `try_switch`, so a holder that sees the switch also
+    /// sees the finished Track as played.
+    pub(crate) fn mark_played(&self, slot: usize, seq: u64) {
+        self.played[slot].store(seq, Ordering::Release);
+    }
+
+    /// Whether `seq` in `slot` already played to its end.
+    pub(crate) fn has_played(&self, slot: usize, seq: u64) -> bool {
+        seq != 0 && self.played[slot].load(Ordering::Acquire) == seq
     }
 
     /// Wakes the decode thread. Real-time safe: an atomic swap and, at most
@@ -206,6 +277,26 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_slot_cannot_be_switched_by_the_callback() {
+        let shared = Shared::new(
+            OutputInfo {
+                sample_rate: 100,
+                channels: 1,
+            },
+            4,
+        );
+        {
+            let mut slots = shared.hold();
+            assert!(!shared.try_switch(0));
+            slots.switch();
+            assert_eq!(shared.current(), 1);
+            assert!(!shared.try_switch(1));
+        }
+        assert!(shared.try_switch(1));
+        assert_eq!(shared.current(), 0);
+    }
 
     #[test]
     fn record_round_trips_through_the_cell() {

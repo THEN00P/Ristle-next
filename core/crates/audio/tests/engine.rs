@@ -678,3 +678,50 @@ fn an_output_failure_pauses_and_is_reported() {
     assert!(!rig.output.is_running());
     assert_eq!(rig.output.opened(), 1);
 }
+
+#[test]
+fn a_failed_resampled_stream_still_plays_what_it_decoded() {
+    // 500 frames are less than one resampler chunk: all of them sit in the
+    // resampler when the stream fails, and must still play.
+    let rig = rig(48_000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 44_100, format(44_100, 2)).failing_at(500, "reset")),
+        0,
+    );
+    assert!(
+        rig.events
+            .wait_for(|e| matches!(e, EngineEvent::Failed { track: T1, .. }))
+    );
+    // The failure is reported after its audio is in the ring.
+
+    rig.engine.play().unwrap();
+
+    let left = render_left(&rig.output, 1000, 1000, 2);
+    let played = left.iter().rposition(|s| *s != 0.0).map_or(0, |i| i + 1);
+    // round(500 * 48 000 / 44 100)
+    assert_eq!(played, 544);
+}
+
+#[test]
+fn promoting_right_after_a_transition_does_not_go_back() {
+    let rig = rig(100, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.1, 10, format(100, 2))),
+        0,
+    );
+    rig.engine
+        .set_next(T2, Box::new(FakeStream::constant(0.2, 50, format(100, 2))))
+        .unwrap();
+    assert!(rig.engine.wait_until_next_buffered(WAIT));
+    rig.engine.play().unwrap();
+    rig.output.render(15);
+
+    // The finished Track may still sit in the other slot: it is not next.
+    assert!(!rig.engine.promote_next());
+    let state = rig.engine.state();
+    assert_eq!((state.current, state.next), (Some(T2), None));
+    let left = render_left(&rig.output, 5, 5, 2);
+    assert!(left.iter().all(|s| *s == 0.2));
+}

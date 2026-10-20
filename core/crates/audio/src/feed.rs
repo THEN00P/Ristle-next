@@ -113,7 +113,9 @@ enum Pulled {
     Data(Vec<f32>),
     Pending(Vec<f32>),
     Ended(Vec<f32>),
-    Failed(String),
+    /// The stream failed. The data is what the converter still held, which
+    /// plays before playback stops.
+    Failed(String, Vec<f32>),
 }
 
 impl Source {
@@ -130,7 +132,7 @@ impl Source {
     fn pull(&mut self, seek: Option<u64>, frames: u64, shared: &Shared) -> Pulled {
         if let Some(position_ms) = seek {
             if let Err(error) = self.stream.seek(position_ms) {
-                return Pulled::Failed(format!("seek to {position_ms} ms: {error}"));
+                return Pulled::Failed(format!("seek to {position_ms} ms: {error}"), Vec::new());
             }
             // The resampler's history belongs to the old position.
             self.converter = None;
@@ -141,7 +143,7 @@ impl Source {
             if let Some(mut old) = self.converter.take()
                 && let Err(error) = old.finish(&mut data)
             {
-                return Pulled::Failed(error);
+                return Pulled::Failed(error, data);
             }
             match Converter::new(
                 format,
@@ -149,11 +151,11 @@ impl Source {
                 usize::from(shared.info.channels),
             ) {
                 Ok(converter) => self.converter = Some(converter),
-                Err(error) => return Pulled::Failed(error),
+                Err(error) => return Pulled::Failed(error, data),
             }
         }
         let Some(converter) = self.converter.as_mut() else {
-            return Pulled::Failed("no converter".into());
+            return Pulled::Failed("no converter".into(), data);
         };
         let channels = usize::from(format.channels);
         self.input.resize(frames as usize * channels, 0.0);
@@ -162,15 +164,20 @@ impl Source {
                 let n = n.min(frames as usize);
                 match converter.push(&self.input[..n * channels], &mut data) {
                     Ok(()) => Pulled::Data(data),
-                    Err(error) => Pulled::Failed(error),
+                    Err(error) => Pulled::Failed(error, data),
                 }
             }
             Ok(Read::Pending) => Pulled::Pending(data),
             Ok(Read::End) => match converter.finish(&mut data) {
                 Ok(()) => Pulled::Ended(data),
-                Err(error) => Pulled::Failed(error),
+                Err(error) => Pulled::Failed(error, data),
             },
-            Err(error) => Pulled::Failed(error.to_string()),
+            Err(error) => {
+                // Keep what the resampler holds: it is decoded audio from
+                // before the failure.
+                let _ = converter.finish(&mut data);
+                Pulled::Failed(error.to_string(), data)
+            }
         }
     }
 }
@@ -286,7 +293,7 @@ impl Feed {
     /// The slot the decode thread should read next, if any, and the earliest
     /// time a waiting slot wants to be retried.
     fn next_work(&self, shared: &Shared, now: Instant) -> (Option<usize>, Option<Instant>) {
-        let current = shared.current.load(Ordering::Acquire);
+        let current = shared.current();
         let mut retry = None;
         for slot in [current, 1 - current] {
             let feed_slot = &self.slots[slot];
@@ -393,7 +400,8 @@ fn fill(control: &Control) -> Fill {
                 feed_slot.stream_ended = true;
                 None
             }
-            Pulled::Failed(error) => {
+            Pulled::Failed(error, data) => {
+                feed_slot.pending.extend_from_slice(&data);
                 tracing::warn!(slot, %error, "audio stream failed");
                 feed.fail(shared, slot, error)
             }
@@ -431,7 +439,7 @@ fn handle_notes(control: &Control, notes: &mut rtrb::Consumer<Note>) {
             }
             Note::Stopped { record } => {
                 let feed = lock(&control.feed);
-                let current = shared.current.load(Ordering::Acquire);
+                let current = shared.current();
                 if feed.slots[current].record.seq == record.seq {
                     shared.playing.store(false, Ordering::Release);
                     lock(&control.output).pause();
@@ -440,7 +448,7 @@ fn handle_notes(control: &Control, notes: &mut rtrb::Consumer<Note>) {
             Note::Ended { record } => {
                 {
                     let feed = lock(&control.feed);
-                    let current = shared.current.load(Ordering::Acquire);
+                    let current = shared.current();
                     // Stop output unless a command already moved on.
                     if feed.slots[current].record.seq == record.seq
                         && shared.ended.load(Ordering::Acquire) == record.seq

@@ -122,7 +122,7 @@ impl RenderState {
         // only keeps a misbehaving control side from spinning the callback.
         let mut switches = 0;
         while done < frames && switches < 4 {
-            let current = shared.current.load(Ordering::Acquire);
+            let current = shared.current();
             let record = self.view(current);
             if record.token.is_none() || self.ended == record.seq {
                 break;
@@ -163,11 +163,8 @@ impl RenderState {
             let other = 1 - current;
             let next = self.view(other);
             if next.token.is_some() && !next.failed && next.seq != self.played[other] {
-                if shared
-                    .current
-                    .compare_exchange(current, other, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
+                shared.mark_played(current, record.seq);
+                if shared.try_switch(current) {
                     self.played[current] = record.seq;
                     shared.bump_sequence();
                     let _ = self.notes.push(Note::Transitioned {

@@ -126,7 +126,12 @@ fn run(
     };
     while let Ok(command) = commands.recv() {
         let result = match command {
-            Command::Pause => stream.pause(),
+            Command::Pause => match stream.pause() {
+                // Some ALSA hardware cannot pause. The stream keeps
+                // running and the engine renders silence while paused.
+                Err(error) if error.kind() == ErrorKind::UnsupportedOperation => Ok(()),
+                result => result,
+            },
             Command::Resume => stream.play(),
             Command::Close => break,
         };
@@ -168,8 +173,7 @@ fn open_stream(
         SampleFormat::U8 => build::<u8>(&device, &config, render, errors),
         other => Err(OutputError::Unsupported(format!("sample format {other}"))),
     }?;
-    // Some hosts start a stream as soon as it is built. Ours start paused.
-    stream.pause().map_err(backend)?;
+    // cpal 0.18 returns built streams stopped, which is how ours start.
     Ok((stream, info))
 }
 

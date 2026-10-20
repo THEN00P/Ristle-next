@@ -24,6 +24,12 @@ ristle-protocol = { path = "crates/protocol" }
 ristle-party = { path = "crates/party" }
 ristle-app = { path = "crates/app" }
 
+# External crates.
+rtrb = "0.4"
+rubato = "0.16"
+thiserror = "2"
+tracing = "0.1"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 unsafe_code = "deny"

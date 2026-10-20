@@ -22,6 +22,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use ndk::audio::{
     AudioCallbackResult, AudioContentType, AudioDirection, AudioError, AudioFormat,
@@ -29,6 +30,12 @@ use ndk::audio::{
 };
 
 use super::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
+
+/// Reopen attempts after a disconnect before the failure is reported: about
+/// 10 s with the delays below.
+const REOPEN_ATTEMPTS: u32 = 10;
+const FIRST_REOPEN_DELAY: Duration = Duration::from_millis(100);
+const LONGEST_REOPEN_DELAY: Duration = Duration::from_secs(2);
 
 /// The default output route, through AAudio.
 #[derive(Default)]
@@ -159,11 +166,33 @@ fn run(
         }
     };
     let mut running = false;
-    while let Ok(command) = commands.recv() {
+    // A disconnect can arrive before the new route is ready, so a failed
+    // reopen is retried with backoff before it is reported. A later Resume
+    // tries again even after that.
+    let mut retry: Option<(Instant, Duration, u32)> = None;
+    loop {
+        let command = match retry {
+            Some((at, _, _)) => {
+                match commands.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                    Ok(command) => command,
+                    Err(mpsc::RecvTimeoutError::Timeout) => Command::Reopen,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            None => match commands.recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            },
+        };
         let result = match command {
             Command::Pause => {
                 running = false;
                 stream.as_ref().map_or(Ok(()), AudioStream::request_pause)
+            }
+            Command::Resume if stream.is_none() => {
+                running = true;
+                retry = Some((Instant::now(), FIRST_REOPEN_DELAY, 0));
+                Ok(())
             }
             Command::Resume => {
                 running = true;
@@ -176,15 +205,25 @@ fn run(
                 match open_stream(settings, &render, &errors, &reopen) {
                     Ok((new, info)) => {
                         tracing::info!(rate = info.sample_rate, "audio output reopened");
+                        retry = None;
+                        let started = if running { new.request_start() } else { Ok(()) };
                         stream = Some(new);
-                        if running {
-                            stream.as_ref().map_or(Ok(()), AudioStream::request_start)
-                        } else {
-                            Ok(())
-                        }
+                        started
                     }
                     Err(error) => {
-                        errors.report(error);
+                        let (_, delay, attempts) =
+                            retry.unwrap_or((Instant::now(), FIRST_REOPEN_DELAY, 0));
+                        if attempts + 1 >= REOPEN_ATTEMPTS {
+                            retry = None;
+                            errors.report(error);
+                        } else {
+                            tracing::warn!(%error, attempt = attempts + 1, "audio output reopen failed");
+                            retry = Some((
+                                Instant::now() + delay,
+                                (delay * 2).min(LONGEST_REOPEN_DELAY),
+                                attempts + 1,
+                            ));
+                        }
                         continue;
                     }
                 }

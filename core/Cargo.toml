@@ -25,6 +25,7 @@ ristle-party = { path = "crates/party" }
 ristle-app = { path = "crates/app" }
 
 # External crates.
+cpal = "0.18.2"
 rtrb = "0.4"
 rubato = "0.16"
 thiserror = "2"

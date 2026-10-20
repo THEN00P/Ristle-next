@@ -21,6 +21,10 @@ rubato.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Android plays through AAudio directly (ADR 0004 amendment, point 6).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+cpal.workspace = true
+
 [dev-dependencies]
 ristle-audio = { path = ".", features = ["test-support"] }
 

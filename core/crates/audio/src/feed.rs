@@ -239,6 +239,7 @@ impl Feed {
 
     /// Whether `slot` holds audio ready to play: at least half a ring, or the
     /// whole Track.
+    #[cfg(feature = "test-support")]
     pub(crate) fn buffered(&self, shared: &Shared, slot: usize) -> bool {
         let record = self.slots[slot].record;
         let ring = &shared.slots[slot].ring;
@@ -426,6 +427,14 @@ fn handle_notes(control: &Control, notes: &mut rtrb::Consumer<Note>) {
                     control
                         .observer
                         .on_event(EngineEvent::Transitioned { from, to });
+                }
+            }
+            Note::Stopped { record } => {
+                let feed = lock(&control.feed);
+                let current = shared.current.load(Ordering::Acquire);
+                if feed.slots[current].record.seq == record.seq {
+                    shared.playing.store(false, Ordering::Release);
+                    lock(&control.output).pause();
                 }
             }
             Note::Ended { record } => {

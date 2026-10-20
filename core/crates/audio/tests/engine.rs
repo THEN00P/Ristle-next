@@ -476,6 +476,10 @@ fn a_failed_stream_plays_what_it_decoded_then_stops_without_moving_on() {
     assert_eq!(state.current, Some(T1));
     assert_eq!(state.error.as_deref(), Some("connection reset"));
     assert!(!state.ended);
+    // Output stops once the audio before the failure has played.
+    assert!(until(
+        || !rig.engine.state().playing && !rig.output.is_running()
+    ));
 }
 
 #[test]
@@ -547,10 +551,12 @@ fn a_volume_change_during_playback_ramps() {
     assert!(rig.output.render(10).iter().all(|s| *s == 1.0));
 
     rig.engine.set_volume(0.0).unwrap();
-    let ramp = rig.output.render(20);
+    // Callbacks shorter than the 10 ms ramp still finish it in 10 ms.
+    let ramp: Vec<f32> = (0..10).flat_map(|_| rig.output.render(2)).collect();
     assert!(ramp.windows(2).all(|w| w[1] <= w[0]));
     assert!(ramp[0] < 1.0 && ramp[0] > 0.8);
-    assert_eq!(ramp[19], 0.0);
+    assert!(ramp[9] < 1e-6);
+    assert!(ramp[10..].iter().all(|s| *s == 0.0));
     assert!(rig.engine.set_volume(1.5).is_err());
 }
 

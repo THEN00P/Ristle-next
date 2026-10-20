@@ -23,6 +23,8 @@ pub(crate) enum Note {
     },
     /// Playback reached the end of `record` and nothing followed.
     Ended { record: Record },
+    /// Playback reached the point where `record`'s stream failed.
+    Stopped { record: Record },
 }
 
 /// Capacity of the note queue. A note needs a Track change, and every Track
@@ -72,6 +74,10 @@ pub(crate) struct RenderState {
     /// `seq` of the record that ended, so the end is reported once.
     ended: u64,
     gain: f32,
+    /// The gain being ramped to, and the per-frame step that gets there in
+    /// `ramp_frames`, fixed when the ramp starts.
+    ramp_target: f32,
+    ramp_step: f32,
     /// Whether the previous callback produced audio. A gain change ramps only
     /// then; otherwise it applies at once.
     audible: bool,
@@ -88,6 +94,8 @@ impl RenderState {
             played: [0; 2],
             ended: 0,
             gain: 1.0,
+            ramp_target: 1.0,
+            ramp_step: 0.0,
             audible: false,
             ramp_frames,
         }
@@ -120,6 +128,12 @@ impl RenderState {
                 break;
             }
             let ring = &shared.slots[current].ring;
+            // A restart publishes its record before it discards the old
+            // audio. Seeing the record, drop that audio here rather than
+            // play it under the new position.
+            if ring.read_position() < record.start {
+                ring.discard_to(record.start);
+            }
             let limit = record
                 .end
                 .map_or(u64::MAX, |end| end.saturating_sub(ring.read_position()));
@@ -138,7 +152,11 @@ impl RenderState {
                 break;
             }
             if record.failed {
-                // The decode thread already reported the failure.
+                // The decode thread already reported the failure; it stops
+                // output now that the audio before it has played.
+                self.ended = record.seq;
+                let _ = self.notes.push(Note::Stopped { record });
+                shared.wake_decoder();
                 break;
             }
             switches += 1;
@@ -178,19 +196,66 @@ impl RenderState {
             self.gain = target;
         }
         if self.gain == target {
+            self.ramp_target = target;
             if target != 1.0 {
                 out.iter_mut().for_each(|sample| *sample *= target);
             }
             return;
         }
-        let step = (target - self.gain) / self.ramp_frames as f32;
+        if self.ramp_target != target {
+            self.ramp_target = target;
+            self.ramp_step = (target - self.gain) / self.ramp_frames as f32;
+        }
         for frame in out.chunks_exact_mut(channels) {
-            if (target - self.gain).abs() <= step.abs() {
+            if (target - self.gain).abs() <= self.ramp_step.abs() {
                 self.gain = target;
             } else {
-                self.gain += step;
+                self.gain += self.ramp_step;
             }
             frame.iter_mut().for_each(|sample| *sample *= self.gain);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TrackToken;
+    use crate::output::OutputInfo;
+
+    #[test]
+    fn a_published_restart_never_plays_the_audio_it_replaces() {
+        let shared = Arc::new(Shared::new(
+            OutputInfo {
+                sample_rate: 100,
+                channels: 1,
+            },
+            16,
+        ));
+        let (notes, _notes_out) = rtrb::RingBuffer::new(NOTE_CAPACITY);
+        let mut state = RenderState::new(Arc::clone(&shared), notes);
+        let slot = &shared.slots[0];
+        let record = |seq, start, start_frame| Record {
+            seq,
+            token: Some(TrackToken(1)),
+            start,
+            start_frame,
+            end: None,
+            failed: false,
+        };
+        slot.record.publish(record(1, 0, 0));
+        slot.ring.write(&[1.0; 6]);
+        shared.playing.store(true, Ordering::Release);
+        let mut out = [0.0; 2];
+        state.render(&mut out);
+        assert_eq!(out, [1.0, 1.0]);
+
+        // A seek published its record; the control side has not discarded
+        // the old audio yet when the callback runs.
+        slot.record.publish(record(2, 6, 500));
+        slot.ring.write(&[2.0; 3]);
+        let mut out = [0.0; 4];
+        state.render(&mut out);
+        assert_eq!(out, [2.0, 2.0, 2.0, 0.0]);
     }
 }

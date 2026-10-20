@@ -26,8 +26,10 @@ pub enum Current {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueueState {
     /// The collection: history, the entry at the cursor, and what follows.
-    /// Queued Requests that a direct selection passed stay here as history,
-    /// with [`Origin::Request`].
+    /// Queued Requests that a direct selection passed are moved here, with
+    /// [`Origin::Request`], so that Previous reaches them. Previous can then
+    /// leave one at or after the cursor, where it plays again on Next as the
+    /// history it is.
     pub collection: Vec<QueueEntry>,
     /// Index into `collection` of the entry that is playing or last played.
     /// `None` before the collection has started.
@@ -281,6 +283,27 @@ mod tests {
         let queue = CanonicalQueue::restore(state).unwrap();
         assert_eq!(queue.current().unwrap().id, EntryId(2));
         assert_eq!(CanonicalQueue::new().current(), None);
+    }
+
+    // Previous after a direct selection parks the cursor on a passed request,
+    // or leaves passed requests after the cursor. Both are valid history
+    // (legacy `QueueStateRoundTripsWithPreservedRequestAfterCursor`).
+    #[test]
+    fn restore_accepts_passed_requests_at_and_after_the_cursor() {
+        let at_cursor = QueueState {
+            cursor: Some(1),
+            current: Some(Current::AtCursor),
+            ..valid_state()
+        };
+        let queue = CanonicalQueue::restore(at_cursor).unwrap();
+        assert_eq!(queue.current().unwrap().origin, Origin::Request);
+
+        let after_cursor = QueueState {
+            cursor: Some(0),
+            current: Some(Current::AtCursor),
+            ..valid_state()
+        };
+        assert!(CanonicalQueue::restore(after_cursor).is_ok());
     }
 
     #[test]

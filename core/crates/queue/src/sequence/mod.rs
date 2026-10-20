@@ -8,7 +8,7 @@
 //! only a position (`docs/plugin-api/walkthrough.md`, "Spotify Liked Songs:
 //! positional handles"). An unresolved slot never names a Track.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt;
 
 use ristle_domain::{Addressing, CollectionDescriptor, ConnectionId, PlaylistId, TrackRef};
@@ -130,15 +130,17 @@ pub struct SequenceState {
     pub order: Vec<SlotId>,
     /// Index into `order` of the slot playing or last played. `None` before
     /// the sequence starts, and after a restart for Repeat Queue.
+    ///
+    /// `order[..=cursor]` is also what played in this pass, occurrence by
+    /// occurrence, which a re-base consults so that an occurrence that turns
+    /// up again is not played twice. A separate set of Tracks would merge
+    /// duplicate occurrences.
     pub cursor: Option<usize>,
     /// Exclusive index into `order` up to which slots have been materialized
     /// into the Canonical Queue. Past the cursor when there is one.
     pub materialized_end: usize,
     /// The seed of the shuffle, while shuffled.
     pub shuffle: Option<u64>,
-    /// Tracks played in this pass, so that a slot that turns up again after
-    /// a re-base is skipped.
-    pub played: BTreeSet<TrackRef>,
     /// Increases with every change that invalidates a plan made earlier,
     /// such as a hydration plan made before a shuffle.
     pub revision: u64,
@@ -271,7 +273,6 @@ mod tests {
             cursor: Some(0),
             materialized_end: 1,
             shuffle: None,
-            played: BTreeSet::new(),
             revision: 0,
             next_slot: SlotId(count),
         }
@@ -324,8 +325,6 @@ mod tests {
         state.cursor = Some(1);
         state.materialized_end = 3;
         state.shuffle = Some(42);
-        state.played.insert(track(2));
-        state.played.insert(track(0));
         state.revision = 7;
 
         let sequence = Sequence::restore(state.clone()).unwrap();

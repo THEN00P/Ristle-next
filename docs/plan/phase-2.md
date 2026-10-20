@@ -251,7 +251,7 @@ pub struct SequenceDescriptor { pub id: SequenceId, pub title: String, pub opene
                                 pub sources: Vec<SequenceSource> }
 pub struct SequenceState { pub descriptor: SequenceDescriptor, pub slots: Vec<Slot>,  // natural order
                            pub order: Vec<SlotId>, pub cursor: Option<usize>, pub materialized_end: usize,
-                           pub shuffle: Option<u64>, pub played: BTreeSet<TrackRef>,
+                           pub shuffle: Option<u64>,  // order[..=cursor] is what played this pass
                            pub revision: u64, pub next_slot: SlotId }
 impl Sequence {
     pub fn start(descriptor: SequenceDescriptor, slots: Vec<Slot>, at: StartAt, shuffle: Option<u64>) -> Result<Self, InvalidSequence>;

@@ -534,6 +534,7 @@ name = "ristle-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "ndk",
  "ristle-audio",
  "ristle-domain",
  "ristle-media",

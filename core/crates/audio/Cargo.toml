@@ -25,6 +25,10 @@ tracing.workspace = true
 [target.'cfg(not(target_os = "android"))'.dependencies]
 cpal.workspace = true
 
+[target.'cfg(target_os = "android")'.dependencies]
+# AAudio's content type and usage need API level 28 (Android 9).
+ndk = { workspace = true, features = ["audio", "api-level-28"] }
+
 [dev-dependencies]
 ristle-audio = { path = ".", features = ["test-support"] }
 

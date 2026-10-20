@@ -26,6 +26,7 @@ ristle-app = { path = "crates/app" }
 
 # External crates.
 cpal = "0.18.2"
+ndk = { version = "0.9", default-features = false }
 rtrb = "0.4"
 rubato = "0.16"
 thiserror = "2"

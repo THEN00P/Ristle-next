@@ -276,14 +276,15 @@ impl<D: Demuxer> DecodedStream<D> {
             Some(position) => position,
             None => tb.to_frames(self.anchor.unwrap_or(0), rate),
         };
-        self.position = Some(position + frames as i64);
+        self.position = Some(position.saturating_add(frames as i64));
         if discard {
             return;
         }
 
         // Window on the timeline, in output frames.
-        let origin = tb.to_frames(self.origin.unwrap_or(0), rate)
-            + i64::try_from(self.pre_skip * u64::from(rate) / 48_000).unwrap_or(i64::MAX);
+        let origin = tb.to_frames(self.origin.unwrap_or(0), rate).saturating_add(
+            i64::try_from(self.pre_skip * u64::from(rate) / 48_000).unwrap_or(i64::MAX),
+        );
         let start = origin.saturating_add(ms_to_frames(self.target_ms, rate));
         let end = self.window.and_then(|w| w.length).map(|length| {
             origin.saturating_add(tb.to_frames(i64::try_from(length).unwrap_or(i64::MAX), rate))
@@ -431,5 +432,98 @@ impl<D: Demuxer> MediaStream for DecodedStream<D> {
         self.target_ms = position_ms;
         self.ended = matches!(seeked, Seeked::PastEnd);
         self.prime()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::decode::{DecoderProvider, Support};
+    use crate::demux::DemuxedPacket;
+    use crate::{CodecDescription, StreamFormat};
+
+    /// Packets with whatever timestamps a malformed container claims.
+    struct Packets {
+        pts: Vec<i64>,
+        codec: CodecDescription,
+    }
+
+    impl Demuxer for Packets {
+        fn codec(&self) -> &CodecDescription {
+            &self.codec
+        }
+        fn time_base(&self) -> TimeBase {
+            TimeBase {
+                numer: 1,
+                denom: 48_000,
+            }
+        }
+        fn window(&self) -> Option<Window> {
+            None
+        }
+        fn next_packet(&mut self) -> Result<Demuxed, Error> {
+            if self.pts.is_empty() {
+                return Ok(Demuxed::End);
+            }
+            let pts = self.pts.remove(0);
+            Ok(Demuxed::Packet(DemuxedPacket {
+                data: Box::new([0]),
+                pts,
+                dur: 10,
+                trim_start: 0,
+                trim_end: 0,
+            }))
+        }
+        fn seek(&mut self, _: i64) -> Result<Seeked, Error> {
+            Ok(Seeked::At)
+        }
+    }
+
+    /// Ten frames of silence per packet.
+    struct Silence;
+
+    impl Decoder for Silence {
+        fn decode(&mut self, _: &Packet<'_>, out: &mut Vec<f32>) -> Result<(), Error> {
+            out.extend_from_slice(&[0.0; 10]);
+            Ok(())
+        }
+        fn format(&self) -> Option<StreamFormat> {
+            Some(StreamFormat {
+                sample_rate: 48_000,
+                channels: 1,
+            })
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl DecoderProvider for Silence {
+        fn name(&self) -> &'static str {
+            "silence"
+        }
+        fn supports(&self, _: &CodecDescription) -> Support {
+            Support::Full
+        }
+        fn open(&self, _: &CodecDescription) -> Result<Box<dyn Decoder>, Error> {
+            Ok(Box::new(Silence))
+        }
+    }
+
+    #[test]
+    fn timestamps_at_the_edge_of_the_timeline_do_not_overflow() {
+        let mut registry = DecoderRegistry::empty();
+        registry.register(Arc::new(Silence));
+        let mut codec = CodecDescription::new(Codec::Pcm);
+        codec.sample_rate = Some(48_000);
+        codec.channels = Some(1);
+        let demuxer = Packets {
+            pts: vec![i64::MAX - 5, i64::MAX, i64::MIN],
+            codec,
+        };
+        let mut stream = DecodedStream::open(demuxer, &registry).unwrap();
+        let mut out = [0f32; 64];
+        while stream.read(&mut out).unwrap() != Read::End {}
+        stream.seek(u64::MAX).unwrap();
     }
 }

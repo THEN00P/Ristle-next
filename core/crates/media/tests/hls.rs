@@ -752,12 +752,7 @@ fn ts_segments_may_split_frames() {
     let harness = Harness::new(4096);
     let ts = std::fs::read(fixture("track-aac.ts")).unwrap();
     let packets = ts.len() / 188;
-    let cuts = [
-        0,
-        (packets / 3 + 1) * 188,
-        packets * 2 / 3 * 188,
-        ts.len(),
-    ];
+    let cuts = [0, (packets / 3 + 1) * 188, packets * 2 / 3 * 188, ts.len()];
     let mut playlist = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:1\n");
     for (index, range) in cuts.windows(2).enumerate() {
         harness.fetch.put(

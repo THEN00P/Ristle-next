@@ -43,13 +43,32 @@ pub enum Location {
     },
 }
 
+/// A URL without its query and fragment, which may carry signatures or
+/// tokens (signed CDN URLs).
+fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            let had_secret = parsed.query().is_some() || parsed.fragment().is_some();
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            let _ = parsed.set_password(None);
+            if had_secret {
+                format!("{parsed}?<redacted>")
+            } else {
+                parsed.to_string()
+            }
+        }
+        Err(_) => "<unparsable URL>".to_owned(),
+    }
+}
+
 impl std::fmt::Debug for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             // Header values may be credentials.
             Self::Http { url, headers } => f
                 .debug_struct("Http")
-                .field("url", url)
+                .field("url", &redact_url(url))
                 .field(
                     "headers",
                     &headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),
@@ -244,5 +263,23 @@ impl Demuxer for ProgressiveDemuxer {
         self.inner
             .seek(ts)
             .map_err(|error| self.remote.take_error().unwrap_or(error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_hides_url_tokens_and_header_values() {
+        let location = Location::Http {
+            url: "https://user:pw@cdn.example/audio.ogg?sig=SECRET&exp=1".into(),
+            headers: vec![("Authorization".into(), "Bearer TOKEN".into())],
+        };
+        let shown = format!("{location:?}");
+        assert!(shown.contains("cdn.example/audio.ogg"), "{shown}");
+        for secret in ["SECRET", "TOKEN", "pw@"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
     }
 }

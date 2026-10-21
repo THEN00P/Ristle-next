@@ -194,11 +194,13 @@ impl Decryptor {
     /// The end of the resource: removes PKCS#7 padding.
     pub(crate) fn finish(mut self, out: &mut Vec<u8>) -> Result<(), Error> {
         if self.mode != AesMode::CbcPkcs7 {
+            // Unpadded CBC is whole blocks: a partial one means a truncated
+            // or malformed resource, not a shorter stream.
             if !self.held.is_empty() {
-                tracing::warn!(
-                    bytes = self.held.len(),
-                    "dropping a partial CBC block at the end"
-                );
+                return Err(Error::malformed(
+                    "AES-CBC resource",
+                    format!("ends {} bytes into a block", self.held.len()),
+                ));
             }
             return Ok(());
         }
@@ -323,6 +325,16 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn truncated_cbc_is_an_error() {
+        let params = params(AesMode::Cbc);
+        let cipher = encrypt(&params, &[3u8; 64]);
+        let (mut decryptor, _) = Decryptor::at(&params, 0).unwrap();
+        let mut out = Vec::new();
+        decryptor.push(&cipher[..60], &mut out).unwrap();
+        assert!(decryptor.finish(&mut out).is_err());
     }
 
     #[test]

@@ -548,6 +548,11 @@ impl Seek for RemoteSource {
             .filter(|t| *t >= self.skip)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
         s.pos = target;
+        // After a failed fetch nothing is fetching: a seek is the retry,
+        // even within the window.
+        if s.failed.is_some() {
+            self.remote.request_restart(&mut s, target);
+        }
         Ok(target - self.skip)
     }
 }
@@ -615,6 +620,83 @@ mod tests {
                 Some(self.data.len() as u64),
             ))
         }
+    }
+
+    /// Fails the first body after one chunk; later bodies serve normally.
+    struct FailsOnce {
+        data: Bytes,
+        opens: AtomicUsize,
+    }
+
+    struct FailingBody {
+        chunk: Option<Bytes>,
+    }
+
+    #[async_trait]
+    impl FeedBody for FailingBody {
+        async fn next(&mut self) -> Result<Option<Bytes>, Error> {
+            match self.chunk.take() {
+                Some(chunk) => Ok(Some(chunk)),
+                None => Err(Error::malformed("test", "connection reset")),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Feed for FailsOnce {
+        async fn open(&self, offset: u64) -> Result<(Box<dyn FeedBody>, Option<u64>), Error> {
+            let len = Some(self.data.len() as u64);
+            if self.opens.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok((
+                    Box::new(FailingBody {
+                        chunk: Some(self.data.slice(..1000)),
+                    }),
+                    len,
+                ));
+            }
+            let data = self.data.slice(offset as usize..);
+            Ok((
+                Box::new(Body {
+                    data,
+                    stall: false,
+                    sent: false,
+                }),
+                len,
+            ))
+        }
+    }
+
+    #[test]
+    fn a_seek_after_a_failure_retries_even_inside_the_window() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 249) as u8).collect();
+        let feed = Arc::new(FailsOnce {
+            data: Bytes::from(data.clone()),
+            opens: AtomicUsize::new(0),
+        });
+        let remote = Remote::new();
+        let task = runtime.spawn(remote.clone().run(feed, None));
+        let mut source = RemoteSource::new(remote.clone(), 0);
+        let mut all = Vec::new();
+        let mut buf = [0u8; 300];
+        let error = loop {
+            match source.read(&mut buf) {
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(all.len(), 1000, "{error}");
+        assert!(remote.take_error().is_some());
+        // Back to the start, which is inside the window.
+        source.seek(SeekFrom::Start(0)).unwrap();
+        let mut again = Vec::new();
+        source.read_to_end(&mut again).unwrap();
+        assert_eq!(again, data);
+        remote.close();
+        task.abort();
     }
 
     #[test]

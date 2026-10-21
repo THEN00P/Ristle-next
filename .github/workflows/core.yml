@@ -68,3 +68,62 @@ jobs:
           manifest-path: core/Cargo.toml
           command: check
           arguments: --all-features
+
+  bindings:
+    # ADR 0001: Kotlin and Swift bindings generated in library mode from an
+    # unstripped build, compiled, and run against the real library. No app
+    # builds; phase 3 and phase 6 build those.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Generate
+        run: tools/check-bindings.sh generate
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Kotlin compiler
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --output kotlinc.zip \
+            https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          echo "81f0264c9073b5cbbdb3ff8418cf2c5dac076879fc156fa1a6462f5a5acc4420  kotlinc.zip" | sha256sum --check
+          unzip -q kotlinc.zip
+          echo "$PWD/kotlinc/bin" >> "$GITHUB_PATH"
+      - name: Kotlin
+        run: tools/check-bindings.sh kotlin
+      - name: Swift (Swift 5 module)
+        run: tools/check-bindings.sh swift
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bindings
+          path: core/target/bindings-check/generated
+          retention-days: 7
+
+  android:
+    # The facade cross-compiles for Android (M1). Full Android builds start
+    # with phase 3.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: android
+      - name: cargo-ndk
+        run: cargo install --locked cargo-ndk@4.1.2
+      - name: cargo ndk check
+        # The runner's ANDROID_NDK_ROOT names its NDK.
+        run: cargo ndk -t arm64-v8a check --locked -p ristle-ffi

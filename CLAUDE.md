@@ -125,3 +125,14 @@ before relying on it, and update it when you learn something new.
   exec bit is lost), and run it with `adb shell`. AAudio works from a shell
   binary, so no app is needed. The x86_64 Android target is installed for
   the pinned toolchain.
+- **Merging parallel workstreams (coordinator).** Workstreams append to
+  `core/Cargo.toml` and each regenerates `Cargo.lock`, so every merge leaves
+  the next branch conflicting there. Resolve it by taking the union of the
+  dependency lines and `main`'s lock plus `cargo metadata`, and keep both
+  sides of `CLAUDE.md` notes. Two workstreams once added a CI job with the same
+  name: git merged them cleanly, but the duplicate YAML key made `core.yml`
+  invalid, so no CI ran on `main` (the runs show **zero jobs**, and PRs report
+  "no checks"). Treat "no checks reported" as a failure, never as green, and
+  give CI jobs workstream prefixes. For stacked PRs, merge bottom-up with
+  merge commits and retarget the next PR to `main` before deleting its base
+  branch.

@@ -497,6 +497,9 @@ fn a_seek_into_fmp4_fetches_only_from_the_target_sample() {
                 with_priming(hls_file("fmp4/init.mp4")),
             );
         }
+        // Hold seg0 after its first chunk, so the loader started by opening
+        // fetches nothing else and the log after the seek is the seek's own.
+        let _gate = harness.fetch.gate(&format!("{BASE}{prefix}seg0.m4s"));
         let mut stream = harness.open(&format!("{BASE}{prefix}index.m3u8"));
         let before = harness.fetch.requests().len();
         stream.seek(2_500).unwrap();

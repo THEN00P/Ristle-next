@@ -39,6 +39,8 @@ struct Header {
     codec: Codec,
     /// ADTS: the AudioSpecificConfig the header implies.
     asc: Option<[u8; 2]>,
+    /// A frame the host does not decode; it is skipped whole.
+    unsupported: bool,
 }
 
 const ADTS_RATES: [u32; 13] = [
@@ -79,6 +81,9 @@ fn adts_header(b: &[u8]) -> Option<Header> {
         },
         codec: Codec::Aac,
         asc: Some(asc),
+        // Several raw data blocks per frame (rare) need splitting, and with
+        // CRC their header carries block positions: not supported.
+        unsupported: blocks > 1,
     })
 }
 
@@ -146,6 +151,7 @@ fn mpeg_audio_header(b: &[u8]) -> Option<Header> {
         channels,
         codec,
         asc: None,
+        unsupported: false,
     })
 }
 
@@ -274,6 +280,11 @@ impl Framer {
         }
         self.drop_front(at);
         self.in_sync = true;
+        if header.unsupported {
+            tracing::warn!("skipping an ADTS frame with several raw data blocks");
+            self.drop_front(header.len);
+            return self.next_packet(end);
+        }
 
         self.check_codec(&header)?;
         let pts = self.frame_pts(header.rate);
@@ -469,6 +480,19 @@ pub(crate) mod tests {
             packets[1].pts - packets[0].pts,
             (PTS_WRAP * 44_100 / 90_000) - ((PTS_WRAP - 1920) * 44_100 / 90_000)
         );
+    }
+
+    #[test]
+    fn frames_with_several_raw_data_blocks_are_skipped() {
+        let mut multi = adts_frame(&[9; 30]);
+        multi[6] |= 0x01; // two raw data blocks
+        let mut framer = Framer::new(EsKind::Adts);
+        framer.push(&adts_frame(&[1; 30]), None);
+        framer.push(&multi, None);
+        framer.push(&adts_frame(&[2; 30]), None);
+        let packets = drain(&mut framer, true);
+        let firsts: Vec<u8> = packets.iter().map(|p| p.data[0]).collect();
+        assert_eq!(firsts, vec![1, 2]);
     }
 
     #[test]

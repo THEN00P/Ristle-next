@@ -138,6 +138,8 @@ pub(crate) struct TsDemuxer {
     continuity: std::collections::HashMap<u16, u8>,
     /// Why the PMT offers nothing playable, if it does not.
     unplayable: Option<Error>,
+    /// The last packet was parsed at a known packet boundary.
+    in_sync: bool,
     ended: bool,
 }
 
@@ -153,6 +155,7 @@ impl TsDemuxer {
             ready: std::collections::VecDeque::new(),
             continuity: std::collections::HashMap::new(),
             unplayable: None,
+            in_sync: false,
             ended: false,
         }
     }
@@ -170,23 +173,31 @@ impl TsDemuxer {
     /// Feeds TS bytes in any chunking.
     pub(crate) fn push(&mut self, data: &[u8]) -> Result<(), Error> {
         self.carry.extend_from_slice(data);
+        self.parse_carry(false)
+    }
+
+    /// Parses the whole packets in `carry`. Out of sync, a candidate packet
+    /// is trusted only once the next one starts 188 bytes later; at the end
+    /// of input (`last`) there is no next one to wait for.
+    fn parse_carry(&mut self, last: bool) -> Result<(), Error> {
         let mut at = 0;
         while at + PACKET <= self.carry.len() {
-            if self.carry[at] != SYNC
-                || self
-                    .carry
-                    .get(at + PACKET)
-                    .is_some_and(|&next| next != SYNC)
-            {
+            let next = self.carry.get(at + PACKET).copied();
+            if self.carry[at] != SYNC || next.is_some_and(|next| next != SYNC) {
                 // Lost sync: find the next byte that starts two packets.
                 at += 1;
+                self.in_sync = false;
                 continue;
+            }
+            if next.is_none() && !self.in_sync && !last {
+                break;
             }
             let packet: [u8; PACKET] = match self.carry[at..at + PACKET].try_into() {
                 Ok(packet) => packet,
                 Err(_) => break,
             };
             self.packet(&packet)?;
+            self.in_sync = true;
             at += PACKET;
         }
         self.carry.drain(..at);
@@ -194,8 +205,9 @@ impl TsDemuxer {
     }
 
     /// No more bytes: the last frame no longer waits for the next header.
-    pub(crate) fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) -> Result<(), Error> {
         self.ended = true;
+        self.parse_carry(true)
     }
 
     /// Restarts after a gap in the input (an HLS discontinuity, a seek):
@@ -203,6 +215,7 @@ impl TsDemuxer {
     pub(crate) fn discontinuity(&mut self) {
         self.carry.clear();
         self.ready.clear();
+        self.in_sync = false;
         self.continuity.clear();
         self.ended = false;
         if let Some(audio) = &mut self.audio {
@@ -295,7 +308,12 @@ impl TsDemuxer {
     }
 
     fn on_pat(&mut self, section: &[u8]) {
-        if section.first() != Some(&0x00) || section.len() < 12 || !crc_ok(section) {
+        // current_next_indicator: a table announced for later is not applied.
+        if section.first() != Some(&0x00)
+            || section.len() < 12
+            || section[5] & 0x01 == 0
+            || !crc_ok(section)
+        {
             return;
         }
         let programs = &section[8..section.len() - 4];
@@ -306,7 +324,11 @@ impl TsDemuxer {
     }
 
     fn on_pmt(&mut self, section: &[u8]) -> Result<(), Error> {
-        if section.first() != Some(&0x02) || section.len() < 16 || !crc_ok(section) {
+        if section.first() != Some(&0x02)
+            || section.len() < 16
+            || section[5] & 0x01 == 0
+            || !crc_ok(section)
+        {
             return Ok(());
         }
         let info = (usize::from(section[10] & 0x0f) << 8) | usize::from(section[11]);
@@ -446,7 +468,7 @@ impl<R: Read + Seek + Send> TsFileDemuxer<R> {
             };
             if read == 0 {
                 self.eof = true;
-                self.ts.finish();
+                self.ts.finish()?;
             } else {
                 self.ts.push(&self.chunk[..read])?;
             }
@@ -628,7 +650,7 @@ pub(crate) mod tests {
                 packets.push(packet);
             }
         }
-        demuxer.finish();
+        demuxer.finish().unwrap();
         while let Some(packet) = demuxer.next_packet().unwrap() {
             packets.push(packet);
         }
@@ -712,8 +734,45 @@ pub(crate) mod tests {
         ts.extend(packets(0x100, &pmt(&[(0x1b, 0x200)]), true, &mut c1));
         let mut demuxer = TsDemuxer::new();
         demuxer.push(&ts).unwrap();
-        demuxer.finish();
+        demuxer.finish().unwrap();
         assert!(matches!(demuxer.next_packet(), Err(Error::NoAudioTrack)));
+    }
+
+    #[test]
+    fn a_false_sync_at_the_end_of_a_chunk_waits_for_the_next_packet() {
+        // Leading garbage with a 0x47, cut so the chunk ends one packet
+        // after it: the candidate must not be taken without its successor.
+        let ts = stream(2, 3);
+        let mut damaged = vec![0x47, 1, 2, 3];
+        damaged.extend_from_slice(&ts);
+        let (_, clean) = demux(&ts, 4096);
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for piece in [&damaged[..PACKET], &damaged[PACKET..]] {
+            demuxer.push(piece).unwrap();
+            while let Some(packet) = demuxer.next_packet().unwrap() {
+                packets.push(packet);
+            }
+        }
+        demuxer.finish().unwrap();
+        while let Some(packet) = demuxer.next_packet().unwrap() {
+            packets.push(packet);
+        }
+        assert_eq!(packets.len(), clean.len());
+    }
+
+    #[test]
+    fn tables_announced_for_later_are_not_applied() {
+        let (mut c0, mut c1) = (0, 0);
+        let mut ts = packets(0, &pat(0x100), true, &mut c0);
+        let mut next = pmt(&[(0x0f, 0x101)]);
+        next[5] &= !0x01; // current_next_indicator = 0
+        let length = next.len();
+        let fixed = with_crc(next[..length - 4].to_vec());
+        ts.extend(packets(0x100, &fixed, true, &mut c1));
+        let mut demuxer = TsDemuxer::new();
+        demuxer.push(&ts).unwrap();
+        assert!(demuxer.audio.is_none());
     }
 
     #[test]

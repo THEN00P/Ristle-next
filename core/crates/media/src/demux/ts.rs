@@ -354,29 +354,39 @@ impl TsDemuxer {
             }
             at += 5 + es_info;
         }
+        // The current PMT is authoritative, also over an earlier selection.
         let Some((pid, kind)) = chosen else {
-            if self.audio.is_none() {
-                if let Some(error) = unplayable {
-                    return Err(error);
-                }
-                self.unplayable = Some(Error::NoAudioTrack);
+            let had_audio = self.audio.take().is_some();
+            if let Some(error) = unplayable {
+                return Err(error);
             }
+            if had_audio {
+                return Err(Error::NoAudioTrack);
+            }
+            self.unplayable = Some(Error::NoAudioTrack);
             return Ok(());
         };
         if self.audio.as_ref().is_some_and(|audio| audio.pid == pid) {
             return Ok(());
         }
         // First PMT, or a new version that moved the audio.
+        match &mut self.framer {
+            Some(framer) if framer.kind() == kind => framer.discontinuity(),
+            // The decoder was opened for the first codec and is not reopened.
+            Some(framer) if framer.codec().is_some() => {
+                return Err(Error::UnsupportedCodec(format!(
+                    "a change from {:?} to {kind:?} audio mid-stream",
+                    framer.kind()
+                )));
+            }
+            _ => self.framer = Some(Framer::new(kind)),
+        }
         self.audio = Some(Audio {
             pid,
             header: Vec::new(),
             in_payload: false,
             pts: None,
         });
-        match &mut self.framer {
-            Some(framer) if framer.kind() == kind => framer.discontinuity(),
-            _ => self.framer = Some(Framer::new(kind)),
-        }
         Ok(())
     }
 
@@ -773,6 +783,55 @@ pub(crate) mod tests {
         let mut demuxer = TsDemuxer::new();
         demuxer.push(&ts).unwrap();
         assert!(demuxer.audio.is_none());
+    }
+
+    /// A stream, then a new PMT version (written by `pmt_with`).
+    fn with_new_pmt(streams: &[(u8, u16)]) -> Vec<u8> {
+        let mut ts = stream(2, 2);
+        let mut next = pmt(streams);
+        next[5] = 0xc3; // version 1, current
+        let length = next.len();
+        let mut counter = 5;
+        ts.extend(packets(
+            0x100,
+            &with_crc(next[..length - 4].to_vec()),
+            true,
+            &mut counter,
+        ));
+        ts
+    }
+
+    #[test]
+    fn a_pmt_that_changes_the_audio_codec_mid_stream_is_refused() {
+        let ts = with_new_pmt(&[(0x03, 0x102)]);
+        let mut demuxer = TsDemuxer::new();
+        let mut result = Ok(());
+        for piece in ts.chunks(188) {
+            result = demuxer.push(piece);
+            while let Ok(Some(_)) = demuxer.next_packet() {}
+            if result.is_err() {
+                break;
+            }
+        }
+        assert!(
+            matches!(result, Err(Error::UnsupportedCodec(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_pmt_that_removes_the_audio_ends_the_stream() {
+        let ts = with_new_pmt(&[(0x1b, 0x200)]);
+        let mut demuxer = TsDemuxer::new();
+        let mut result = Ok(());
+        for piece in ts.chunks(188) {
+            result = demuxer.push(piece);
+            while let Ok(Some(_)) = demuxer.next_packet() {}
+            if result.is_err() {
+                break;
+            }
+        }
+        assert!(matches!(result, Err(Error::NoAudioTrack)), "{result:?}");
     }
 
     #[test]

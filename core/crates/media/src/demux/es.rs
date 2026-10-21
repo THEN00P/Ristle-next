@@ -234,6 +234,37 @@ impl Framer {
     /// The next whole frame. With `end` set, no more bytes are coming, so a
     /// frame at the very end is accepted without seeing the header after it.
     pub(crate) fn next_packet(&mut self, end: bool) -> Result<Option<DemuxedPacket>, Error> {
+        // A loop, not recursion: a stream may hold any number of frames to
+        // skip in a row.
+        let header = loop {
+            let Some(header) = self.next_frame(end)? else {
+                return Ok(None);
+            };
+            if !header.unsupported {
+                break header;
+            }
+            tracing::warn!("skipping an ADTS frame with several raw data blocks");
+            self.drop_front(header.len);
+        };
+
+        self.check_codec(&header)?;
+        let pts = self.frame_pts(header.rate);
+        self.next_pts = Some(pts + i64::from(header.samples));
+        let data = self.buffer[header.skip..header.len]
+            .to_vec()
+            .into_boxed_slice();
+        self.drop_front(header.len);
+        Ok(Some(DemuxedPacket {
+            data,
+            pts,
+            dur: u64::from(header.samples),
+            trim_start: 0,
+            trim_end: 0,
+        }))
+    }
+
+    /// Finds the next whole frame and moves it to the front of the buffer.
+    fn next_frame(&mut self, end: bool) -> Result<Option<Header>, Error> {
         let mut at = 0;
         let header = loop {
             if at + 9 > self.buffer.len() && !(end && at < self.buffer.len()) {
@@ -280,26 +311,7 @@ impl Framer {
         }
         self.drop_front(at);
         self.in_sync = true;
-        if header.unsupported {
-            tracing::warn!("skipping an ADTS frame with several raw data blocks");
-            self.drop_front(header.len);
-            return self.next_packet(end);
-        }
-
-        self.check_codec(&header)?;
-        let pts = self.frame_pts(header.rate);
-        self.next_pts = Some(pts + i64::from(header.samples));
-        let data = self.buffer[header.skip..header.len]
-            .to_vec()
-            .into_boxed_slice();
-        self.drop_front(header.len);
-        Ok(Some(DemuxedPacket {
-            data,
-            pts,
-            dur: u64::from(header.samples),
-            trim_start: 0,
-            trim_end: 0,
-        }))
+        Ok(Some(header))
     }
 
     /// Bytes skipped while looking for frames.
@@ -493,6 +505,19 @@ pub(crate) mod tests {
         let packets = drain(&mut framer, true);
         let firsts: Vec<u8> = packets.iter().map(|p| p.data[0]).collect();
         assert_eq!(firsts, vec![1, 2]);
+    }
+
+    #[test]
+    fn long_runs_of_skipped_frames_do_not_recurse() {
+        let mut multi = adts_frame(&[]);
+        multi[6] |= 0x01;
+        let mut framer = Framer::new(EsKind::Adts);
+        for _ in 0..200_000 {
+            framer.push(&multi, None);
+        }
+        framer.push(&adts_frame(&[4; 10]), None);
+        let packets = drain(&mut framer, true);
+        assert_eq!(packets.len(), 1);
     }
 
     #[test]

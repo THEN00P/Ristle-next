@@ -2,12 +2,14 @@
 //!
 //! An [`AudioOutput`] opens a device stream and calls the engine's
 //! [`Render`] from its real-time thread. Backends: the capture output in
-//! `test_support` (headless, driven by the test), [`cpal`] on desktop, and
-//! AAudio on Android.
+//! `test_support` (headless, driven by the test), `cpal` on desktop, and
+//! `aaudio` on Android.
 
 use std::fmt;
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+pub mod aaudio;
 #[cfg(not(target_os = "android"))]
 pub mod cpal;
 

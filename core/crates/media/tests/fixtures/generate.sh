@@ -54,6 +54,9 @@ $FF -i "$tmp/t1.wav" -c:a aac -b:a 128k -f adts $META track.aac
 $FF -i "$tmp/t1.wav" -c:a libvorbis -q:a 3 $META track-vorbis.webm
 $FF -i "$tmp/u1.wav" -c:a libopus -b:a 96k $META track-opus.webm
 $FF -i "$tmp/t1.wav" -c:a flac $META track.mka
+# MPEG-TS as HLS live radio serves it: ADTS AAC, and MPEG audio.
+$FF -i "$tmp/t1.wav" -c:a aac -b:a 128k -f mpegts $META track-aac.ts
+$FF -i "$tmp/t1.wav" -c:a libmp3lame -b:a 128k -f mpegts $META track-mp3.ts
 
 # --- A muxed MP4 whose first track is video with its own edit list (B-frames
 # delay the video), and whose audio is album track 1. The host must read the
@@ -61,4 +64,4 @@ $FF -i "$tmp/t1.wav" -c:a flac $META track.mka
 $FF -f lavfi -i "testsrc=size=16x16:rate=10:duration=1.2" -i "$tmp/t1.wav" \
   -map 0:v -map 1:a -c:v mpeg4 -bf 2 -q:v 10 -video_track_timescale 1000 -c:a aac -b:a 128k $META muxed.mp4
 
-ls -l ./*.mp3 ./*.m4a ./*.ogg ./*.flac ./*.opus ./*.wav ./*.aac ./*.webm ./*.mka ./*.mp4
+ls -l ./*.mp3 ./*.m4a ./*.ogg ./*.flac ./*.opus ./*.wav ./*.aac ./*.webm ./*.mka ./*.ts ./*.mp4

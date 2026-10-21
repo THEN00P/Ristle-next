@@ -5,7 +5,8 @@
 //!   AES-CTR/CBC decryption and Plugin Byte Sources follow.
 //! - **Demux:** the containers Symphonia reads (MP4, Ogg, MKV/WebM, FLAC,
 //!   WAV, AIFF, CAF, ADTS, MP3), with the MP4 edit list of the selected audio
-//!   track applied by the host.
+//!   track applied by the host; and MPEG-TS with ADTS or MPEG audio, which
+//!   the host demuxes and frames itself.
 //! - **Decode:** the [`Decoder`] contract and the [`DecoderRegistry`].
 //!   Providers: Symphonia (default), libopus, and platform AAC decoders for
 //!   HE-AAC, which the platform glue registers. Decoders return interleaved

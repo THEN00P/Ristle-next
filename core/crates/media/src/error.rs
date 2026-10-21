@@ -68,6 +68,9 @@ pub enum Error {
         #[source]
         error: crate::FetchError,
     },
+    /// A Plugin Byte Source read failed.
+    #[error("the Plugin's Byte Source failed: {0}")]
+    ByteSource(crate::SourceError),
     /// Reading the source failed.
     #[error("reading the source failed: {0}")]
     Io(#[from] std::io::Error),

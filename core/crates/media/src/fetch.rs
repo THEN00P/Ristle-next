@@ -70,6 +70,12 @@ pub enum FetchError {
 pub trait FetchBody: Send {
     /// The next chunk, or `None` at the end of the body.
     async fn chunk(&mut self) -> Result<Option<Bytes>, FetchError>;
+
+    /// The whole resource's length, when the response says (`Content-Range`
+    /// for a range, `Content-Length` otherwise).
+    fn total_length(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Makes GET requests.

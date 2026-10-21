@@ -5,6 +5,8 @@
 // functions are not covered by clippy.toml.
 #![allow(dead_code, unreachable_pub, clippy::expect_used, clippy::panic)]
 
+pub mod memory_fetch;
+
 use std::path::PathBuf;
 
 use ristle_media::{ContainerStream, DecoderRegistry, MediaHint, MediaStream, Read, StreamFormat};

@@ -36,11 +36,12 @@ symphonia = { workspace = true, features = [
 symphonia-adapter-libopus.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# HLS: AES-128 (CBC) segments and keys, fetched in the background.
+# HLS AES-128, host-side AES-CTR/CBC decryption, background fetching.
 aes.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 cbc = { workspace = true, features = ["block-padding"] }
+ctr.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 url.workspace = true
 
@@ -49,6 +50,7 @@ aes.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 cbc = { workspace = true, features = ["block-padding", "alloc"] }
+ctr.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

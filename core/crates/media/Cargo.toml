@@ -11,6 +11,31 @@ publish.workspace = true
 [dependencies]
 ristle-domain.workspace = true
 ristle-net.workspace = true
+# Symphonia demuxes the containers it reads and decodes everything but Opus
+# and HE-AAC (ADR 0004). Only what the host uses is enabled.
+symphonia = { workspace = true, features = [
+    "opt-simd",
+    "aac",
+    "alac",
+    "flac",
+    "mp1",
+    "mp2",
+    "mp3",
+    "pcm",
+    "adpcm",
+    "vorbis",
+    "isomp4",
+    "ogg",
+    "mkv",
+    "wav",
+    "aiff",
+    "caf",
+    "id3v2",
+] }
+# libopus (BSD-3-Clause) for Opus on every platform. Builds with cmake.
+symphonia-adapter-libopus.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

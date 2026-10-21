@@ -42,6 +42,13 @@ pub enum Error {
         /// The provider's description of the problem.
         detail: String,
     },
+    /// The stream is encrypted with a scheme the host cannot decrypt
+    /// (SAMPLE-AES, scrambled TS, DRM). DRM is out of scope (ADR 0004).
+    #[error("the stream is encrypted with {scheme}, which the host cannot decrypt")]
+    UnsupportedEncryption {
+        /// The scheme, as the stream names it.
+        scheme: String,
+    },
     /// The stream cannot seek (a live stream, or a source without random access).
     #[error("the stream cannot seek")]
     NotSeekable,

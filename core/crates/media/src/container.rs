@@ -1,6 +1,7 @@
 //! Streams over a complete, randomly accessible container: local files (a
 //! Folder Grant's `file` location) and anything else that implements
-//! `Read + Seek`.
+//! `Read + Seek`. MPEG-TS is demuxed by the host; everything else by
+//! Symphonia.
 
 use std::fs::File;
 use std::io::{Read as IoRead, Seek, SeekFrom};
@@ -8,13 +9,13 @@ use std::path::Path;
 
 use symphonia::core::io::MediaSource;
 
-use crate::demux::{MediaHint, SymphoniaDemuxer};
+use crate::demux::{Demuxer, MediaHint, SymphoniaDemuxer, TsDemuxer, TsFileDemuxer};
 use crate::stream::DecodedStream;
 use crate::{DecoderRegistry, Error, MediaStream, Read, StreamFormat};
 
 /// A [`MediaStream`] decoding a container with random access.
 pub struct ContainerStream {
-    inner: DecodedStream<SymphoniaDemuxer>,
+    inner: DecodedStream<Box<dyn Demuxer>>,
 }
 
 impl std::fmt::Debug for ContainerStream {
@@ -54,7 +55,16 @@ impl ContainerStream {
     where
         R: IoRead + Seek + Send + Sync + 'static,
     {
-        let demuxer = SymphoniaDemuxer::open(Source::new(reader)?, hint)?;
+        let mut source = Source::new(reader)?;
+        let mut head = [0u8; 189];
+        let head_len = read_up_to(&mut source, &mut head)?;
+        source.seek(SeekFrom::Start(0))?;
+        // Symphonia has no MPEG-TS reader.
+        let demuxer: Box<dyn Demuxer> = if TsDemuxer::sniff(&head[..head_len]) {
+            Box::new(TsFileDemuxer::open(source)?)
+        } else {
+            Box::new(SymphoniaDemuxer::open(source, hint)?)
+        };
         Ok(Self {
             inner: DecodedStream::open(demuxer, registry)?,
         })
@@ -78,6 +88,19 @@ impl MediaStream for ContainerStream {
     fn seek(&mut self, position_ms: u64) -> Result<(), Error> {
         self.inner.seek(position_ms)
     }
+}
+
+fn read_up_to<R: IoRead>(reader: &mut R, buf: &mut [u8]) -> Result<usize, Error> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(filled)
 }
 
 /// Adapts `Read + Seek` to Symphonia's source trait.

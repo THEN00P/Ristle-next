@@ -161,3 +161,47 @@ fn a_registry_without_opus_cannot_open_opus() {
     .unwrap_err();
     assert!(matches!(error, Error::UnsupportedCodec(_)), "{error}");
 }
+
+#[test]
+fn aac_in_mpeg_ts_decodes_from_its_first_pts() {
+    // TS signals no encoder delay: the 1024 priming frames stay, as in ADTS.
+    let mut stream = open("track-aac.ts");
+    assert_eq!(stream.decoder(), "symphonia");
+    let (format, samples) = read_to_end(&mut stream);
+    assert_eq!(
+        format,
+        StreamFormat {
+            sample_rate: 44_100,
+            channels: 2
+        }
+    );
+    let source = left(&reference(44_100, TRACK_1), 2);
+    assert_eq!(
+        best_lag(&left(&samples, 2), &source, 2048, 8192, 3000),
+        1024
+    );
+    assert!(samples.len() / 2 >= TRACK_1_FRAMES + 1024);
+}
+
+#[test]
+fn mp3_in_mpeg_ts_decodes_from_its_first_pts() {
+    // No LAME tag in TS: the encoder and decoder delay (576 + 529) stay.
+    let (_, samples) = read_to_end(&mut open("track-mp3.ts"));
+    let source = left(&reference(44_100, TRACK_1), 2);
+    assert_eq!(
+        best_lag(&left(&samples, 2), &source, 2048, 8192, 3000),
+        1105
+    );
+    assert!(samples.len() / 2 >= TRACK_1_FRAMES + 1105);
+}
+
+#[test]
+fn mpeg_ts_seeks_by_decoding_from_the_start() {
+    let mut stream = open("track-aac.ts");
+    let (_, whole) = read_to_end(&mut stream);
+    stream.seek(500).unwrap();
+    let (_, rest) = read_to_end(&mut stream);
+    // 500 ms of presentation time after the first PTS.
+    assert_eq!(rest.len(), whole.len() - 22_050 * 2);
+    assert_eq!(rest[..], whole[22_050 * 2..]);
+}

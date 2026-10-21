@@ -5,10 +5,13 @@
 //! (`mp4`). The stream (`crate::stream`) pulls packets through [`Demuxer`]
 //! and does not care which demuxer produced them.
 
+pub(crate) mod es;
 pub(crate) mod mp4;
 mod symphonia;
+pub(crate) mod ts;
 
 pub(crate) use self::symphonia::SymphoniaDemuxer;
+pub(crate) use self::ts::{TsDemuxer, TsFileDemuxer};
 
 use crate::Error;
 use crate::codec::CodecDescription;
@@ -95,6 +98,28 @@ pub(crate) trait Demuxer: Send {
     /// Positions the demuxer at or before `ts` (track time base) so that the
     /// next packet's `pts` is at or before it.
     fn seek(&mut self, ts: i64) -> Result<Seeked, Error>;
+}
+
+impl Demuxer for Box<dyn Demuxer> {
+    fn codec(&self) -> &CodecDescription {
+        (**self).codec()
+    }
+
+    fn time_base(&self) -> TimeBase {
+        (**self).time_base()
+    }
+
+    fn window(&self) -> Option<Window> {
+        (**self).window()
+    }
+
+    fn next_packet(&mut self) -> Result<Demuxed, Error> {
+        (**self).next_packet()
+    }
+
+    fn seek(&mut self, ts: i64) -> Result<Seeked, Error> {
+        (**self).seek(ts)
+    }
 }
 
 /// What a Stream Source says about its bytes before anyone reads them.

@@ -1,17 +1,36 @@
 //! From a Stream Source to decoded, timeline-aligned PCM (ADR 0004).
 //!
-//! - **Sources:** progressive HTTP with Range seeks, HLS (variant choice,
-//!   streaming decode while a segment downloads, byte-range seeks inside fMP4
-//!   segments, `EXT-X-BYTERANGE`, AES-128 including `EXT-X-MAP` init
-//!   sections), host-side AES-CTR/CBC decryption, Plugin Byte Sources through
-//!   the `ByteSourceReader` port, and local files.
-//! - **Demux:** MP4 and fMP4 (audio track chosen first, its own edit list
-//!   applied, `traf` filtered by track ID, `trun` continuation), MPEG-TS,
-//!   ADTS, and the containers Symphonia reads.
-//! - **Decode:** the `Decoder` trait and registry. Providers: Symphonia
-//!   (default), libopus, and platform AAC for HE-AAC (MediaCodec first).
-//!   Decoders return interleaved f32 aligned to the input timeline and are
-//!   flushed at end of stream.
+//! - **Sources:** local files and other seekable byte sources
+//!   ([`ContainerStream`]). Progressive HTTP with Range seeks, HLS, host-side
+//!   AES-CTR/CBC decryption and Plugin Byte Sources follow.
+//! - **Demux:** the containers Symphonia reads (MP4, Ogg, MKV/WebM, FLAC,
+//!   WAV, AIFF, CAF, ADTS, MP3), with the MP4 edit list of the selected audio
+//!   track applied by the host.
+//! - **Decode:** the [`Decoder`] contract and the [`DecoderRegistry`].
+//!   Providers: Symphonia (default), libopus, and platform AAC decoders for
+//!   HE-AAC, which the platform glue registers. Decoders return interleaved
+//!   f32 aligned to the input timeline, never trim, and are flushed at end of
+//!   stream.
+//! - **Gapless:** encoder delay, padding, edit lists and Opus pre-skip are
+//!   applied in one place per stream, which also makes seeks exact in
+//!   presentation time.
 //!
-//! The output is a `MediaStream` that `ristle-audio` pulls from. Milestone M6
-//! (`docs/plan/phase-2.md`).
+//! The output is a [`MediaStream`] that `ristle-audio` pulls from. Milestone
+//! M6a (`docs/plan/phase-2.md`).
+
+mod codec;
+mod container;
+mod decode;
+mod demux;
+mod error;
+mod stream;
+
+pub use codec::{Codec, CodecDescription, HeAac};
+pub use container::ContainerStream;
+pub use decode::{
+    Decoder, DecoderProvider, DecoderRegistry, LibopusProvider, OpenedDecoder, Packet, Support,
+    SymphoniaProvider,
+};
+pub use demux::MediaHint;
+pub use error::{Error, MediaError};
+pub use stream::{MediaStream, Read, StreamFormat};

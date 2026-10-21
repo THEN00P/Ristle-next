@@ -330,7 +330,7 @@ impl HlsDemuxer {
             Message::SegmentEnd => self.on_segment_end()?,
             Message::End => {
                 if let Parser::Ts(ts) = &mut self.parser {
-                    ts.finish();
+                    ts.finish()?;
                 }
                 self.drain()?;
                 self.ended = true;
@@ -454,7 +454,9 @@ impl HlsDemuxer {
     fn on_segment_end(&mut self) -> Result<(), Error> {
         match &mut self.parser {
             Parser::Fmp4(parser) => parser.finish()?,
-            Parser::Ts(ts) => ts.flush()?,
+            // Segments need not end on PES or frame boundaries (RFC 8216,
+            // section 3): a partial frame waits for the next segment.
+            Parser::Ts(_) => {}
             Parser::Packed { framer, head } => {
                 if let Some(buffered) = head.take() {
                     // A segment shorter than its tag would be: all audio.
@@ -647,10 +649,21 @@ impl Demuxer for HlsDemuxer {
         }
         let (index, _) = self.playlist.segment_index_at(us / 1000);
         let segment_start = self.playlist.segments[index].start_us;
-        let seek = self.fmp4.as_ref().map(|fmp4| RangedSeek {
-            offset_us: us - segment_start,
-            track: fmp4.track,
-        });
+        // The ranged seek reads the target's moof with the current init's
+        // track defaults, so it is used only when one init serves them all.
+        let one_map = self
+            .playlist
+            .segments
+            .iter()
+            .all(|s| s.map == self.playlist.segments[0].map);
+        let seek = self
+            .fmp4
+            .as_ref()
+            .filter(|_| one_map)
+            .map(|fmp4| RangedSeek {
+                offset_us: us - segment_start,
+                track: fmp4.track,
+            });
         self.restart(Plan::Vod {
             playlist: self.playlist.clone(),
             start: index,

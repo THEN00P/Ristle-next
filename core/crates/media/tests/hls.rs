@@ -744,3 +744,38 @@ fn a_new_init_section_with_another_codec_configuration_is_refused() {
         Err(Error::UnsupportedCodec(_))
     ));
 }
+
+#[test]
+fn ts_segments_may_split_frames() {
+    // RFC 8216 does not require segments to end on PES or frame boundaries:
+    // cut one TS file at arbitrary packet boundaries.
+    let harness = Harness::new(4096);
+    let ts = std::fs::read(fixture("track-aac.ts")).unwrap();
+    let packets = ts.len() / 188;
+    let cuts = [
+        0,
+        (packets / 3 + 1) * 188,
+        packets * 2 / 3 * 188,
+        ts.len(),
+    ];
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:1\n");
+    for (index, range) in cuts.windows(2).enumerate() {
+        harness.fetch.put(
+            &format!("{BASE}cut/{index}.ts"),
+            ts[range[0]..range[1]].to_vec(),
+        );
+        playlist.push_str(&format!("#EXTINF:0.4,\n{index}.ts\n"));
+    }
+    playlist.push_str("#EXT-X-ENDLIST\n");
+    harness
+        .fetch
+        .put(&format!("{BASE}cut/index.m3u8"), playlist);
+    let (cut, _) = read_all(&mut harness.open(&format!("{BASE}cut/index.m3u8"))).unwrap();
+    let mut whole = ContainerStream::open_file(
+        &fixture("track-aac.ts"),
+        &MediaHint::default(),
+        &DecoderRegistry::with_defaults(),
+    )
+    .unwrap();
+    assert_eq!(cut, read_all(&mut whole).unwrap().0);
+}

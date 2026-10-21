@@ -144,11 +144,12 @@ fn an_mp4_with_its_moov_at_the_end_opens_with_ranges() {
     let moov = file.windows(4).position(|w| w == b"moov").unwrap() - 4;
     let mdat = file.windows(4).position(|w| w == b"mdat").unwrap();
     assert!(moov > mdat);
-    // A 1 MB free box before the moov puts it far past the first window
-    // (sample offsets point into the mdat, so they stay valid).
-    let mut free = ((1u32 << 20) + 8).to_be_bytes().to_vec();
+    // A 16 MB free box before the moov puts it beyond the fetch's 4 MiB
+    // read-ahead, so it is reached by a Range request however fast the
+    // server is (sample offsets point into the mdat, so they stay valid).
+    let mut free = ((16u32 << 20) + 8).to_be_bytes().to_vec();
     free.extend_from_slice(b"free");
-    free.resize((1 << 20) + 8, 0);
+    free.resize((16 << 20) + 8, 0);
     file.splice(moov..moov, free);
     let expected = {
         let mut local = ContainerStream::open_reader(

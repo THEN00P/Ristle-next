@@ -55,6 +55,7 @@ impl std::fmt::Debug for Location {
                     &headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),
                 )
                 .finish(),
+            // The handle's Debug shows only its length.
             Self::ByteSource { handle, length, .. } => f
                 .debug_struct("ByteSource")
                 .field("handle", handle)
@@ -158,6 +159,7 @@ impl ProgressiveStream {
         let inner = match opened {
             Ok(Ok(inner)) => inner,
             Ok(Err(error)) => {
+                let error = remote.take_error().unwrap_or(error);
                 remote.close();
                 task.abort();
                 return Err(error);
@@ -232,10 +234,15 @@ impl Demuxer for ProgressiveDemuxer {
         if !self.remote.ready(WATERMARK) {
             return Ok(Demuxed::Pending);
         }
-        self.inner.next_packet()
+        // The container only saw an I/O error; report the fetch's own.
+        self.inner
+            .next_packet()
+            .map_err(|error| self.remote.take_error().unwrap_or(error))
     }
 
     fn seek(&mut self, ts: i64) -> Result<Seeked, Error> {
-        self.inner.seek(ts)
+        self.inner
+            .seek(ts)
+            .map_err(|error| self.remote.take_error().unwrap_or(error))
     }
 }

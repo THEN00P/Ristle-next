@@ -309,7 +309,15 @@ fn a_failing_byte_source_fails_the_stream() {
         handle: ByteSourceHandle("x".into()),
         length: None,
     };
-    assert!(harness.open(location, None).is_err());
+    match harness.open(location, None) {
+        Err(Error::ByteSource(SourceError::Failed(reason))) => assert_eq!(reason, "expired"),
+        other => panic!("expected the Byte Source's error: {:?}", other.map(|_| ())),
+    }
+    let shown = format!(
+        "{:?}",
+        ByteSourceHandle("https://cdn/x?token=secret".into())
+    );
+    assert!(!shown.contains("secret"), "{shown}");
 }
 
 #[test]
@@ -352,11 +360,10 @@ fn a_slow_server_makes_reads_pending_not_blocked() {
 fn a_missing_resource_fails_to_open() {
     let harness = Harness::new(4096);
     match harness.open(harness.http(Vec::new()), None) {
-        Err(Error::Io(error)) => assert!(error.to_string().contains("404"), "{error}"),
         Err(Error::Fetch {
+            url,
             error: FetchError::Status { status: 404 },
-            ..
-        }) => {}
-        other => panic!("expected a 404: {:?}", other.map(|_| ())),
+        }) => assert_eq!(url, URL),
+        other => panic!("expected a typed 404: {:?}", other.map(|_| ())),
     }
 }

@@ -38,9 +38,16 @@ const READ_TIMEOUT: Duration = Duration::from_secs(20);
 /// The size of a Byte Source read (WIT `byte-source.read`: at least 64 KiB).
 const BYTE_SOURCE_CHUNK: u32 = 64 << 10;
 
-/// A Plugin's Byte Source handle (WIT `plugin-bytes.handle`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A Plugin's Byte Source handle (WIT `plugin-bytes.handle`). It may carry
+/// signed URLs or keys, so `Debug` shows only its length.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ByteSourceHandle(pub String);
+
+impl std::fmt::Debug for ByteSourceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ByteSourceHandle(<{} bytes>)", self.0.len())
+    }
+}
 
 /// Why a Byte Source read failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -196,6 +203,8 @@ struct State {
     complete: bool,
     /// Why the fetch failed. Kept until the reader moves elsewhere.
     failed: Option<String>,
+    /// The same failure, typed, for the stream to report once.
+    error: Option<Error>,
     /// The reader's position (resource offset).
     pos: u64,
     /// The reader wants the fetch to restart here.
@@ -217,6 +226,8 @@ pub(crate) struct Remote {
     arrived: Condvar,
     /// Wakes the fetch task: a restart request, or room in the window.
     wake: Notify,
+    /// Interrupts a fetch waiting on a stalled body: a restart or close.
+    restarted: Notify,
 }
 
 impl Remote {
@@ -228,6 +239,7 @@ impl Remote {
                 len: None,
                 complete: false,
                 failed: None,
+                error: None,
                 pos: 0,
                 want: None,
                 generation: 0,
@@ -235,6 +247,7 @@ impl Remote {
             }),
             arrived: Condvar::new(),
             wake: Notify::new(),
+            restarted: Notify::new(),
         })
     }
 
@@ -246,7 +259,20 @@ impl Remote {
     pub(crate) fn close(&self) {
         self.lock().closed = true;
         self.wake.notify_one();
+        self.restarted.notify_one();
         self.arrived.notify_all();
+    }
+
+    /// The fetch failure, typed (`Error::Fetch`, `Error::ByteSource`), once.
+    /// Symphonia only sees an I/O error; the stream reports this instead.
+    pub(crate) fn take_error(&self) -> Option<Error> {
+        self.lock().error.take()
+    }
+
+    fn request_restart(&self, s: &mut State, at: u64) {
+        restart(s, at);
+        self.wake.notify_one();
+        self.restarted.notify_one();
     }
 
     /// Whether the next packet can be demuxed without waiting: enough bytes
@@ -266,9 +292,7 @@ impl Remote {
         }
         if s.want != Some(s.pos) {
             let pos = s.pos;
-            restart(&mut s, pos);
-            drop(s);
-            self.wake.notify_one();
+            self.request_restart(&mut s, pos);
         }
         false
     }
@@ -301,6 +325,7 @@ impl Remote {
                 if s.generation == generation {
                     tracing::warn!(%error, "fetching the stream failed");
                     s.failed = Some(error.to_string());
+                    s.error = Some(error);
                 }
                 drop(s);
                 self.arrived.notify_all();
@@ -340,7 +365,23 @@ impl Remote {
         }
         let mut plain = Vec::new();
         loop {
-            let chunk = body.next().await?;
+            // A restart must not wait for a stalled body: race the read
+            // against it. The read future survives spurious wakeups.
+            let chunk = {
+                let next = body.next();
+                tokio::pin!(next);
+                loop {
+                    tokio::select! {
+                        chunk = &mut next => break chunk?,
+                        () = self.restarted.notified() => {
+                            let s = self.lock();
+                            if s.generation != generation || s.closed {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            };
             plain.clear();
             let at_end = chunk.is_none();
             match (&mut decryptor, &chunk) {
@@ -429,6 +470,7 @@ fn restart(s: &mut State, at: u64) {
     s.start = at;
     s.complete = false;
     s.failed = None;
+    s.error = None;
 }
 
 /// The synchronous side: Symphonia's source.
@@ -477,8 +519,7 @@ impl Read for RemoteSource {
                 return Err(io::Error::other(failed.clone()));
             }
             if !inside && s.want != Some(pos) {
-                restart(&mut s, pos);
-                remote.wake.notify_one();
+                remote.request_restart(&mut s, pos);
             }
             let (next, timeout) = remote
                 .arrived
@@ -521,5 +562,89 @@ impl MediaSource for RemoteSource {
             .lock()
             .len
             .map(|len| len.saturating_sub(self.skip))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The first body yields one chunk, then stalls forever; later bodies
+    /// serve the resource from their offset.
+    struct Stalling {
+        data: Bytes,
+        opens: AtomicUsize,
+    }
+
+    struct Body {
+        data: Bytes,
+        stall: bool,
+        sent: bool,
+    }
+
+    #[async_trait]
+    impl FeedBody for Body {
+        async fn next(&mut self) -> Result<Option<Bytes>, Error> {
+            if self.sent {
+                if self.stall {
+                    std::future::pending::<()>().await;
+                }
+                return Ok(None);
+            }
+            self.sent = true;
+            Ok(Some(self.data.clone()))
+        }
+    }
+
+    #[async_trait]
+    impl Feed for Stalling {
+        async fn open(&self, offset: u64) -> Result<(Box<dyn FeedBody>, Option<u64>), Error> {
+            let first = self.opens.fetch_add(1, Ordering::SeqCst) == 0;
+            let data = if first {
+                self.data.slice(..1000)
+            } else {
+                self.data.slice(offset as usize..)
+            };
+            Ok((
+                Box::new(Body {
+                    data,
+                    stall: first,
+                    sent: false,
+                }),
+                Some(self.data.len() as u64),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_seek_interrupts_a_stalled_body() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let data: Vec<u8> = (0..(2u32 << 20)).map(|i| (i % 251) as u8).collect();
+        let feed = Arc::new(Stalling {
+            data: Bytes::from(data.clone()),
+            opens: AtomicUsize::new(0),
+        });
+        let remote = Remote::new();
+        let task = runtime.spawn(remote.clone().run(feed, None));
+        let mut source = RemoteSource::new(remote.clone(), 0);
+        let mut buf = [0u8; 100];
+        assert_eq!(source.read(&mut buf).unwrap(), 100);
+        // Far outside the window, while the first body is stalled.
+        let target = 1_500_000;
+        source.seek(SeekFrom::Start(target)).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(source.read(&mut buf).unwrap(), 100);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(&buf[..], &data[target as usize..target as usize + 100]);
+        remote.close();
+        task.abort();
     }
 }

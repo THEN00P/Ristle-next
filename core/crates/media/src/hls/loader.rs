@@ -289,13 +289,18 @@ async fn vod(
     Ok(())
 }
 
+/// Where live playback starts: no closer than three segments to the live
+/// edge (RFC 8216, 6.3.3).
+pub(crate) fn live_start(playlist: &MediaPlaylist) -> usize {
+    playlist.segments.len().saturating_sub(3)
+}
+
 async fn live(
     shared: &Shared,
     mut playlist: MediaPlaylist,
     tx: &mpsc::Sender<Message>,
 ) -> Result<(), Stop> {
-    // Start no closer than three segments to the live edge (RFC 8216, 6.3.3).
-    let start = playlist.segments.len().saturating_sub(3);
+    let start = live_start(&playlist);
     let mut next_sequence = playlist.segments.get(start).map_or(0, |s| s.sequence);
     let mut timeline_us = 0u64;
     let mut map: Option<Arc<Map>> = None;

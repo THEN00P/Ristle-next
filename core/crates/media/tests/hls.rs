@@ -682,3 +682,65 @@ fn drm_and_missing_segments_fail_with_their_reason() {
         ),
     }
 }
+
+#[test]
+fn live_playback_initializes_from_the_segment_it_starts_at() {
+    let harness = Harness::new(4096);
+    serve_rendition(&harness.fetch, "ts", "t/");
+    serve_rendition(&harness.fetch, "fmp4", "a/");
+    harness.fetch.put(
+        &format!("{BASE}a/init.mp4"),
+        with_priming(hls_file("fmp4/init.mp4")),
+    );
+    // A TS segment, then a discontinuity into fMP4. Live playback starts
+    // three segments from the edge, inside the fMP4 part.
+    let playlist = |ended: bool| {
+        let mut text = String::from(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nt/seg0.ts\n#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"a/init.mp4\"\n",
+        );
+        for segment in ["seg1", "seg2", "seg3"] {
+            text.push_str(&format!("#EXTINF:0.998458,\na/{segment}.m4s\n"));
+        }
+        if ended {
+            text.push_str("#EXT-X-ENDLIST\n");
+        }
+        text
+    };
+    harness
+        .fetch
+        .put(&format!("{BASE}live.m3u8"), playlist(false));
+    let mut stream = harness.open(&format!("{BASE}live.m3u8"));
+    harness
+        .fetch
+        .put(&format!("{BASE}live.m3u8"), playlist(true));
+    let (samples, _) = read_all(&mut stream).unwrap();
+    assert!(samples.len() / 2 > 2 * 44_100, "{}", samples.len() / 2);
+    assert!(
+        !harness
+            .fetch
+            .requests()
+            .iter()
+            .any(|r| r.url.ends_with("seg0.ts"))
+    );
+}
+
+#[test]
+fn a_new_init_section_with_another_codec_configuration_is_refused() {
+    let harness = Harness::new(4096);
+    serve_rendition(&harness.fetch, "fmp4", "a/");
+    // The same codec, rate and layout, but AAC Main instead of AAC-LC in
+    // the AudioSpecificConfig: the open decoder cannot follow.
+    let mut other = hls_file("fmp4/init.mp4");
+    let asc = other.windows(2).position(|w| w == [0x12, 0x10]).unwrap();
+    other[asc] = 0x0a;
+    harness.fetch.put(&format!("{BASE}b/init.mp4"), other);
+    harness.fetch.put(
+        &format!("{BASE}switch.m3u8"),
+        "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"a/init.mp4\"\n#EXTINF:1.021678,\na/seg0.m4s\n#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"b/init.mp4\"\n#EXTINF:0.998458,\na/seg1.m4s\n#EXT-X-ENDLIST\n",
+    );
+    let mut stream = harness.open(&format!("{BASE}switch.m3u8"));
+    assert!(matches!(
+        read_all(&mut stream),
+        Err(Error::UnsupportedCodec(_))
+    ));
+}

@@ -96,15 +96,18 @@ impl HlsStream {
                 }
             }
         };
+        let live = !media.ended;
+        // Initialize from the segment playback starts at: a live window may
+        // begin with segments of another container or init section.
+        let start = if live { loader::live_start(&media) } else { 0 };
         let first = media
             .segments
-            .first()
+            .get(start)
             .ok_or_else(|| Error::malformed("HLS playlist", "no segments"))?;
         let fmp4 = match &first.map {
             Some(map) => Some(Fmp4::from_init(shared.init(map).await?)?),
             None => None,
         };
-        let live = !media.ended;
         let duration_ms = (!live).then(|| media.duration_us() / 1000);
         let playlist = Arc::new(media);
         let plan = if live {
@@ -348,15 +351,18 @@ impl HlsDemuxer {
             return Ok(());
         }
         let next = Fmp4::from_init(init)?;
+        // The decoder was opened from the first configuration and is not
+        // reopened, so anything it was configured with must stay the same.
         if next.codec.codec != current.codec.codec
             || next.codec.sample_rate != current.codec.sample_rate
             || next.codec.channels != current.codec.channels
+            || next.codec.extra_data != current.codec.extra_data
             || next.track.timescale != current.track.timescale
         {
             // One decoder per stream: a new codec after a discontinuity
             // (an ad in another encoding) is not followed.
             return Err(Error::UnsupportedCodec(format!(
-                "a codec change mid-stream ({:?} to {:?})",
+                "a codec configuration change mid-stream ({:?} to {:?})",
                 current.codec.codec, next.codec.codec
             )));
         }

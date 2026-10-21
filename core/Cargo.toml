@@ -31,6 +31,8 @@ tracing = { version = "0.1.41", default-features = false, features = ["std"] }
 # Pinned exactly: the bindgen CLI (tools/uniffi-bindgen) must match the
 # scaffolding in ristle-ffi.
 uniffi = "=0.32.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 
 [workspace.lints.rust]
 missing_docs = "warn"

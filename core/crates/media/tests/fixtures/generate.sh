@@ -64,4 +64,14 @@ $FF -i "$tmp/t1.wav" -c:a libmp3lame -b:a 128k -f mpegts $META track-mp3.ts
 $FF -f lavfi -i "testsrc=size=16x16:rate=10:duration=1.2" -i "$tmp/t1.wav" \
   -map 0:v -map 1:a -c:v mpeg4 -bf 2 -q:v 10 -video_track_timescale 1000 -c:a aac -b:a 128k $META muxed.mp4
 
+# --- HLS renditions of the whole 44.1 kHz album signal, 1 s segments. Tests
+# derive the encrypted, byte-range and packed-audio variants from these.
+HLS="-hls_time 1 -hls_playlist_type vod -hls_flags independent_segments"
+rm -rf hls && mkdir -p hls/fmp4 hls/ts hls/muxed
+$FF -i "$tmp/s44.wav" -c:a aac -b:a 128k $META -f hls $HLS -hls_segment_type fmp4   -hls_fmp4_init_filename init.mp4 -hls_segment_filename hls/fmp4/seg%d.m4s hls/fmp4/index.m3u8
+$FF -i "$tmp/s44.wav" -c:a aac -b:a 128k $META -f hls $HLS -hls_segment_type mpegts   -hls_segment_filename hls/ts/seg%d.ts hls/ts/index.m3u8
+# Video and audio in one rendition: each moof carries a video traf too.
+$FF -f lavfi -i "testsrc=size=16x16:rate=10:duration=3.6" -i "$tmp/s44.wav" -map 0:v -map 1:a   -c:v mpeg4 -g 10 -q:v 10 -c:a aac -b:a 128k $META -f hls $HLS -hls_segment_type fmp4   -hls_fmp4_init_filename init.mp4 -hls_segment_filename hls/muxed/seg%d.m4s hls/muxed/index.m3u8
+ls -l hls/*
+
 ls -l ./*.mp3 ./*.m4a ./*.ogg ./*.flac ./*.opus ./*.wav ./*.aac ./*.webm ./*.mka ./*.ts ./*.mp4

@@ -204,6 +204,17 @@ impl TsDemuxer {
         Ok(())
     }
 
+    /// The end of an HLS segment: segments end on PES boundaries, so the
+    /// last frame is complete and need not wait for the next header.
+    pub(crate) fn flush(&mut self) -> Result<(), Error> {
+        if let Some(framer) = &mut self.framer {
+            while let Some(packet) = framer.next_packet(true)? {
+                self.ready.push_back(packet);
+            }
+        }
+        Ok(())
+    }
+
     /// No more bytes: the last frame no longer waits for the next header.
     pub(crate) fn finish(&mut self) -> Result<(), Error> {
         self.ended = true;

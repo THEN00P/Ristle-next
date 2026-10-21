@@ -111,6 +111,11 @@ impl SymphoniaDemuxer {
         })
     }
 
+    /// The selected track's id (the MP4 `tkhd` track_ID).
+    pub(crate) fn track_id(&self) -> u32 {
+        self.track_id
+    }
+
     fn reader(&mut self) -> Result<&mut Box<dyn FormatReader>, Error> {
         self.reader.as_mut().ok_or_else(lost_reader)
     }

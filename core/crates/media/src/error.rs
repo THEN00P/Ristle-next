@@ -59,6 +59,15 @@ pub enum Error {
         /// The stream's channel count.
         channels: u16,
     },
+    /// Fetching part of the stream failed.
+    #[error("fetching {url} failed: {error}")]
+    Fetch {
+        /// What was fetched.
+        url: String,
+        /// Why it failed.
+        #[source]
+        error: crate::FetchError,
+    },
     /// Reading the source failed.
     #[error("reading the source failed: {0}")]
     Io(#[from] std::io::Error),

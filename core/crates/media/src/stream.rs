@@ -207,6 +207,7 @@ impl<D: Demuxer> DecodedStream<D> {
                 self.finish()?;
                 return Ok(true);
             }
+            Demuxed::Pending => return Ok(false),
         };
         if self.origin.is_none() {
             // No edit list: presentation zero is where the first packet's

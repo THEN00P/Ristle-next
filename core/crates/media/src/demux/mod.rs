@@ -64,6 +64,8 @@ pub(crate) struct DemuxedPacket {
 
 pub(crate) enum Demuxed {
     Packet(DemuxedPacket),
+    /// The next packet's bytes have not arrived yet.
+    Pending,
     End,
 }
 

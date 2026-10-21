@@ -319,6 +319,15 @@ pub trait DecoderProvider: Send + Sync {
     fn supports(&self, codec: &CodecDescription) -> Support;
     fn open(&self, codec: &CodecDescription) -> Result<Box<dyn Decoder>, MediaError>;
 }
+/// HTTP for HLS and progressive sources. `ristle-app` implements it over the
+/// `ristle-net` client, which also enforces the manifest's `media-hosts`;
+/// `ristle-media` applies the Stream Source's own-origin header rule.
+#[async_trait] pub trait Fetch: Send + Sync {
+    async fn get(&self, request: FetchRequest) -> Result<Box<dyn FetchBody>, FetchError>; // url, headers, range
+}
+#[async_trait] pub trait FetchBody: Send {
+    async fn chunk(&mut self) -> Result<Option<Bytes>, FetchError>;
+}
 
 // ristle-audio
 pub trait AudioOutput: Send {

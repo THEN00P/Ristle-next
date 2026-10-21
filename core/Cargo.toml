@@ -29,11 +29,16 @@ symphonia = { version = "0.6.1", default-features = false }
 symphonia-adapter-libopus = "0.3.0"
 thiserror = "2"
 tracing = "0.1"
+aes = "0.8"
+async-trait = "0.1"
+bytes = "1"
+cbc = "0.1"
+tokio = { version = "1", default-features = false }
+url = "2"
 cpal = "0.18.2"
 ndk = { version = "0.9", default-features = false }
 rtrb = "0.4"
 rubato = "0.16"
-tokio = { version = "1.47", default-features = false }
 # Pinned exactly: the bindgen CLI (tools/uniffi-bindgen) must match the
 # scaffolding in ristle-ffi.
 uniffi = "=0.32.2"

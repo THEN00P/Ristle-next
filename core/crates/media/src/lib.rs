@@ -1,8 +1,9 @@
 //! From a Stream Source to decoded, timeline-aligned PCM (ADR 0004).
 //!
 //! - **Sources:** local files and other seekable byte sources
-//!   ([`ContainerStream`]). Progressive HTTP with Range seeks, HLS, host-side
-//!   AES-CTR/CBC decryption and Plugin Byte Sources follow.
+//!   ([`ContainerStream`]), and HLS ([`HlsStream`]) through the [`Fetch`]
+//!   port. Progressive HTTP with Range seeks, host-side AES-CTR/CBC
+//!   decryption and Plugin Byte Sources follow.
 //! - **Demux:** the containers Symphonia reads (MP4, Ogg, MKV/WebM, FLAC,
 //!   WAV, AIFF, CAF, ADTS, MP3), with the MP4 edit list of the selected audio
 //!   track applied by the host; and MPEG-TS with ADTS or MPEG audio, which
@@ -24,6 +25,8 @@ mod container;
 mod decode;
 mod demux;
 mod error;
+mod fetch;
+mod hls;
 mod stream;
 
 pub use codec::{Codec, CodecDescription, HeAac};
@@ -34,4 +37,6 @@ pub use decode::{
 };
 pub use demux::MediaHint;
 pub use error::{Error, MediaError};
+pub use fetch::{ByteRange, Fetch, FetchBody, FetchError, FetchRequest};
+pub use hls::{HlsSource, HlsStream};
 pub use stream::{MediaStream, Read, StreamFormat};

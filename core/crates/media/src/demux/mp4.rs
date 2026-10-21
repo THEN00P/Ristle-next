@@ -165,10 +165,6 @@ pub(crate) fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Result<Option<&'a [u8
     Ok(None)
 }
 
-pub(crate) fn be16(b: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(b.get(at..at + 2)?.try_into().ok()?))
-}
-
 pub(crate) fn be32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
@@ -260,13 +256,14 @@ fn edit_list(moov: &[u8], trak: &[u8]) -> Result<Option<Gapless>, Error> {
             (
                 be64(elst, at),
                 be64(elst, at + 8).map(|t| t as i64),
-                be16(elst, at + 16),
+                // media_rate: signed 16.16 fixed point.
+                be32(elst, at + 16),
             )
         } else {
             (
                 be32(elst, at).map(u64::from),
                 be32(elst, at + 4).map(|t| i64::from(t as i32)),
-                be16(elst, at + 8),
+                be32(elst, at + 8),
             )
         };
         let (Some(segment_duration), Some(media_time), Some(rate)) =
@@ -286,8 +283,11 @@ fn edit_list(moov: &[u8], trak: &[u8]) -> Result<Option<Gapless>, Error> {
             extra_edits += 1;
             continue;
         }
-        if rate != 1 {
-            tracing::warn!(rate, "ignoring an edit list with a media rate other than 1");
+        if rate != 0x0001_0000 {
+            tracing::warn!(
+                rate,
+                "ignoring an edit list with a media rate other than 1.0"
+            );
             return Ok(None);
         }
         // A zero duration means "to the end of the media" (fragmented files).
@@ -491,6 +491,15 @@ pub(crate) mod tests {
             gapless_for_track(&moov, 1).unwrap().map(|g| g.priming),
             Some(1024)
         );
+    }
+
+    #[test]
+    fn an_edit_with_a_fractional_rate_is_not_applied() {
+        let mut trak = trak(1, 44_100, &[(1190, 1024)]);
+        // The fraction half of media_rate (1.5): the last two bytes of the entry.
+        let at = trak.windows(4).position(|w| w == b"elst").unwrap() + 4 + 4 + 4 + 8 + 2;
+        trak[at] = 0x80;
+        assert_eq!(gapless_for_track(&moov(&[trak]), 1).unwrap(), None);
     }
 
     #[test]

@@ -58,6 +58,12 @@ pub trait MediaStream: Send {
     fn seek(&mut self, position_ms: u64) -> Result<(), Error>;
 }
 
+/// Milliseconds as frames at `rate`, saturating: a position from outside
+/// (an FFI command) may be anything.
+fn ms_to_frames(ms: u64, rate: u32) -> i64 {
+    i64::try_from(u128::from(ms) * u128::from(rate) / 1000).unwrap_or(i64::MAX)
+}
+
 /// How much audio before a seek target to decode and drop, so the decoder's
 /// state (MDCT overlap, the MP3 bit reservoir, Opus' adaptive state) has
 /// settled by the target.
@@ -278,19 +284,18 @@ impl<D: Demuxer> DecodedStream<D> {
         // Window on the timeline, in output frames.
         let origin = tb.to_frames(self.origin.unwrap_or(0), rate)
             + i64::try_from(self.pre_skip * u64::from(rate) / 48_000).unwrap_or(i64::MAX);
-        let start = origin + i64::try_from(self.target_ms * u64::from(rate) / 1000).unwrap_or(0);
-        let end = self
-            .window
-            .and_then(|w| w.length)
-            .map(|length| origin + tb.to_frames(i64::try_from(length).unwrap_or(i64::MAX), rate));
+        let start = origin.saturating_add(ms_to_frames(self.target_ms, rate));
+        let end = self.window.and_then(|w| w.length).map(|length| {
+            origin.saturating_add(tb.to_frames(i64::try_from(length).unwrap_or(i64::MAX), rate))
+        });
 
         let mut keep_from = tb
             .to_frames(i64::try_from(trim_start).unwrap_or(0), rate)
             .max(0);
         let mut keep_to = frames as i64 - tb.to_frames(i64::try_from(trim_end).unwrap_or(0), rate);
-        keep_from = keep_from.max(start - position);
+        keep_from = keep_from.max(start.saturating_sub(position));
         if let Some(end) = end {
-            keep_to = keep_to.min(end - position);
+            keep_to = keep_to.min(end.saturating_sub(position));
         }
         let keep_from = keep_from.clamp(0, frames as i64) as usize;
         let keep_to = keep_to.clamp(0, frames as i64) as usize;
@@ -404,11 +409,13 @@ impl<D: Demuxer> MediaStream for DecodedStream<D> {
         // the stream did.
         let origin = self.origin.unwrap_or(0);
         let tb = self.time_base;
-        let frames = |ms: u64| i64::try_from(ms * u64::from(rate) / 1000).unwrap_or(i64::MAX);
+        let frames = |ms: u64| ms_to_frames(ms, rate);
         let pre_skip = i64::try_from(self.pre_skip * u64::from(rate) / 48_000).unwrap_or(0);
         // The pre-roll is taken on the track's timeline, so a target near the
         // start still decodes the priming packets before it.
-        let target_frames = pre_skip + frames(position_ms) - frames(preroll_ms(self.codec));
+        let target_frames = pre_skip
+            .saturating_add(frames(position_ms))
+            .saturating_sub(frames(preroll_ms(self.codec)));
         let target = origin
             .saturating_add(tb.ts_at_or_before(target_frames, rate))
             .max(self.first_pts.unwrap_or(i64::MIN));

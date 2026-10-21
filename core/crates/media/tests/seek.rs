@@ -70,6 +70,10 @@ fn a_seek_past_the_end_ends_the_stream() {
         stream.seek(60_000).unwrap();
         let mut buffer = [0f32; 512];
         assert_eq!(stream.read(&mut buffer).unwrap(), Read::End, "{name}");
+        // A position from a malformed command must not overflow.
+        stream.seek(u64::MAX).unwrap();
+        let mut buffer = [0f32; 512];
+        assert_eq!(stream.read(&mut buffer).unwrap(), Read::End, "{name}");
         // And a later seek recovers.
         stream.seek(1000).unwrap();
         assert!(

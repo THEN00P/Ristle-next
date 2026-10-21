@@ -8,9 +8,21 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# The capture output and scripted `MediaStream`s, for this crate's tests and
+# for `ristle-app`'s.
+test-support = []
+
 [dependencies]
 ristle-domain.workspace = true
 ristle-media.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ristle-audio = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

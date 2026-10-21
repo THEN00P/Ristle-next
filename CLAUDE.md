@@ -105,3 +105,13 @@ before relying on it, and update it when you learn something new.
   `docs/plan/legacy_tests.py` as `RISTLE_LEGACY`. Some legacy tests wrap
   their name onto the line after `RISTLE_TEST(`, so a one-line grep misses
   them.
+- **Symphonia 0.6.1 quirks (`ristle-media`).** Its MP4 reader cannot seek
+  after returning its last packet, and its AAC decoder keeps state across
+  `reset()`; the crate works around both. Readers disagree on whether
+  `Packet.dur` includes the trims (MP3 counts the whole frame), so trims are
+  applied to each packet's decoded output. ffmpeg's fragmented init (HLS
+  fMP4) writes an edit list with media_time 0, so its priming is not
+  signalled.
+- **`clippy.toml`'s `allow-*-in-tests` covers only `#[test]` functions**, not
+  helpers in `tests/*.rs` crates. Those files carry a crate-level
+  `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.

@@ -8,9 +8,29 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# The capture output and scripted `MediaStream`s, for this crate's tests and
+# for `ristle-app`'s.
+test-support = []
+
 [dependencies]
 ristle-domain.workspace = true
 ristle-media.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Android plays through AAudio directly (ADR 0004 amendment, point 6).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+cpal.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+# AAudio's content type and usage need API level 28 (Android 9).
+ndk = { workspace = true, features = ["audio", "api-level-28"] }
+
+[dev-dependencies]
+ristle-audio = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

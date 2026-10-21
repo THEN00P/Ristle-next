@@ -53,7 +53,7 @@ before relying on it, and update it when you learn something new.
   with the Write tool and run it instead.
 - **`workflow_dispatch` only works for workflow files already on `main`.** New
   Apple jobs go into `spike-c-ios.yml` behind its `spike` input
-  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=d`).
+  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=a`).
 - **The host has 16 GB RAM and the emulator takes about 4.6 GB.** With Gradle
   daemons and other sessions running, the host pages and the emulator stalls
   for minutes, which voids any timing. Run `./gradlew --stop` and check
@@ -105,3 +105,13 @@ before relying on it, and update it when you learn something new.
   `docs/plan/legacy_tests.py` as `RISTLE_LEGACY`. Some legacy tests wrap
   their name onto the line after `RISTLE_TEST(`, so a one-line grep misses
   them.
+- **CI's `cargo doc` and clippy differ in features.** `cargo doc` runs
+  without `--all-features`, so code used only behind a feature (for example
+  `test-support` helpers) must be `#[cfg(feature = ...)]`-gated, or it fails
+  CI as dead code while local `--all-features` clippy passes.
+- **Running Rust test binaries on the emulator:** `cargo ndk -t x86_64
+  --platform 28 test -p <crate> --no-run`, `adb push` the binary to
+  `/data/local/tmp/`, then `adb shell chmod 755` it after every push (the
+  exec bit is lost), and run it with `adb shell`. AAudio works from a shell
+  binary, so no app is needed. The x86_64 Android target is installed for
+  the pinned toolchain.

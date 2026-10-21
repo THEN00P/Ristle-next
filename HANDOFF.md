@@ -134,8 +134,9 @@ the end of that document.
 
 **Status 2026-10-12: go.** Items 1–4 passed on the Android emulator and in the
 iOS Simulator. Results and sharp edges are in `docs/research/uniffi.md`, and the
-resulting API conventions are in ADR 0001. The code is in `spikes/d-uniffi/` until
-the findings are reviewed.
+resulting API conventions are in ADR 0001. The spike was rewritten into
+`ristle-ffi` and `ristle-app` in phase 2 M1 and deleted; its last commit is
+e822f0d.
 
 1. A Rust core stub with an async function, a callback interface (state
    observer) and a streaming update every 100 ms.

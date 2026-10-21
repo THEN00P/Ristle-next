@@ -404,7 +404,7 @@ impl RistleCore {
     pub async fn search(&self, query: String, scope: SearchScope, cancel: Arc<CancelToken>) -> Result<SearchSnapshot, CoreError>;
     pub async fn open_page(&self, target: PageTarget, refresh: bool, cancel: Arc<CancelToken>) -> Result<Page, CoreError>;
     pub async fn list(&self, collection: CollectionRef, cursor: Option<String>, cancel: Arc<CancelToken>) -> Result<ListingPage, CoreError>;
-    pub async fn library(&self, refresh: bool, cancel: Arc<CancelToken>) -> Result<Library, CoreError>;
+    pub async fn library(&self, refresh: bool, cancel: Arc<CancelToken>) -> Result<LibraryView, CoreError>;
     pub async fn set_liked(&self, item: ItemRef, liked: bool) -> Result<(), CoreError>;
 
     // Ristle Playlists and history.
@@ -444,6 +444,14 @@ pub trait PlatformHost: Send + Sync {                      // platform concerns 
 Sign-in steps the UI must show (a web view with capture rules, a device
 code, folder or server choice) are `SignInStep` variants, answered through
 `continue_sign_in`. The core never calls into UI.
+
+The records and enums are `ristle-app`'s own types (`ristle_app::model`),
+which `ristle-ffi` exposes as UniFFI remote types, so the Qt facade (phase 4)
+uses the same ones. Their names avoid the platforms' common types: JNA's
+`Library`, and `Image`, `Section` and `Layout` in SwiftUI and Compose. No
+error field is called `message`, which Kotlin exceptions already have.
+`core/tools/check-bindings.sh` compiles both bindings and runs a smoke
+program in each against the real library.
 
 ## 4. Milestones
 

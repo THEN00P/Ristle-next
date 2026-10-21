@@ -116,6 +116,9 @@ name = "ristle-queue"
 version = "0.1.0"
 dependencies = [
  "ristle-domain",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

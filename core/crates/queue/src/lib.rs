@@ -20,3 +20,13 @@
 //!
 //! Milestone M2 (`docs/plan/phase-2.md`). Ported legacy tests:
 //! `canonical_queue_test.cpp`, `playable_sequence_test.cpp`.
+
+mod entry;
+mod error;
+mod queue;
+pub mod sequence;
+
+pub use entry::{Advance, CollectionPosition, EntryId, Origin, QueueEntry, RepeatMode, Submitter};
+pub use error::{CorruptState, Error};
+pub use queue::{CanonicalQueue, Current, QueueState};
+pub use sequence::{Sequence, SequenceState};

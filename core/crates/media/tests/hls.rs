@@ -11,125 +11,20 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use bytes::Bytes;
+use common::memory_fetch::MemoryFetch;
 use common::{best_lag, fixture, left, reference, snr};
 use ristle_media::{
-    ContainerStream, DecoderRegistry, Error, Fetch, FetchBody, FetchError, FetchRequest, HlsSource,
-    HlsStream, MediaHint, MediaStream, Read,
+    ContainerStream, DecoderRegistry, Error, Fetch, FetchError, HlsSource, HlsStream, MediaHint,
+    MediaStream, Read,
 };
-use tokio::sync::Semaphore;
 
 /// Frames in the HLS fixtures' source: the whole 44.1 kHz album signal.
 const SOURCE_FRAMES: usize = 158_760;
 /// ffmpeg's AAC priming, which its HLS output does not signal.
 const PRIMING: usize = 1024;
-
-/// Serves files from memory, with ranges, chunked bodies, optional gates
-/// and a request log.
-#[derive(Default)]
-struct MemoryFetch {
-    files: Mutex<HashMap<String, Bytes>>,
-    log: Mutex<Vec<FetchRequest>>,
-    /// Every chunk after a body's first waits for a permit here.
-    gates: Mutex<HashMap<String, Arc<Semaphore>>>,
-    chunk: usize,
-}
-
-impl MemoryFetch {
-    fn new(chunk: usize) -> Self {
-        Self {
-            chunk,
-            ..Self::default()
-        }
-    }
-
-    fn put(&self, url: &str, data: impl Into<Bytes>) {
-        self.files
-            .lock()
-            .unwrap()
-            .insert(url.to_owned(), data.into());
-    }
-
-    fn gate(&self, url: &str) -> Arc<Semaphore> {
-        let gate = Arc::new(Semaphore::new(0));
-        self.gates
-            .lock()
-            .unwrap()
-            .insert(url.to_owned(), gate.clone());
-        gate
-    }
-
-    fn requests(&self) -> Vec<FetchRequest> {
-        self.log.lock().unwrap().clone()
-    }
-}
-
-struct MemoryBody {
-    data: Bytes,
-    at: usize,
-    chunk: usize,
-    gate: Option<Arc<Semaphore>>,
-}
-
-#[async_trait]
-impl FetchBody for MemoryBody {
-    async fn chunk(&mut self) -> Result<Option<Bytes>, FetchError> {
-        if self.at >= self.data.len() {
-            return Ok(None);
-        }
-        if self.at > 0
-            && let Some(gate) = &self.gate
-        {
-            gate.acquire()
-                .await
-                .map_err(|e| FetchError::Network(e.to_string()))?
-                .forget();
-        }
-        let end = (self.at + self.chunk).min(self.data.len());
-        let chunk = self.data.slice(self.at..end);
-        self.at = end;
-        Ok(Some(chunk))
-    }
-}
-
-#[async_trait]
-impl Fetch for MemoryFetch {
-    async fn get(&self, request: FetchRequest) -> Result<Box<dyn FetchBody>, FetchError> {
-        self.log.lock().unwrap().push(request.clone());
-        let data = self
-            .files
-            .lock()
-            .unwrap()
-            .get(&request.url)
-            .cloned()
-            .ok_or(FetchError::Status { status: 404 })?;
-        let data = match request.range {
-            Some(range) => {
-                let start = usize::try_from(range.start).unwrap();
-                if start > data.len() {
-                    return Err(FetchError::Status { status: 416 });
-                }
-                let end = range
-                    .length
-                    .map_or(data.len(), |l| (start + l as usize).min(data.len()));
-                data.slice(start..end)
-            }
-            None => data,
-        };
-        let gate = self.gates.lock().unwrap().get(&request.url).cloned();
-        Ok(Box::new(MemoryBody {
-            data,
-            at: 0,
-            chunk: self.chunk,
-            gate,
-        }))
-    }
-}
 
 const BASE: &str = "https://media.example/";
 

@@ -344,6 +344,7 @@ pub trait DecoderProvider: Send + Sync {
 }
 #[async_trait] pub trait FetchBody: Send {
     async fn chunk(&mut self) -> Result<Option<Bytes>, FetchError>;
+    fn total_length(&self) -> Option<u64> { None }  // from Content-Range / Content-Length
 }
 
 // ristle-audio

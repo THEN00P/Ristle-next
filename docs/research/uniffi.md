@@ -110,6 +110,10 @@ binding.
    `public`, while records and objects do. Code in another module cannot catch
    typed errors. In this spike the bindings compile into the app module. I did
    not check whether a `uniffi.toml` option changes this.
+   **Corrected 2026-10-20 (M1):** with UniFFI 0.32.2 the enum is `public`.
+   The template puts `public` on the line before `enum`, which a one-line
+   grep misses. CI now catches `CoreError` from a separate Swift module
+   (`core/tools/check-bindings.sh swift`).
 
 Smaller things:
 

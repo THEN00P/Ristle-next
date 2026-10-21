@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 use crate::entry::{EntryId, Origin, QueueEntry, RepeatMode};
 use crate::error::CorruptState;
 
+mod ops;
+#[cfg(test)]
+mod tests;
+
+pub use ops::{AddOutcome, CollectionEntry, Lane, Rejection, Removed, StartOutcome};
+
 /// Which entry is playing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Current {
@@ -177,7 +183,7 @@ impl CanonicalQueue {
 }
 
 #[cfg(test)]
-mod tests {
+mod state_tests {
     use ristle_domain::{Track, TrackRef};
 
     use super::*;

@@ -217,6 +217,8 @@ pub struct QueueState { pub collection: Vec<QueueEntry>, pub cursor: Option<usiz
 /// taken from the lane, which then lives nowhere else.
 pub enum Current { AtCursor, Detached(Box<QueueEntry>) }
 
+/// A collection entry to start, append or reconcile, with its position.
+pub struct CollectionEntry { pub track: Track, pub position: CollectionPosition, pub slot: Option<SlotId> }
 impl CanonicalQueue {
     pub fn start_collection(&mut self, entries: Vec<CollectionEntry>, start: usize) -> StartOutcome;
     pub fn add_to_queue(&mut self, track: Track, by: Option<Submitter>) -> Result<EntryId, Rejection>;

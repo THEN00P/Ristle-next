@@ -172,8 +172,9 @@ pub struct Track {
     pub artwork: Vec<Artwork>,
     pub released: Option<MediaDate>,
     pub uploaded: Option<MediaDate>,
+    pub explicit: bool,
     pub capabilities: PlaybackCapabilities,  // seekable, live
-    pub availability: Availability,          // Available | Unavailable { reason } | Unknown
+    pub availability: Availability,          // Available | Unavailable { reason: Option<String> } | Unknown
     pub url: Option<String>,
     pub isrc: Option<String>,
     pub attributes: Vec<MetadataAttribute>,

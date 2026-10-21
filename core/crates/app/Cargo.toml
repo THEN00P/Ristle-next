@@ -18,6 +18,9 @@ ristle-media.workspace = true
 ristle-audio.workspace = true
 ristle-protocol.workspace = true
 ristle-party.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
 
 [lints]
 workspace = true

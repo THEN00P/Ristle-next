@@ -53,7 +53,7 @@ before relying on it, and update it when you learn something new.
   with the Write tool and run it instead.
 - **`workflow_dispatch` only works for workflow files already on `main`.** New
   Apple jobs go into `spike-c-ios.yml` behind its `spike` input
-  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=d`).
+  (`gh workflow run spike-c-ios.yml --ref <branch> -f spike=a`).
 - **The host has 16 GB RAM and the emulator takes about 4.6 GB.** With Gradle
   daemons and other sessions running, the host pages and the emulator stalls
   for minutes, which voids any timing. Run `./gradlew --stop` and check

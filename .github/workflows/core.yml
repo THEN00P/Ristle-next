@@ -66,7 +66,7 @@ jobs:
 
   # The Android build of the crates with Android-only code (ADR 0004: the
   # AAudio output). Cross-compiled and linted; CI cannot run it.
-  android:
+  android-audio:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -137,7 +137,7 @@ jobs:
           path: core/target/bindings-check/generated
           retention-days: 7
 
-  android:
+  android-ffi:
     # The facade cross-compiles for Android (M1). Full Android builds start
     # with phase 3.
     runs-on: ubuntu-24.04

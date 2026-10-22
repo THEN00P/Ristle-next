@@ -212,7 +212,8 @@ pub struct QueueState { pub collection: Vec<QueueEntry>, pub cursor: Option<usiz
                         pub requests: Vec<QueueEntry>, pub play_next_count: usize,
                         pub current: Option<Current>, pub repeat: RepeatMode,
                         pub shuffle: Option<u64>,  // seed; original order = entry id order
-                        pub next_id: EntryId }
+                        pub next_id: EntryId,
+                        pub trimmed: Vec<Trimmed> }  // { track, position } trimmed from this pass; serde default
 /// The playing entry is the collection entry at the cursor, or a request
 /// taken from the lane, which then lives nowhere else.
 pub enum Current { AtCursor, Detached(Box<QueueEntry>) }

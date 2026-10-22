@@ -1290,3 +1290,63 @@ fn an_edit_while_shuffled_keeps_exactly_the_unplayed_tracks() {
     expected.sort();
     assert_eq!(upcoming, expected);
 }
+
+// Trimmed history still counts as played when a shuffled pass is reconciled.
+#[test]
+fn an_edit_after_trimming_a_shuffled_pass_does_not_replay_trimmed_entries() {
+    let tracks: Vec<Track> = (0..30).map(|i| track("local", &format!("t{i}"))).collect();
+    let mut queue = started(tracks.clone());
+    queue.shuffle_upcoming(8);
+    for _ in 0..15 {
+        assert!(queue.advance(TrackEnded));
+    }
+    let mut played: Vec<String> = names(queue.history())
+        .into_iter()
+        .chain([playing(&queue)])
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(queue.trim_history(3), 12);
+
+    queue.replace_upcoming_collection(CollectionEntry::numbered(tracks, 0));
+
+    let mut upcoming: Vec<String> = names(queue.upcoming())
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    upcoming.append(&mut played);
+    upcoming.sort();
+    let mut all: Vec<String> = (0..30).map(|i| format!("t{i}")).collect();
+    all.sort();
+    assert_eq!(upcoming, all, "every Track exactly once in this pass");
+
+    // The record of what was trimmed persists with the queue.
+    let restored = round_trip(&queue);
+    assert_eq!(restored, queue);
+}
+
+// At the wrapped tail, an edit becomes the whole next pass.
+#[test]
+fn an_edit_at_the_wrapped_tail_becomes_the_next_pass() {
+    let mut queue = started(["a", "b", "c"].map(|id| track("local", id)).into());
+    queue.set_repeat(RepeatMode::Queue);
+    assert!(queue.advance(TrackEnded));
+    assert!(queue.advance(TrackEnded));
+    assert_eq!(playing(&queue), "c");
+
+    queue.replace_upcoming_collection(CollectionEntry::numbered(
+        ["a", "x", "b", "c"].map(|id| track("local", id)),
+        0,
+    ));
+
+    assert_eq!(playing(&queue), "c");
+    assert_eq!(names(queue.upcoming()), ["a", "x", "b", "c"]);
+    let mut pass = Vec::new();
+    for _ in 0..4 {
+        assert!(queue.advance(TrackEnded));
+        pass.push(playing(&queue).to_owned());
+    }
+    assert_eq!(pass, ["a", "x", "b", "c"]);
+    assert!(queue.advance(TrackEnded));
+    assert_eq!(playing(&queue), "a");
+    assert_eq!(queue.snapshot().collection.len(), 4, "the old c is gone");
+}

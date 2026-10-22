@@ -31,6 +31,6 @@ pub use entry::{Advance, CollectionPosition, EntryId, Origin, QueueEntry, Repeat
 pub use error::{CorruptState, Error};
 pub use queue::{
     AddOutcome, CanonicalQueue, CollectionEntry, Current, Lane, QueueState, Rejection, Removed,
-    StartOutcome,
+    StartOutcome, Trimmed,
 };
 pub use sequence::{Sequence, SequenceState};

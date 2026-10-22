@@ -2,7 +2,7 @@
 
 use ristle_domain::{Track, TrackRef};
 
-use super::{CanonicalQueue, Current};
+use super::{CanonicalQueue, Current, Trimmed};
 use crate::entry::{
     Advance, CollectionPosition, EntryId, Origin, QueueEntry, RepeatMode, Submitter,
 };
@@ -233,6 +233,7 @@ impl CanonicalQueue {
         self.state.requests.clear();
         self.state.play_next_count = 0;
         self.state.shuffle = None;
+        self.state.trimmed.clear();
         for entry in entries
             .into_iter()
             .filter(|entry| entry.track.is_queueable())
@@ -330,7 +331,12 @@ impl CanonicalQueue {
     /// anchor's, so a duplicate anywhere else in the collection is never
     /// mistaken for it (legacy trap 6). When the anchor's Track is gone, the
     /// whole edited collection follows, and a removed continuation is
-    /// dropped.
+    /// dropped. While shuffled, what follows is instead everything this pass
+    /// has not played, history trimmed by `trim_history` included, shuffled
+    /// with the active seed.
+    ///
+    /// At the collection's tail with [`RepeatMode::Queue`], what follows is
+    /// the next pass, and the edited collection becomes that whole pass.
     pub fn replace_upcoming_collection(&mut self, entries: Vec<CollectionEntry>) -> AddOutcome {
         let mut outcome = AddOutcome::default();
         let entries: Vec<_> = entries
@@ -341,6 +347,10 @@ impl CanonicalQueue {
                 queueable
             })
             .collect();
+
+        if self.wrapping() {
+            return self.replace_next_pass(entries, outcome);
+        }
 
         let start = self.upcoming_start();
         let collection = &self.state.collection;
@@ -400,15 +410,25 @@ impl CanonicalQueue {
             Some(_) => {
                 let mut remaining: Vec<Option<CollectionEntry>> =
                     entries.into_iter().map(Some).collect();
-                for played in &self.state.collection {
-                    let Origin::Collection { position } = played.origin else {
-                        continue;
-                    };
+                let played =
+                    self.state
+                        .trimmed
+                        .iter()
+                        .map(|trimmed| (&trimmed.track, trimmed.position))
+                        .chain(self.state.collection.iter().filter_map(
+                            |entry| match entry.origin {
+                                Origin::Collection { position } => {
+                                    Some((&entry.track.reference, position))
+                                }
+                                Origin::Request => None,
+                            },
+                        ));
+                for (track, position) in played {
                     let nearest = remaining
                         .iter()
                         .enumerate()
                         .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
-                        .filter(|(_, entry)| entry.track.reference == played.track.reference)
+                        .filter(|(_, entry)| &entry.track.reference == track)
                         .min_by_key(|(_, entry)| entry.position.0.abs_diff(position.0))
                         .map(|(index, _)| index);
                     if let Some(index) = nearest {
@@ -427,6 +447,45 @@ impl CanonicalQueue {
         // What stayed in place (requests, the continuation) keeps its place.
         if let Some(seed) = self.state.shuffle {
             Random::new(seed).shuffle(&mut self.state.collection[first_new..]);
+        }
+        outcome
+    }
+
+    /// Reconciles while the next pass is what follows: the edited collection
+    /// becomes the whole next pass, in its order (shuffled with the active
+    /// seed while shuffled). The entry playing finishes this pass and is not
+    /// part of the next one; its occurrence in the edit is. History of the
+    /// finished pass is dropped.
+    fn replace_next_pass(
+        &mut self,
+        entries: Vec<CollectionEntry>,
+        mut outcome: AddOutcome,
+    ) -> AddOutcome {
+        let playing = match self.state.current {
+            Some(Current::AtCursor) => self
+                .state
+                .cursor
+                .map(|cursor| self.state.collection.swap_remove(cursor)),
+            _ => None,
+        };
+        self.state.collection.clear();
+        self.state.trimmed.clear();
+        self.state.cursor = None;
+        if let Some(mut playing) = playing {
+            // Played once more to its end, then dropped like requests kept
+            // as history are when the collection repeats.
+            playing.origin = Origin::Request;
+            self.state.collection.push(playing);
+            self.state.cursor = Some(0);
+        }
+        for entry in entries {
+            let entry = self.create_from(entry);
+            self.state.collection.push(entry);
+            outcome.added += 1;
+        }
+        if let Some(seed) = self.state.shuffle {
+            let first = self.upcoming_start();
+            Random::new(seed).shuffle(&mut self.state.collection[first..]);
         }
         outcome
     }
@@ -467,6 +526,7 @@ impl CanonicalQueue {
                 self.state
                     .collection
                     .retain(|entry| entry.origin != Origin::Request);
+                self.state.trimmed.clear();
                 (!self.state.collection.is_empty()).then_some(0)
             }
             Some(_) => {
@@ -743,7 +803,18 @@ impl CanonicalQueue {
             return 0;
         };
         let dropped = cursor.saturating_sub(keep);
-        self.state.collection.drain(..dropped);
+        let trimmed =
+            self.state
+                .collection
+                .drain(..dropped)
+                .filter_map(|entry| match entry.origin {
+                    Origin::Collection { position } => Some(Trimmed {
+                        track: entry.track.reference,
+                        position,
+                    }),
+                    Origin::Request => None,
+                });
+        self.state.trimmed.extend(trimmed);
         self.state.cursor = Some(cursor - dropped);
         dropped
     }

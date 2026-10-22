@@ -18,6 +18,9 @@ pub enum CorruptState {
         /// The next id.
         next_id: EntryId,
     },
+    /// The next entry id is the largest there is.
+    #[error("queue entry ids are exhausted")]
+    EntryIdsExhausted,
     /// A collection entry is in the request lane, or plays detached.
     #[error("queue entry {0} is a collection entry outside the collection")]
     MisplacedEntry(EntryId),

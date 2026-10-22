@@ -1205,3 +1205,88 @@ fn random_operations_keep_every_invariant() {
         random_operations(seed, 200);
     }
 }
+
+// At the collection's tail with Repeat Queue, Up Next shows the next pass;
+// every operation on the upcoming list acts on what it shows.
+#[test]
+fn the_next_pass_can_be_edited_like_any_upcoming_entries() {
+    let wrapped = || {
+        let mut queue = started(["a", "b", "c"].map(|id| track("local", id)).into());
+        queue.set_repeat(RepeatMode::Queue);
+        assert!(queue.advance(TrackEnded));
+        assert!(queue.advance(TrackEnded));
+        assert_eq!(playing(&queue), "c");
+        assert_eq!(names(queue.upcoming()), ["a", "b"]);
+        queue
+    };
+
+    let mut queue = wrapped();
+    let a = queue.upcoming()[0].id;
+    let removed = queue.remove(a).unwrap();
+    assert_eq!(names(queue.upcoming()), ["b"]);
+    assert_eq!(playing(&queue), "c");
+    assert!(queue.undo_remove(removed));
+    assert_eq!(names(queue.upcoming()), ["a", "b"]);
+    assert_eq!(playing(&queue), "c");
+    assert!(queue.advance(TrackEnded));
+    assert_eq!(playing(&queue), "a");
+
+    let mut queue = wrapped();
+    assert_eq!(queue.clear_upcoming(), 2);
+    assert!(queue.upcoming().is_empty());
+    assert_eq!(playing(&queue), "c");
+    // Only the playing entry is left, and the queue repeats it.
+    assert!(queue.advance(TrackEnded));
+    assert_eq!(playing(&queue), "c");
+
+    let mut queue = wrapped();
+    let b = queue.upcoming()[1].id;
+    assert!(queue.move_request(b, 0));
+    assert_eq!(names(queue.requests()), ["b", "a"]);
+    assert_eq!(playing(&queue), "c");
+
+    let mut queue = started((0..12).map(|i| track("local", &format!("t{i}"))).collect());
+    queue.set_repeat(RepeatMode::Queue);
+    while queue.upcoming().len() < 11 || playing(&queue) != "t11" {
+        assert!(queue.advance(TrackEnded));
+    }
+    queue.shuffle_upcoming(5);
+    let natural: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
+    assert_ne!(names(queue.upcoming()), natural);
+    queue.restore_upcoming_order();
+    assert_eq!(names(queue.upcoming()), natural);
+}
+
+// Reconciling a shuffled pass keeps what has not played yet, whatever its
+// natural position, and never queues what already played.
+#[test]
+fn an_edit_while_shuffled_keeps_exactly_the_unplayed_tracks() {
+    let tracks: Vec<Track> = (0..20).map(|i| track("local", &format!("t{i}"))).collect();
+    let mut queue = started(tracks.clone());
+    queue.shuffle_upcoming(42);
+    for _ in 0..8 {
+        assert!(queue.advance(TrackEnded));
+    }
+    let played: Vec<String> = names(queue.history())
+        .into_iter()
+        .chain([playing(&queue)])
+        .map(str::to_owned)
+        .collect();
+
+    let mut edited = tracks;
+    edited.push(track("local", "added"));
+    queue.replace_upcoming_collection(CollectionEntry::numbered(edited, 0));
+
+    let mut upcoming: Vec<String> = names(queue.upcoming())
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    upcoming.sort();
+    let mut expected: Vec<String> = (0..20)
+        .map(|i| format!("t{i}"))
+        .filter(|name| !played.contains(name))
+        .chain(["added".to_owned()])
+        .collect();
+    expected.sort();
+    assert_eq!(upcoming, expected);
+}

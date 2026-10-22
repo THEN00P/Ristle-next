@@ -87,6 +87,7 @@ pub struct Removed {
     lane: Lane,
     index: usize,
     play_next: bool,
+    wrapped: bool,
 }
 
 impl Removed {
@@ -136,6 +137,59 @@ impl CanonicalQueue {
         self.state
             .cursor
             .map_or(0, |cursor| (cursor + 1).min(self.state.collection.len()))
+    }
+
+    /// Whether what follows is the collection's next pass: the cursor is on
+    /// its last entry and the queue repeats.
+    fn wrapping(&self) -> bool {
+        self.state.repeat == RepeatMode::Queue
+            && self
+                .state
+                .cursor
+                .is_some_and(|cursor| cursor + 1 >= self.state.collection.len())
+    }
+
+    /// Indices into the collection of its upcoming entries, in play order:
+    /// those after the cursor or, while wrapping, the next pass (collection
+    /// entries other than the one playing). Every operation on the upcoming
+    /// collection goes through this, so it acts on what `upcoming` shows.
+    fn upcoming_places(&self) -> Vec<usize> {
+        if self.wrapping() {
+            let current = self.current().map(|entry| entry.id);
+            self.state
+                .collection
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    matches!(entry.origin, Origin::Collection { .. }) && Some(entry.id) != current
+                })
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            (self.upcoming_start()..self.state.collection.len()).collect()
+        }
+    }
+
+    /// Takes the collection entries at `places` (ascending) out, keeping the
+    /// cursor on the entry it was on, or on the one before it when that entry
+    /// was taken.
+    fn take_places(&mut self, places: &[usize]) -> Vec<QueueEntry> {
+        if let Some(cursor) = self.state.cursor {
+            let before = places.iter().filter(|&&index| index < cursor).count();
+            let cursor = cursor - before;
+            self.state.cursor = if places.contains(&(cursor + before)) {
+                cursor.checked_sub(1)
+            } else {
+                Some(cursor)
+            };
+        }
+        let mut taken: Vec<QueueEntry> = places
+            .iter()
+            .rev()
+            .map(|&index| self.state.collection.remove(index))
+            .collect();
+        taken.reverse();
+        taken
     }
 
     fn contains(&self, id: EntryId) -> bool {
@@ -333,9 +387,38 @@ impl CanonicalQueue {
         self.state.collection.append(&mut tail);
         self.state.collection.extend(kept_continuation);
 
-        let resume = matched.map_or(0, |(index, _)| index + 1);
         let first_new = self.state.collection.len();
-        for entry in entries.into_iter().skip(resume) {
+        let remaining = match self.state.shuffle {
+            // In natural order, what is still to come follows the anchor.
+            None => {
+                let resume = matched.map_or(0, |(index, _)| index + 1);
+                entries.into_iter().skip(resume).collect()
+            }
+            // Shuffled, what is still to come is everything this pass has not
+            // played: each collection entry up to the cursor, and the kept
+            // continuation, uses up its nearest occurrence of the same Track.
+            Some(_) => {
+                let mut remaining: Vec<Option<CollectionEntry>> =
+                    entries.into_iter().map(Some).collect();
+                for played in &self.state.collection {
+                    let Origin::Collection { position } = played.origin else {
+                        continue;
+                    };
+                    let nearest = remaining
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
+                        .filter(|(_, entry)| entry.track.reference == played.track.reference)
+                        .min_by_key(|(_, entry)| entry.position.0.abs_diff(position.0))
+                        .map(|(index, _)| index);
+                    if let Some(index) = nearest {
+                        remaining[index] = None;
+                    }
+                }
+                remaining.into_iter().flatten().collect::<Vec<_>>()
+            }
+        };
+        for entry in remaining {
             let entry = self.create_from(entry);
             self.state.collection.push(entry);
             outcome.added += 1;
@@ -506,17 +589,21 @@ impl CanonicalQueue {
                 lane: Lane::Requests,
                 index,
                 play_next,
+                wrapped: false,
             });
         }
         let index = self.state.collection.iter().position(|e| e.id == entry)?;
-        if index < self.upcoming_start() {
+        if !self.upcoming_places().contains(&index) {
             return None;
         }
+        let wrapped = self.wrapping();
+        let entry = self.take_places(&[index]).pop()?;
         Some(Removed {
-            entry: self.state.collection.remove(index),
+            entry,
             lane: Lane::Collection,
             index,
             play_next: false,
+            wrapped,
         })
     }
 
@@ -529,6 +616,7 @@ impl CanonicalQueue {
             lane,
             index,
             play_next,
+            wrapped,
         } = removed;
         if !entry.track.is_queueable() || self.contains(entry.id) {
             return false;
@@ -548,12 +636,20 @@ impl CanonicalQueue {
                 };
                 self.state.requests.insert(at, entry);
             }
-            Lane::Collection => {
-                let at = index
-                    .min(self.state.collection.len())
-                    .max(self.state.cursor.map_or(0, |cursor| cursor + 1));
-                self.state.collection.insert(at, entry);
-            }
+            Lane::Collection => match self.state.cursor {
+                // Back into the next pass, before the entry playing.
+                Some(cursor) if wrapped && self.wrapping() => {
+                    let at = index.min(cursor);
+                    self.state.collection.insert(at, entry);
+                    self.state.cursor = Some(cursor + 1);
+                }
+                cursor => {
+                    let at = index
+                        .min(self.state.collection.len())
+                        .max(cursor.map_or(0, |cursor| cursor + 1));
+                    self.state.collection.insert(at, entry);
+                }
+            },
         }
         self.state.next_id = self.state.next_id.max(EntryId(id.0 + 1));
         true
@@ -565,19 +661,19 @@ impl CanonicalQueue {
     /// the collection included, becomes a Queued Request in the order shown,
     /// and the Play Next grouping ends.
     pub fn move_request(&mut self, entry: EntryId, to: usize) -> bool {
-        let start = self.upcoming_start();
+        let places = self.upcoming_places();
         let Some(from) = self
             .state
             .requests
             .iter()
-            .chain(&self.state.collection[start..])
+            .chain(places.iter().map(|&index| &self.state.collection[index]))
             .position(|e| e.id == entry)
         else {
             return false;
         };
-        let mut lane = Vec::with_capacity(self.state.requests.len() + self.state.collection.len());
+        let mut lane = Vec::with_capacity(self.state.requests.len() + places.len());
         lane.append(&mut self.state.requests);
-        lane.extend(self.state.collection.drain(start..));
+        lane.extend(self.take_places(&places));
         let moved = lane.remove(from);
         lane.insert(to.min(lane.len()), moved);
         for entry in &mut lane {
@@ -589,13 +685,13 @@ impl CanonicalQueue {
     }
 
     /// Removes every upcoming entry: the request lane and the rest of the
-    /// collection. Returns how many.
+    /// collection or, while wrapping, the next pass. Returns how many.
     pub fn clear_upcoming(&mut self) -> usize {
-        let start = self.upcoming_start();
-        let removed = self.state.requests.len() + self.state.collection.len() - start;
+        let places = self.upcoming_places();
+        let removed = self.state.requests.len() + places.len();
         self.state.requests.clear();
         self.state.play_next_count = 0;
-        self.state.collection.truncate(start);
+        self.take_places(&places);
         removed
     }
 
@@ -681,18 +777,24 @@ impl CanonicalQueue {
     /// Reorders the upcoming collection-origin entries among the places they
     /// hold, leaving requests kept in the collection where they are.
     fn reorder_upcoming(&mut self, reorder: impl FnOnce(&mut [QueueEntry])) {
-        let start = self.upcoming_start();
-        let upcoming = &mut self.state.collection[start..];
-        let places: Vec<usize> = upcoming
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| matches!(entry.origin, Origin::Collection { .. }))
-            .map(|(index, _)| index)
+        let places: Vec<usize> = self
+            .upcoming_places()
+            .into_iter()
+            .filter(|&index| {
+                matches!(
+                    self.state.collection[index].origin,
+                    Origin::Collection { .. }
+                )
+            })
             .collect();
-        let mut entries: Vec<QueueEntry> = places.iter().map(|&i| upcoming[i].clone()).collect();
+        let collection = &mut self.state.collection;
+        let mut entries: Vec<QueueEntry> = places
+            .iter()
+            .map(|&index| collection[index].clone())
+            .collect();
         reorder(&mut entries);
         for (place, entry) in places.into_iter().zip(entries) {
-            upcoming[place] = entry;
+            collection[place] = entry;
         }
     }
 
@@ -714,21 +816,12 @@ impl CanonicalQueue {
     /// that is playing (it plays at its own place in the next pass, and an
     /// id appears only once in what is published).
     pub fn upcoming(&self) -> Vec<&QueueEntry> {
-        let collection = &self.state.collection;
         let mut upcoming: Vec<&QueueEntry> = self.state.requests.iter().collect();
-        match self.state.cursor {
-            None => upcoming.extend(collection),
-            Some(cursor) if cursor + 1 < collection.len() => {
-                upcoming.extend(&collection[cursor + 1..]);
-            }
-            Some(_) if self.state.repeat == RepeatMode::Queue => {
-                let current = self.current().map(|entry| entry.id);
-                upcoming.extend(collection.iter().filter(|entry| {
-                    matches!(entry.origin, Origin::Collection { .. }) && Some(entry.id) != current
-                }));
-            }
-            Some(_) => {}
-        }
+        upcoming.extend(
+            self.upcoming_places()
+                .into_iter()
+                .map(|index| &self.state.collection[index]),
+        );
         upcoming
     }
 }

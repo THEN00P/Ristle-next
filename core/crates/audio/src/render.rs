@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::output::Render;
-use crate::shared::{Record, Shared};
+use crate::shared::{Record, Shared, slot_of};
 
 /// What the render callback tells the decode thread.
 #[derive(Clone, Copy, Debug)]
@@ -122,7 +122,10 @@ impl RenderState {
         // only keeps a misbehaving control side from spinning the callback.
         let mut switches = 0;
         while done < frames && switches < 4 {
-            let current = shared.current();
+            // Read before the record views: a switch commits only if no
+            // command changed the records since (see `try_switch`).
+            let word = shared.word();
+            let current = slot_of(word);
             let record = self.view(current);
             if record.token.is_none() || self.ended == record.seq {
                 break;
@@ -155,6 +158,7 @@ impl RenderState {
                 // The decode thread already reported the failure; it stops
                 // output now that the audio before it has played.
                 self.ended = record.seq;
+                shared.stopped.store(record.seq, Ordering::Release);
                 let _ = self.notes.push(Note::Stopped { record });
                 shared.wake_decoder();
                 break;
@@ -164,9 +168,8 @@ impl RenderState {
             let next = self.view(other);
             if next.token.is_some() && !next.failed && next.seq != self.played[other] {
                 shared.mark_played(current, record.seq);
-                if shared.try_switch(current) {
+                if shared.try_switch(word) {
                     self.played[current] = record.seq;
-                    shared.bump_sequence();
                     let _ = self.notes.push(Note::Transitioned {
                         from_slot: current,
                         from: record,
@@ -178,7 +181,7 @@ impl RenderState {
             }
             self.ended = record.seq;
             shared.ended.store(record.seq, Ordering::Release);
-            shared.bump_sequence();
+            shared.advance_generation();
             let _ = self.notes.push(Note::Ended { record });
             shared.wake_decoder();
             break;

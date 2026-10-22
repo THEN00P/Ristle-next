@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::feed::lock;
 use crate::output::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
-use crate::stream::{MediaError, MediaStream, Read, StreamFormat};
+use ristle_media::{MediaError, MediaStream, Read, StreamFormat};
 
 /// An output with no device: the test pulls rendered audio through its
 /// [`CaptureHandle`], standing in for the device's real-time thread.
@@ -209,7 +209,7 @@ impl MediaStream for FakeStream {
         let mut limit = self.frames;
         if let Some((at, message)) = &self.fail_at {
             if self.position >= *at {
-                return Err(MediaError::new(message.clone()));
+                return Err(failure(message.clone()));
             }
             limit = limit.min(*at);
         }
@@ -239,9 +239,14 @@ impl MediaStream for FakeStream {
     fn seek(&mut self, position_ms: u64) -> Result<(), MediaError> {
         let frame = position_ms * u64::from(self.current_format().sample_rate) / 1000;
         if frame > self.frames {
-            return Err(MediaError::new(format!("{position_ms} ms is past the end")));
+            return Err(failure(format!("{position_ms} ms is past the end")));
         }
         self.position = frame;
         Ok(())
     }
+}
+
+/// A stream failure carrying `message`, as a source read error.
+fn failure(message: String) -> MediaError {
+    MediaError::Io(std::io::Error::other(message))
 }

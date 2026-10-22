@@ -260,7 +260,7 @@ fn audio_engine_retains_source_failures_for_diagnostics() {
     assert!(until(|| rig.engine.state().error.is_some()));
     assert_eq!(
         rig.engine.state().error.as_deref(),
-        Some("deterministic source failure")
+        Some("reading the source failed: deterministic source failure")
     );
 }
 
@@ -474,12 +474,22 @@ fn a_failed_stream_plays_what_it_decoded_then_stops_without_moving_on() {
     assert!(left[30..].iter().all(|s| *s == 0.0));
     let state = rig.engine.state();
     assert_eq!(state.current, Some(T1));
-    assert_eq!(state.error.as_deref(), Some("connection reset"));
+    assert_eq!(
+        state.error.as_deref(),
+        Some("reading the source failed: connection reset")
+    );
     assert!(!state.ended);
     // Output stops once the audio before the failure has played.
     assert!(until(
         || !rig.engine.state().playing && !rig.output.is_running()
     ));
+    // Play does not restart output for a Track that has nothing left.
+    rig.engine.play().unwrap();
+    assert!(!rig.engine.state().playing);
+    assert!(!rig.output.is_running());
+    // A seek leaves the stop, as it does an end.
+    rig.engine.seek(0).unwrap();
+    assert!(rig.engine.state().error.is_none());
 }
 
 #[test]

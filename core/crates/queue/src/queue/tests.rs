@@ -974,6 +974,41 @@ fn undo_puts_a_play_next_request_back_in_the_play_next_group() {
 }
 
 #[test]
+fn a_seed_gives_the_same_order_however_often_shuffle_is_reapplied() {
+    let mut queue = started((0..20).map(|i| track("local", &format!("t{i}"))).collect());
+    queue.shuffle_upcoming(1);
+    let first = queue.snapshot().collection;
+
+    queue.shuffle_upcoming(2);
+    queue.shuffle_upcoming(1);
+
+    assert_eq!(queue.snapshot().collection, first);
+}
+
+#[test]
+fn an_edit_while_shuffled_shuffles_the_new_tail() {
+    let tracks: Vec<Track> = (0..20).map(|i| track("local", &format!("t{i}"))).collect();
+    let mut queue = started(tracks.clone());
+    queue.shuffle_upcoming(42);
+
+    queue.replace_upcoming_collection(CollectionEntry::numbered(tracks, 0));
+
+    assert_eq!(playing(&queue), "t0");
+    assert_eq!(queue.snapshot().shuffle, Some(42));
+    let upcoming = names(queue.upcoming());
+    let natural: Vec<String> = (1..20).map(|i| format!("t{i}")).collect();
+    assert_ne!(upcoming, natural);
+    let mut sorted: Vec<String> = upcoming.iter().map(|s| s.to_string()).collect();
+    sorted.sort();
+    let mut expected = natural.clone();
+    expected.sort();
+    assert_eq!(sorted, expected);
+
+    queue.restore_upcoming_order();
+    assert_eq!(names(queue.upcoming()), natural);
+}
+
+#[test]
 fn history_and_the_current_entry_cannot_be_removed() {
     let mut queue = started(["first", "second"].map(|id| track("local", id)).into());
     let first = queue.current().unwrap().id;

@@ -334,10 +334,16 @@ impl CanonicalQueue {
         self.state.collection.extend(kept_continuation);
 
         let resume = matched.map_or(0, |(index, _)| index + 1);
+        let first_new = self.state.collection.len();
         for entry in entries.into_iter().skip(resume) {
             let entry = self.create_from(entry);
             self.state.collection.push(entry);
             outcome.added += 1;
+        }
+        // While shuffled, the new tail is shuffled too, with the same seed.
+        // What stayed in place (requests, the continuation) keeps its place.
+        if let Some(seed) = self.state.shuffle {
+            Random::new(seed).shuffle(&mut self.state.collection[first_new..]);
         }
         outcome
     }
@@ -654,9 +660,15 @@ impl CanonicalQueue {
     /// Shuffles the upcoming collection entries with `seed`. The current
     /// entry, history and Queued Requests (including requests kept in the
     /// collection) keep their places.
+    ///
+    /// The seed is applied to the original order, not to an earlier shuffle,
+    /// so a seed always gives the same order of the same entries.
     pub fn shuffle_upcoming(&mut self, seed: u64) {
         let mut random = Random::new(seed);
-        self.reorder_upcoming(|entries| random.shuffle(entries));
+        self.reorder_upcoming(|entries| {
+            entries.sort_by_key(|entry| entry.id);
+            random.shuffle(entries);
+        });
         self.state.shuffle = Some(seed);
     }
 

@@ -244,6 +244,9 @@ impl Framer {
                 break header;
             }
             tracing::warn!("skipping an ADTS frame with several raw data blocks");
+            // It still takes its place on the timeline and its mark.
+            let pts = self.frame_pts(header.rate);
+            self.next_pts = Some(pts + i64::from(header.samples));
             self.drop_front(header.len);
         };
 
@@ -492,6 +495,25 @@ pub(crate) mod tests {
             packets[1].pts - packets[0].pts,
             (PTS_WRAP * 44_100 / 90_000) - ((PTS_WRAP - 1920) * 44_100 / 90_000)
         );
+    }
+
+    #[test]
+    fn skipped_frames_keep_their_place_on_the_timeline() {
+        let mut multi = adts_frame(&[9; 30]);
+        multi[6] |= 0x01; // two raw data blocks: 2048 frames
+        let mut framer = Framer::new(EsKind::Adts);
+        framer.push(&adts_frame(&[1; 30]), Some(0));
+        framer.push(&multi, Some(90_000));
+        framer.push(&adts_frame(&[2; 30]), None);
+        let packets = drain(&mut framer, true);
+        assert_eq!(packets[1].pts, 44_100 + 2048);
+        // A run of skipped frames leaves no marks behind.
+        let mut framer = Framer::new(EsKind::Adts);
+        for i in 0..100 {
+            framer.push(&multi, Some(i * 4000));
+        }
+        assert!(drain(&mut framer, true).is_empty());
+        assert!(framer.marks.is_empty());
     }
 
     #[test]

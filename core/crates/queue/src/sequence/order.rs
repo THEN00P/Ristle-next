@@ -50,7 +50,8 @@ impl Sequence {
             slots,
             order,
             cursor: Some(if shuffle.is_some() { 0 } else { cursor }),
-            materialized_end: if shuffle.is_some() { 1 } else { cursor + 1 },
+            // Nothing is materialized yet, the current slot included.
+            materialized_end: if shuffle.is_some() { 0 } else { cursor },
             shuffle: None,
             revision: 0,
             next_slot: SlotId(next_slot),
@@ -65,7 +66,7 @@ impl Sequence {
                 StartAt::Slot(_) => sequence.reorder_upcoming(Some(seed)),
             }
             sequence.state.shuffle = Some(seed);
-            sequence.state.materialized_end = 1;
+            sequence.state.materialized_end = 0;
         }
         Ok(sequence)
     }
@@ -78,12 +79,13 @@ impl Sequence {
     /// before it, so every slot still plays once in this pass.
     ///
     /// The lookahead must be materialized again: the materialized end falls
-    /// back to the cursor, and the revision changes, so plans made before
-    /// are recognizably stale.
+    /// back to just past the cursor (or to it, if the current slot was not
+    /// materialized yet), and the revision changes, so plans made before are
+    /// recognizably stale.
     pub fn set_shuffle(&mut self, seed: Option<u64>) {
         self.reorder_upcoming(seed);
         self.state.shuffle = seed;
-        self.state.materialized_end = self.upcoming_start();
+        self.state.materialized_end = self.state.materialized_end.min(self.upcoming_start());
         self.state.revision += 1;
     }
 
@@ -135,7 +137,9 @@ impl Sequence {
 
     fn move_cursor(&mut self, cursor: usize) {
         self.state.cursor = Some(cursor);
-        self.state.materialized_end = self.state.materialized_end.max(cursor + 1);
+        // Slots passed over are behind the cursor; the one arrived at is
+        // materialized only if it already was.
+        self.state.materialized_end = self.state.materialized_end.max(cursor);
     }
 
     /// Moves to the next slot of the play order. Returns false at the end.
@@ -148,8 +152,9 @@ impl Sequence {
         true
     }
 
-    /// Moves forward to `slot`, from the current slot on. Returns false when
-    /// it is not ahead.
+    /// Moves forward to `slot`, from the current slot on. Returns true
+    /// without moving when `slot` is already current, as
+    /// `CanonicalQueue::advance_to` does, and false when it is not ahead.
     pub fn advance_to(&mut self, slot: SlotId) -> bool {
         let from = self.state.cursor.unwrap_or(0);
         match self.state.order[from..].iter().position(|&id| id == slot) {
@@ -203,9 +208,10 @@ impl Sequence {
         self.state.order[begin..end].to_vec()
     }
 
-    /// The lookahead not yet materialized into the Canonical Queue, up to
-    /// `lookahead` slots past the cursor (or from the start before it).
-    /// Unresolved slots among them are read before they are materialized.
+    /// The slots not yet materialized into the Canonical Queue from the
+    /// current one up to `lookahead` slots past it (or from the start before
+    /// there is a cursor). The current slot is included while it is not
+    /// materialized. Unresolved slots among them are read first.
     pub fn hydration_plan(&self, lookahead: usize) -> Vec<SlotId> {
         let end = self
             .state
@@ -227,10 +233,10 @@ impl Sequence {
     }
 
     /// Records that the play order is materialized up to `end` (exclusive).
-    /// Returns false, changing nothing, when `end` is not past the cursor or
+    /// Returns false, changing nothing, when `end` is before the cursor or
     /// beyond the order.
     pub fn set_materialized_end(&mut self, end: usize) -> bool {
-        if end < self.upcoming_start() || end > self.state.order.len() {
+        if end < self.state.cursor.unwrap_or(0) || end > self.state.order.len() {
             return false;
         }
         self.state.materialized_end = end;

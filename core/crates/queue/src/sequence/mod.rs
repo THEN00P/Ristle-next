@@ -144,7 +144,9 @@ pub struct SequenceState {
     /// duplicate occurrences.
     pub cursor: Option<usize>,
     /// Exclusive index into `order` up to which slots have been materialized
-    /// into the Canonical Queue. Past the cursor when there is one.
+    /// into the Canonical Queue. At least the cursor: equal to it while the
+    /// current slot itself still has to be materialized (and, in an
+    /// offset-addressed source, possibly resolved), as right after a start.
     pub materialized_end: usize,
     /// The seed of the shuffle, while shuffled.
     pub shuffle: Option<u64>,
@@ -204,7 +206,7 @@ impl SequenceState {
                 len: self.order.len(),
             });
         }
-        let materialized_from = self.cursor.map_or(0, |cursor| cursor + 1);
+        let materialized_from = self.cursor.unwrap_or(0);
         if self.materialized_end > self.order.len() || self.materialized_end < materialized_from {
             return Err(CorruptState::MaterializedEndOutOfRange {
                 materialized_end: self.materialized_end,
@@ -390,7 +392,7 @@ mod state_tests {
         );
         assert_eq!(
             corrupt(|s| {
-                s.cursor = Some(1);
+                s.cursor = Some(2);
                 s.materialized_end = 1;
             }),
             CorruptState::MaterializedEndOutOfRange {

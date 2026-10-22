@@ -185,6 +185,11 @@ fn changing_shuffle_invalidates_the_materialized_lookahead() {
     sequence.set_shuffle(Some(9));
 
     assert_eq!(sequence.state().materialized_end, 11);
+
+    // A current slot that was never materialized stays in the plan.
+    let mut fresh = playlist(100, StartAt::Slot(SlotId(10)), None);
+    fresh.set_shuffle(Some(9));
+    assert_eq!(fresh.state().materialized_end, 10);
     assert!(sequence.state().revision > revision);
 }
 
@@ -192,7 +197,11 @@ fn changing_shuffle_invalidates_the_materialized_lookahead() {
 fn walking_keeps_the_materialized_end_past_the_cursor() {
     let mut sequence = playlist(10, StartAt::Beginning, None);
     assert!(sequence.advance_to(SlotId(6)));
-    assert_eq!(sequence.state().materialized_end, 7);
+    assert_eq!(sequence.state().materialized_end, 6);
+    assert!(
+        sequence.advance_to(SlotId(6)),
+        "the current slot is reached"
+    );
     assert!(
         !sequence.advance_to(SlotId(2)),
         "advance_to looks ahead only"
@@ -202,7 +211,7 @@ fn walking_keeps_the_materialized_end_past_the_cursor() {
     assert!(sequence.go_back());
     assert!(sequence.advance());
     assert_eq!(sequence.current(), Some(SlotId(2)));
-    assert!(!sequence.set_materialized_end(2), "not past the cursor");
+    assert!(!sequence.set_materialized_end(1), "before the cursor");
     assert!(!sequence.set_materialized_end(11), "beyond the order");
 }
 
@@ -336,4 +345,43 @@ fn every_shuffle_permutes_only_the_unconsumed_slots() {
             }
         }
     }
+}
+
+// Shuffle Play over unresolved positions: the slot that plays first is the
+// first one hydration reads, so it is never played without being resolved.
+#[test]
+fn the_current_slot_is_hydrated_first_after_a_start() {
+    let liked = SequenceSource::Collection(CollectionDescriptor {
+        reference: CollectionRef {
+            connection: "spotify-1".into(),
+            id: "liked".into(),
+        },
+        addressing: Addressing::Offset,
+        total: None,
+        revision: None,
+        endless: false,
+    });
+    let mut positions = slots(120);
+    for slot in &mut positions {
+        slot.track = None;
+    }
+    let shuffled = Sequence::start(
+        descriptor(vec![liked.clone()]),
+        positions.clone(),
+        StartAt::Beginning,
+        Some(4),
+    )
+    .unwrap();
+    let plan = shuffled.hydration_plan(10);
+    assert_eq!(plan.first().copied(), shuffled.current());
+    assert_eq!(plan.len(), 11);
+
+    let in_order = Sequence::start(
+        descriptor(vec![liked]),
+        positions,
+        StartAt::Slot(SlotId(119)),
+        None,
+    )
+    .unwrap();
+    assert_eq!(in_order.hydration_plan(10), [SlotId(119)]);
 }

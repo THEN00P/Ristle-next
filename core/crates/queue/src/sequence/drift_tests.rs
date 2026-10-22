@@ -404,7 +404,11 @@ fn extreme_lookahead_and_revision_do_not_overflow() {
     let mut sequence = shuffled_liked(10, 1);
     assert!(sequence.advance());
     assert_eq!(sequence.window(usize::MAX, usize::MAX).len(), 10);
-    assert_eq!(sequence.hydration_plan(usize::MAX).len(), 9, "from the cursor on");
+    assert_eq!(
+        sequence.hydration_plan(usize::MAX).len(),
+        9,
+        "from the cursor on"
+    );
 
     let mut state = sequence.state().clone();
     state.revision = u64::MAX;
@@ -412,4 +416,71 @@ fn extreme_lookahead_and_revision_do_not_overflow() {
     sequence.set_shuffle(None);
     sequence.restart();
     assert_eq!(sequence.state().revision, 1);
+}
+
+// A like elsewhere grows an exact total while every position read already
+// has a slot: the missing position still gets one.
+#[test]
+fn a_collection_that_grew_gets_a_slot_for_every_position() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 31);
+
+    liked.0.insert(0, like(4242));
+    let outcome = sequence.rebase(liked.read(0, 50));
+    assert_eq!(outcome.inserted.len(), 1);
+    hydrate(&mut sequence, &liked, 200);
+
+    let tracks: HashSet<&TrackRef> = sequence
+        .state()
+        .slots
+        .iter()
+        .filter_map(|slot| slot.track.as_ref())
+        .collect();
+    assert_eq!(sequence.state().slots.len(), 101);
+    assert_eq!(tracks.len(), 101);
+    for track in &liked.0 {
+        assert!(tracks.contains(track), "{track:?} has no slot");
+    }
+}
+
+// An unlike and a like elsewhere at one position, total unchanged: the Track
+// the user saw keeps its slot, and the new one joins what is still to come.
+#[test]
+fn a_new_track_at_a_resolved_position_joins_the_order() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 32);
+    sequence.rebase(liked.read(0, 50));
+    let replaced = sequence
+        .state()
+        .slots
+        .iter()
+        .find(|slot| slot.offset == 10)
+        .unwrap()
+        .clone();
+
+    liked.0[10] = like(5150);
+    let outcome = sequence.rebase(liked.read(0, 50));
+
+    assert_eq!(outcome.shift, 0);
+    assert_eq!(outcome.inserted.len(), 1);
+    assert_eq!(track_of(&sequence, outcome.inserted[0]), Some(like(5150)));
+    assert_eq!(track_of(&sequence, replaced.id), replaced.track);
+}
+
+// A page whose positions overflow is ignored whole.
+#[test]
+fn a_malformed_page_changes_nothing() {
+    let mut sequence = shuffled_liked(10, 33);
+    let before = sequence.state().clone();
+
+    let outcome = sequence.rebase(ObservedPage {
+        source: 0,
+        offset: u64::MAX,
+        tracks: vec![like(1), like(2)],
+        revision: Some("x".into()),
+        total: Some(Count::Exact(3)),
+    });
+
+    assert_eq!(outcome, RebaseOutcome::default());
+    assert_eq!(sequence.state(), &before);
 }

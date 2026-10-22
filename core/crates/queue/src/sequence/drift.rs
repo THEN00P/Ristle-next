@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 
-use ristle_domain::{CollectionDescriptor, Count, TrackRef};
+use std::collections::HashSet;
+
+use ristle_domain::{Addressing, CollectionDescriptor, Count, TrackRef};
 
 use super::{Sequence, SequenceSource, Slot, SlotId};
 use crate::random::Random;
@@ -102,9 +104,9 @@ impl Sequence {
                 if source >= self.state.descriptor.sources.len() {
                     return outcome;
                 }
-                self.shift_offsets(source, at, 1, false);
+                self.shift_offsets(source, at, 1);
                 shifted = true;
-                outcome.inserted = self.insert_slot(source, at, track);
+                outcome.inserted = self.insert_slot(source, at, Some(track));
             }
             CollectionChange::Removed { source, track, at } => {
                 let known = at.or_else(|| {
@@ -127,7 +129,7 @@ impl Sequence {
                     });
                 }
                 if let Some(position) = known {
-                    self.shift_offsets(source, position.saturating_add(1), -1, false);
+                    self.shift_offsets(source, position.saturating_add(1), -1);
                     shifted = true;
                 }
             }
@@ -143,7 +145,7 @@ impl Sequence {
     /// have changed elsewhere.
     ///
     /// The Tracks already known on the page tell how far positions moved
-    /// (the most common move among them). Unresolved slots from there on are
+    /// (the most common move among them). Other slots from there on are
     /// moved by that much, and those that land on the page take its Tracks.
     /// A Track that turns up at a slot while another slot already holds it,
     /// more often than the page shows it, is a repeat caused by the drift
@@ -156,11 +158,20 @@ impl Sequence {
     pub fn rebase(&mut self, page: ObservedPage) -> RebaseOutcome {
         let mut outcome = RebaseOutcome::default();
         let source = page.source;
+        // A page whose positions do not fit is malformed: ignore it whole.
+        if u64::try_from(page.tracks.len())
+            .ok()
+            .and_then(|len| page.offset.checked_add(len))
+            .is_none()
+        {
+            return outcome;
+        }
         let Some(SequenceSource::Collection(descriptor)) =
             self.state.descriptor.sources.get_mut(source)
         else {
             return outcome;
         };
+        let positional = descriptor.addressing == Addressing::Offset;
         let CollectionDescriptor {
             revision, total, ..
         } = descriptor;
@@ -195,13 +206,20 @@ impl Sequence {
             .filter(|&&(_, _, delta)| delta == shift)
             .map(|&(_, old, _)| old)
             .min();
-        for &(index, old, delta) in &moves {
-            self.state.slots[index].offset = apply(old, delta);
-        }
+        // Every other slot from there on moved by the same amount, resolved
+        // or not; the known ones are where the page saw them.
+        let matched: HashSet<usize> = moves.iter().map(|&(index, _, _)| index).collect();
         if let Some(from) = from
             && shift != 0
         {
-            self.shift_offsets(source, from, shift, true);
+            for (index, slot) in self.state.slots.iter_mut().enumerate() {
+                if slot.source == source && slot.offset >= from && !matched.contains(&index) {
+                    slot.offset = apply(slot.offset, shift);
+                }
+            }
+        }
+        for &(index, old, delta) in &moves {
+            self.state.slots[index].offset = apply(old, delta);
         }
         outcome.shift = shift;
 
@@ -216,17 +234,6 @@ impl Sequence {
                 .filter(|slot| slot.source == source && slot.offset == at)
                 .map(|slot| (slot.id, slot.track.is_some()))
                 .collect::<Vec<_>>();
-            if here.iter().any(|&(_, resolved)| resolved) {
-                // A resolved slot is the truth for this position; unresolved
-                // ones moved here are surplus.
-                for &(id, resolved) in &here {
-                    if !resolved && Some(id) != current {
-                        self.drop_slot(id);
-                        outcome.dropped.push(id);
-                    }
-                }
-                continue;
-            }
             let held = self
                 .state
                 .slots
@@ -235,6 +242,25 @@ impl Sequence {
                 .count();
             let shown = on_page.get(track).map_or(0, Vec::len);
             let repeat = held >= shown;
+            if here.iter().any(|&(_, resolved)| resolved) {
+                // A resolved slot keeps its Track, which the user may have
+                // seen; unresolved ones moved here are surplus.
+                for &(id, resolved) in &here {
+                    if !resolved && Some(id) != current {
+                        self.drop_slot(id);
+                        outcome.dropped.push(id);
+                    }
+                }
+                // A different Track now at this position, which no slot
+                // holds, is new to the collection (an unlike and a like made
+                // elsewhere): it joins what is still to come.
+                if !repeat {
+                    outcome
+                        .inserted
+                        .extend(self.insert_slot(source, at, Some(track.clone())));
+                }
+                continue;
+            }
             match here.first() {
                 Some(&(id, _)) if repeat && Some(id) != current => {
                     self.drop_slot(id);
@@ -249,9 +275,33 @@ impl Sequence {
                 None if !repeat => {
                     outcome
                         .inserted
-                        .extend(self.insert_slot(source, at, track.clone()));
+                        .extend(self.insert_slot(source, at, Some(track.clone())));
                 }
                 None => {}
+            }
+        }
+
+        // A collection that grew needs a slot for every position: the
+        // positions no slot covers get unresolved slots, read later like any
+        // other. The repeat rule settles any Track they turn out to repeat.
+        if positional && let Some(Count::Exact(total)) = page.total {
+            let covered: HashSet<u64> = self
+                .state
+                .slots
+                .iter()
+                .filter(|slot| slot.source == source)
+                .map(|slot| slot.offset)
+                .collect();
+            let held = u64::try_from(covered.len()).unwrap_or(u64::MAX);
+            let missing = total.saturating_sub(held);
+            let free: Vec<u64> = (0..total)
+                .filter(|offset| !covered.contains(offset))
+                .take(usize::try_from(missing).unwrap_or(usize::MAX))
+                .collect();
+            for offset in free {
+                outcome
+                    .inserted
+                    .extend(self.insert_slot(source, offset, None));
             }
         }
 
@@ -286,21 +336,23 @@ impl Sequence {
     }
 
     /// Moves the offsets of `source`'s slots at or after `from` by `by`.
-    fn shift_offsets(&mut self, source: usize, from: u64, by: i64, only_unresolved: bool) {
+    fn shift_offsets(&mut self, source: usize, from: u64, by: i64) {
         for slot in &mut self.state.slots {
-            if slot.source == source
-                && slot.offset >= from
-                && !(only_unresolved && slot.track.is_some())
-            {
+            if slot.source == source && slot.offset >= from {
                 slot.offset = apply(slot.offset, by);
             }
         }
     }
 
-    /// Creates a resolved slot for a Track new to `source` at `offset` and
-    /// puts it among what is still to come, after the materialized
-    /// lookahead. `None`, changing nothing, once slot ids are exhausted.
-    fn insert_slot(&mut self, source: usize, offset: u64, track: TrackRef) -> Option<SlotId> {
+    /// Creates a slot for an entry new to `source` at `offset`, resolved when
+    /// its Track is known, and puts it among what is still to come, after
+    /// the materialized lookahead. `None`, changing nothing, once slot ids are exhausted.
+    fn insert_slot(
+        &mut self,
+        source: usize,
+        offset: u64,
+        track: Option<TrackRef>,
+    ) -> Option<SlotId> {
         let id = self.state.next_slot;
         self.state.next_slot = SlotId(id.0.checked_add(1)?);
 
@@ -323,7 +375,7 @@ impl Sequence {
                 id,
                 source,
                 offset,
-                track: Some(track),
+                track,
             },
         );
 

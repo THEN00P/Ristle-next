@@ -14,6 +14,10 @@ CREATE TABLE connection_data (
   expires_ms INTEGER,
   PRIMARY KEY (connection_id, key)
 ) STRICT;
+CREATE TABLE connection_generations (
+  connection_id TEXT PRIMARY KEY NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 0)
+) STRICT, WITHOUT ROWID;
 CREATE TABLE local_files (
   connection_id TEXT NOT NULL,
   location TEXT NOT NULL,
@@ -197,6 +201,8 @@ CREATE INDEX ristle_playlist_entries_track ON ristle_playlist_entries (provider_
 INSERT INTO command_receipts VALUES ('party-1', 'member-1:1', 'applied', 1760000000000);
 INSERT INTO command_receipts VALUES ('party-1', 'member-2:1', 'rejected: unavailable', 1760000000000);
 INSERT INTO connection_data VALUES ('spotify-1', 'user', X'009FFF', 1760003600000);
+INSERT INTO connection_generations VALUES ('local-1', 0);
+INSERT INTO connection_generations VALUES ('spotify-1', 1);
 INSERT INTO local_files VALUES ('local-1', 'f1/a.flac', 'content-1', 'flac', 900, 20000000, 1759999999991, 1, '{"reference":{"provider":"local-files","id":"content-1"},"title":"Title content-1","artists":[{"id":"a1","name":"Artist One"},{"id":null,"name":"Guest"}],"album":{"id":"al1","name":"Album"},"duration_ms":215000,"artwork":[{"url":"https://img.example/1.jpg","width":300,"height":null}],"released":{"year":1999,"month":12,"day":31},"uploaded":{"year":2001},"explicit":true,"capabilities":{"seekable":false,"live":false},"availability":"Unknown","url":"https://local-files.example/track/content-1","isrc":"GBAYE0000001","attributes":[{"key":"genre","value":{"Text":"ambient"}},{"key":"bpm","value":{"Number":92.5}},{"key":"soundcloud:reposted","value":{"YesNo":false}}]}');
 INSERT INTO local_files VALUES ('local-1', 'f1/a.mp3', 'content-1', 'mp3', 320, 7000000, 1759999999992, 0, '{"reference":{"provider":"local-files","id":"content-1"},"title":"Title content-1","artists":[{"id":"a1","name":"Artist One"},{"id":null,"name":"Guest"}],"album":{"id":"al1","name":"Album"},"duration_ms":215000,"artwork":[{"url":"https://img.example/1.jpg","width":300,"height":null}],"released":{"year":1999,"month":12,"day":31},"uploaded":{"year":2001},"explicit":true,"capabilities":{"seekable":false,"live":false},"availability":"Unknown","url":"https://local-files.example/track/content-1","isrc":"GBAYE0000001","attributes":[{"key":"genre","value":{"Text":"ambient"}},{"key":"bpm","value":{"Number":92.5}},{"key":"soundcloud:reposted","value":{"YesNo":false}}]}');
 INSERT INTO local_tracks VALUES ('local-1', 'content-1', 'AQAAE0mUaEkSRZEGAA', 4276993775, 180000, 1760000000000);

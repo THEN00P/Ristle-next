@@ -216,6 +216,14 @@ CREATE TABLE response_sequences (
   PRIMARY KEY (plugin_id, connection_id)
 ) STRICT, WITHOUT ROWID;
 
+-- The highest generation each Provider Connection id has reached. Outlives
+-- the connection, so an id used again continues above it, and nothing cached
+-- under the previous connection's generations is ever read for the new one.
+CREATE TABLE connection_generations (
+  connection_id TEXT PRIMARY KEY NOT NULL,
+  generation INTEGER NOT NULL CHECK (generation >= 0)
+) STRICT, WITHOUT ROWID;
+
 -- Outcomes of commands that must apply once, such as Party commands.
 CREATE TABLE command_receipts (
   scope TEXT NOT NULL,

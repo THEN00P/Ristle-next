@@ -180,29 +180,38 @@ impl<'a> Connections<'a> {
         Self { tx }
     }
 
-    /// Creates a connection at generation 0, without an account, stamped
-    /// with the clock.
+    /// Creates a connection without an account, stamped with the clock. Its
+    /// generation is 0 for a new id, and above every generation an earlier
+    /// connection with the same id reached, so that connection's cached
+    /// results are never read for this one.
     pub fn create(&self, id: &ConnectionId, plugin: &PluginId) -> Result<ConnectionRecord, Error> {
         if id.is_empty() {
             return Err(Error::invalid("Provider Connection", "the id is empty"));
         }
+        let conn = self.tx.write_conn()?;
         let now = self.tx.now_ms();
-        self.tx
-            .write_conn()?
+        let generation: i64 = conn
             .prepare_cached(
-                "INSERT INTO provider_connections
-                     (connection_id, plugin_id, generation, account, created_ms, updated_ms)
-                 VALUES (?1, ?2, 0, NULL, ?3, ?3)",
+                "INSERT INTO connection_generations (connection_id, generation) VALUES (?1, 0)
+                 ON CONFLICT (connection_id) DO UPDATE SET generation = generation + 1
+                 RETURNING generation",
             )?
-            .execute(rusqlite::params![
-                id.as_str(),
-                plugin.as_str(),
-                int(now, "creation time")?
-            ])?;
+            .query_row([id.as_str()], |row| row.get(0))?;
+        conn.prepare_cached(
+            "INSERT INTO provider_connections
+                 (connection_id, plugin_id, generation, account, created_ms, updated_ms)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
+        )?
+        .execute(rusqlite::params![
+            id.as_str(),
+            plugin.as_str(),
+            generation,
+            int(now, "creation time")?
+        ])?;
         Ok(ConnectionRecord {
             id: id.clone(),
             plugin: plugin.clone(),
-            generation: 0,
+            generation: uint(generation, "connection_generations", "generation")?,
             account: None,
             created_ms: now,
             updated_ms: now,
@@ -259,13 +268,18 @@ impl<'a> Connections<'a> {
         )?;
         let generation = generation
             .ok_or_else(|| Error::invalid("Provider Connection", format!("{id} does not exist")))?;
+        conn.prepare_cached(
+            "UPDATE connection_generations SET generation = ?2 WHERE connection_id = ?1",
+        )?
+        .execute(rusqlite::params![id.as_str(), generation])?;
         conn.prepare_cached("DELETE FROM connection_data WHERE connection_id = ?1")?
             .execute([id.as_str()])?;
         uint(generation, CONNECTIONS, "generation")
     }
 
     /// Removes a connection with its grants, data and Local Track index.
-    /// Its response sequence stays.
+    /// Its response sequence and generation stay, so an id used again never
+    /// reads what was cached for this connection.
     pub fn remove(&self, id: &ConnectionId) -> Result<bool, Error> {
         Ok(self
             .tx

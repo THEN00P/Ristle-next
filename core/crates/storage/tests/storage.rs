@@ -343,7 +343,14 @@ fn playlist_edits_rewrite_only_changed_positions() {
             .write_blocking(move |tx| tx.playlists().save(&playlist))
             .unwrap()
     };
-    assert_eq!(save(&playlist).inserted, 20);
+    assert_eq!(
+        save(&playlist),
+        Changes {
+            inserted: 21,
+            updated: 0,
+            deleted: 0
+        }
+    );
     playlist.tracks.push(detailed("soundcloud", "added"));
     playlist.updated_ms = 2;
     assert_eq!(
@@ -975,4 +982,62 @@ fn local_track_metadata_follows_the_preferred_file() {
         })
         .unwrap();
     assert_eq!(shown(), "Downgraded");
+}
+
+// Codex review: an id used again must not restart at a generation whose
+// cached rows belong to the removed connection.
+#[test]
+fn a_reused_connection_id_continues_above_its_old_generations() {
+    let dirs = Dirs::new();
+    let storage = dirs.open();
+    with_connections(&storage);
+    let generation = storage
+        .write_blocking(|tx| {
+            tx.connections()
+                .begin_generation(&"spotify-1".into(), None)?;
+            tx.connections().begin_generation(&"spotify-1".into(), None)
+        })
+        .unwrap();
+    assert_eq!(generation, 2);
+    let old = HttpKey {
+        generation,
+        ..http_key("spotify", "spotify-1", "me")
+    };
+    let put = old.clone();
+    storage
+        .write_blocking(move |tx| {
+            tx.http_cache().put(
+                &put,
+                &CachedResponse {
+                    response: b"old account".to_vec(),
+                    fetched_ms: 1,
+                },
+            )?;
+            tx.connections().remove(&"spotify-1".into())?;
+            Ok(())
+        })
+        .unwrap();
+
+    let reused = storage
+        .write_blocking(|tx| {
+            tx.connections()
+                .create(&"spotify-1".into(), &"spotify".into())
+        })
+        .unwrap();
+    assert_eq!(reused.generation, 3);
+    let current = HttpKey {
+        generation: reused.generation,
+        ..old
+    };
+    assert_eq!(
+        storage
+            .read_blocking(move |tx| tx.http_cache().get(&current))
+            .unwrap(),
+        None
+    );
+    // And it keeps counting from there.
+    let next = storage
+        .write_blocking(|tx| tx.connections().begin_generation(&"spotify-1".into(), None))
+        .unwrap();
+    assert_eq!(next, 4);
 }

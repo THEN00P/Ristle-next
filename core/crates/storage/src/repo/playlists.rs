@@ -119,6 +119,13 @@ impl<'a> Playlists<'a> {
             return Err(Error::invalid("Ristle Playlist", "the id is empty"));
         }
         let mut changes = Changes::default();
+        let existed = optional(
+            conn,
+            "SELECT 1 FROM ristle_playlists WHERE playlist_id = ?1",
+            [id],
+            |_| Ok(()),
+        )?
+        .is_some();
         let written = conn
             .prepare_cached(
                 "INSERT INTO ristle_playlists (playlist_id, title, created_ms, updated_ms)
@@ -134,7 +141,11 @@ impl<'a> Playlists<'a> {
                 int(playlist.created_ms, "creation time")?,
                 int(playlist.updated_ms, "update time")?,
             ])?;
-        changes.updated += crate::sql::to_u64(written);
+        if existed {
+            changes.updated += crate::sql::to_u64(written);
+        } else {
+            changes.inserted += crate::sql::to_u64(written);
+        }
         let rows = playlist
             .tracks
             .iter()

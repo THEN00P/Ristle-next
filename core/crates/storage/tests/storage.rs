@@ -787,11 +787,19 @@ fn an_unreadable_database_opens_in_recovery_and_can_be_set_aside() {
     let garbage = vec![0x5a_u8; 8192];
     std::fs::write(dirs.paths.database(), &garbage).unwrap();
 
+    // A cache left by the database before it; its generations would mean
+    // nothing to the new one.
+    common::raw(&dirs.paths.cache_database(), "CREATE TABLE stale (x);");
+
     let storage = dirs.open();
     assert!(matches!(storage.status(), OpenStatus::Recovery { .. }));
     assert_eq!(std::fs::read(dirs.paths.database()).unwrap(), garbage);
     let aside = storage.set_aside(&dirs.paths).unwrap();
     assert_eq!(std::fs::read(&aside).unwrap(), garbage);
+    assert!(
+        !dirs.paths.cache_database().exists(),
+        "the old cache survived"
+    );
 
     let fresh = dirs.open();
     assert_eq!(fresh.status(), &OpenStatus::Ready);

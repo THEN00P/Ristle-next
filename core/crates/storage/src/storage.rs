@@ -300,14 +300,24 @@ impl Storage {
 
     /// Moves a database that opened in recovery mode aside, to
     /// `ristle.sqlite.recovery-<time>` next to it, so the next
-    /// [`Storage::open`] starts empty. Returns where it went. Nothing is
-    /// deleted, so the file can still be inspected or sent in.
+    /// [`Storage::open`] starts empty. Returns where it went. The database
+    /// itself is kept, so it can still be inspected or sent in.
+    ///
+    /// `cache.sqlite` is deleted first. Its rows are keyed by connection
+    /// generations that the new database no longer knows, so a connection id
+    /// used again could otherwise read the old account's cached results. A
+    /// failure or crash in between leaves the database where it was, still
+    /// in recovery.
     pub fn set_aside(self, paths: &StoragePaths) -> Result<PathBuf, Error> {
         if self.status == OpenStatus::Ready {
             return Err(Error::invalid(
                 "set aside",
                 "only a database in recovery mode is set aside",
             ));
+        }
+        let cache = paths.cache_database();
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            migrate::remove_if_present(&migrate::sibling(&cache, suffix))?;
         }
         let database = paths.database();
         let target = migrate::sibling(&database, &format!(".recovery-{}", self.clock.now_ms()));

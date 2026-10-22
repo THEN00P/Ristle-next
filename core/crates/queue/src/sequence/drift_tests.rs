@@ -348,3 +348,68 @@ fn random_drift_never_repeats_a_track() {
         }
     }
 }
+
+// An unlike at a known position whose slot is still unresolved removes that
+// slot, so no two slots end up standing for one position.
+#[test]
+fn an_unlike_at_an_unresolved_position_removes_its_slot() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 21);
+    let upcoming = sequence.state().order[30];
+    let at = sequence.slot(upcoming).unwrap().offset;
+    let revision = sequence.state().revision;
+
+    let gone = liked.0.remove(at as usize);
+    let outcome = sequence.apply_local_change(CollectionChange::Removed {
+        source: 0,
+        track: gone,
+        at: Some(at),
+    });
+
+    assert_eq!(outcome.removed, [upcoming]);
+    assert_ne!(sequence.state().revision, revision);
+    hydrate(&mut sequence, &liked, 200);
+    for slot in &sequence.state().slots {
+        assert_eq!(slot.track.as_ref(), Some(&liked.0[slot.offset as usize]));
+    }
+    assert_eq!(sequence.state().slots.len(), 99);
+}
+
+// An unlike of a Track already played removes nothing still to come, but
+// the positions behind it move, so earlier plans are stale.
+#[test]
+fn an_unlike_that_only_moves_positions_changes_the_revision() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 22);
+    hydrate(&mut sequence, &liked, 0);
+    let current = sequence.current().unwrap();
+    let played = sequence.slot(current).unwrap().clone();
+    let revision = sequence.state().revision;
+
+    liked.0.remove(played.offset as usize);
+    let outcome = sequence.apply_local_change(CollectionChange::Removed {
+        source: 0,
+        track: played.track.unwrap(),
+        at: None,
+    });
+
+    assert!(outcome.removed.is_empty());
+    assert_ne!(sequence.state().revision, revision);
+}
+
+// Ranges and counters saturate or wrap instead of overflowing (ADR 0001: the
+// core never panics across the boundary).
+#[test]
+fn extreme_lookahead_and_revision_do_not_overflow() {
+    let mut sequence = shuffled_liked(10, 1);
+    assert!(sequence.advance());
+    assert_eq!(sequence.window(usize::MAX, usize::MAX).len(), 10);
+    assert_eq!(sequence.hydration_plan(usize::MAX).len(), 9, "from the cursor on");
+
+    let mut state = sequence.state().clone();
+    state.revision = u64::MAX;
+    let mut sequence = Sequence::restore(state).unwrap();
+    sequence.set_shuffle(None);
+    sequence.restart();
+    assert_eq!(sequence.state().revision, 1);
+}

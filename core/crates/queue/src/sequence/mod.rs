@@ -154,8 +154,9 @@ pub struct SequenceState {
     pub materialized_end: usize,
     /// The seed of the shuffle, while shuffled.
     pub shuffle: Option<u64>,
-    /// Increases with every change that invalidates a plan made earlier,
-    /// such as a hydration plan made before a shuffle.
+    /// Changes with every change that invalidates a plan made earlier, such
+    /// as a hydration plan made before a shuffle. Compare it for equality
+    /// only: it wraps rather than overflowing.
     pub revision: u64,
     /// The id the next new slot gets. Greater than every slot id.
     pub next_slot: SlotId,

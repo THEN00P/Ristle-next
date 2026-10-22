@@ -96,12 +96,14 @@ impl Sequence {
     /// reshuffles.
     pub fn apply_local_change(&mut self, change: CollectionChange) -> ChangeOutcome {
         let mut outcome = ChangeOutcome::default();
+        let mut shifted = false;
         match change {
             CollectionChange::Added { source, at, track } => {
                 if source >= self.state.descriptor.sources.len() {
                     return outcome;
                 }
                 self.shift_offsets(source, at, 1, false);
+                shifted = true;
                 outcome.inserted = self.insert_slot(source, at, track);
             }
             CollectionChange::Removed { source, track, at } => {
@@ -115,13 +117,24 @@ impl Sequence {
                 outcome.removed = self.remove_upcoming(|slot| {
                     slot.source == source && slot.track.as_ref() == Some(&track)
                 });
+                // No slot knew the Track: the one still standing for its
+                // position is the one that goes.
+                if outcome.removed.is_empty()
+                    && let Some(at) = at
+                {
+                    outcome.removed = self.remove_upcoming(|slot| {
+                        slot.source == source && slot.track.is_none() && slot.offset == at
+                    });
+                }
                 if let Some(position) = known {
-                    self.shift_offsets(source, position + 1, -1, false);
+                    self.shift_offsets(source, position.saturating_add(1), -1, false);
+                    shifted = true;
                 }
             }
         }
-        if outcome.inserted.is_some() || !outcome.removed.is_empty() {
-            self.state.revision += 1;
+        // Moved offsets make plans made before stale too.
+        if outcome.inserted.is_some() || !outcome.removed.is_empty() || shifted {
+            self.state.revision = self.state.revision.wrapping_add(1);
         }
         outcome
     }
@@ -267,7 +280,7 @@ impl Sequence {
             || !outcome.dropped.is_empty()
             || !outcome.inserted.is_empty()
         {
-            self.state.revision += 1;
+            self.state.revision = self.state.revision.wrapping_add(1);
         }
         outcome
     }

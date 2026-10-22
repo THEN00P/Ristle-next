@@ -136,3 +136,9 @@ before relying on it, and update it when you learn something new.
   give CI jobs workstream prefixes. For stacked PRs, merge bottom-up with
   merge commits and retarget the next PR to `main` before deleting its base
   branch.
+- **`ristle-storage` fixture and SQLite quirks.** `crates/storage/tests/fixtures/schema-v1.sql`
+  stands for users' databases: never regenerate it; a schema change is a new
+  migration plus a test against it (`src/fixture.rs`). rusqlite's bundled
+  SQLite turns foreign keys **on** by default, also for ad-hoc test
+  connections, and `VACUUM INTO` writes `sqlite_master` in a different
+  order, so compare schemas sorted by type and name.

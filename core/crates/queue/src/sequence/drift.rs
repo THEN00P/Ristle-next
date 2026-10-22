@@ -288,14 +288,21 @@ impl Sequence {
         // positions no slot covers get unresolved slots, read later like any
         // other. The repeat rule settles any Track they turn out to repeat.
         if positional && let Some(Count::Exact(total)) = page.total {
-            let mine = self.state.slots.iter().filter(|slot| slot.source == source);
-            let held = u64::try_from(mine.clone().count()).unwrap_or(u64::MAX);
+            // Count positions, not slots: a kept resolved slot and the new
+            // Track found at its position share one.
+            let covered: HashSet<u64> = self
+                .state
+                .slots
+                .iter()
+                .filter(|slot| slot.source == source && slot.offset < total)
+                .map(|slot| slot.offset)
+                .collect();
+            let held = u64::try_from(covered.len()).unwrap_or(u64::MAX);
             // The total comes from a Plugin: grow by at most a page per read,
             // so a wrong total cannot make one read unbounded.
             let missing = total.saturating_sub(held).min(PAGE);
-            let covered: HashSet<u64> = mine.map(|slot| slot.offset).collect();
-            // At most `held` offsets are covered, so the first
-            // `held + missing` offsets hold `missing` free ones.
+            // `held` offsets are covered, so the first `held + missing`
+            // offsets hold `missing` free ones.
             let free: Vec<u64> = (0..total.min(held.saturating_add(missing)))
                 .filter(|offset| !covered.contains(offset))
                 .take(usize::try_from(missing).unwrap_or(usize::MAX))

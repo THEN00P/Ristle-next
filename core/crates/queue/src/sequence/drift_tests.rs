@@ -529,3 +529,29 @@ fn an_unresolved_current_slot_on_a_resolved_position_is_retired() {
     hydrate(&mut sequence, &liked, 10);
     Sequence::restore(sequence.state().clone()).unwrap();
 }
+
+// Growth counts positions, not slots: after a new Track joined at a resolved
+// position (two slots, one position), a Track appended elsewhere still gets
+// a slot.
+#[test]
+fn growth_counts_positions_not_slots() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 43);
+    sequence.rebase(liked.read(0, 50));
+    liked.0[10] = like(6000);
+    assert_eq!(sequence.rebase(liked.read(0, 50)).inserted.len(), 1);
+    assert_eq!(sequence.state().slots.len(), 101);
+
+    liked.0.push(like(6001));
+    let outcome = sequence.rebase(liked.read(0, 50));
+
+    assert_eq!(outcome.inserted.len(), 1);
+    hydrate(&mut sequence, &liked, 200);
+    let appended = sequence
+        .state()
+        .slots
+        .iter()
+        .filter(|slot| slot.track.as_ref() == Some(&like(6001)))
+        .count();
+    assert_eq!(appended, 1, "the appended Track has a slot");
+}

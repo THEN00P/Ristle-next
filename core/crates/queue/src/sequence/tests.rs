@@ -291,6 +291,12 @@ fn a_sequence_cannot_start_without_slots_or_at_an_unknown_slot() {
         ),
         Err(InvalidSequence::UnknownStart(SlotId(7)))
     );
+    let mut exhausted = slots(3);
+    exhausted[2].id = SlotId(u64::MAX);
+    assert_eq!(
+        Sequence::start(descriptor(source()), exhausted, StartAt::Beginning, None),
+        Err(InvalidSequence::SlotsExhausted)
+    );
     let mut duplicated = slots(3);
     duplicated[2].id = SlotId(0);
     assert_eq!(

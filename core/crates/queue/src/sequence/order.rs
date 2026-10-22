@@ -27,11 +27,12 @@ impl Sequence {
         at: StartAt,
         shuffle: Option<u64>,
     ) -> Result<Self, InvalidSequence> {
-        let next_slot = slots
+        let last = slots
             .iter()
-            .map(|slot| slot.id.0 + 1)
+            .map(|slot| slot.id.0)
             .max()
             .ok_or(InvalidSequence::Empty)?;
+        let next_slot = last.checked_add(1).ok_or(InvalidSequence::SlotsExhausted)?;
         let mut order: Vec<SlotId> = slots.iter().map(|slot| slot.id).collect();
         let cursor = match at {
             StartAt::Beginning => 0,

@@ -79,6 +79,9 @@ pub enum InvalidSequence {
     /// There is nothing to play.
     #[error("the sequence has no slots")]
     Empty,
+    /// A slot id is the largest there is, so no new slot could get an id.
+    #[error("slot ids are exhausted")]
+    SlotsExhausted,
     /// The start slot is not in the sequence.
     #[error("the start slot {0} is not in the sequence")]
     UnknownStart(SlotId),

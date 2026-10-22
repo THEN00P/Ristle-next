@@ -90,7 +90,7 @@ impl Sequence {
         self.state.revision += 1;
     }
 
-    fn upcoming_start(&self) -> usize {
+    pub(super) fn upcoming_start(&self) -> usize {
         self.state.cursor.map_or(0, |cursor| cursor + 1)
     }
 

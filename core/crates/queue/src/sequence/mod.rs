@@ -16,11 +16,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CorruptState;
 
+mod drift;
+#[cfg(test)]
+mod drift_tests;
 mod order;
 mod shuffle;
 #[cfg(test)]
 mod tests;
 
+pub use drift::{ChangeOutcome, CollectionChange, ObservedPage, RebaseOutcome};
 pub use order::StartAt;
 
 /// One occurrence in a sequence. Unique within the sequence and never

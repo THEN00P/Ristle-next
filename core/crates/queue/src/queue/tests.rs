@@ -1350,3 +1350,60 @@ fn an_edit_at_the_wrapped_tail_becomes_the_next_pass() {
     assert_eq!(playing(&queue), "a");
     assert_eq!(queue.snapshot().collection.len(), 4, "the old c is gone");
 }
+
+// Entry ids run out as an error, never as an overflow (ADR 0001).
+#[test]
+fn a_queue_out_of_entry_ids_refuses_new_entries() {
+    let mut state = started(vec![track("local", "current")]).snapshot();
+    state.next_id = EntryId(u64::MAX - 2);
+    let mut queue = CanonicalQueue::restore(state).unwrap();
+
+    assert!(queue.add_to_queue(track("local", "last"), None).is_ok());
+    assert_eq!(
+        queue.add_to_queue(track("local", "one-more"), None),
+        Err(Rejection::IdsExhausted)
+    );
+    assert_eq!(
+        queue.play_next(track("local", "one-more"), None),
+        Err(Rejection::IdsExhausted)
+    );
+    let before = queue.snapshot();
+    let outcome = queue.start_collection(CollectionEntry::numbered([track("local", "x")], 0), 0);
+    assert!(!outcome.started);
+    assert_eq!(queue.snapshot(), before);
+    assert_eq!(
+        queue.append_collection(CollectionEntry::numbered([track("local", "y")], 1)),
+        AddOutcome {
+            added: 0,
+            skipped: 1
+        }
+    );
+    round_trip(&queue);
+}
+
+// A direct jump into the next pass starts a new pass: what was trimmed from
+// the last one no longer counts as played.
+#[test]
+fn a_direct_jump_into_the_next_pass_forgets_trimmed_history() {
+    let mut queue = started((0..6).map(|i| track("local", &format!("t{i}"))).collect());
+    queue.shuffle_upcoming(3);
+    for _ in 0..5 {
+        assert!(queue.advance(TrackEnded));
+    }
+    queue.trim_history(1);
+    assert!(!queue.snapshot().trimmed.is_empty());
+    queue.set_repeat(RepeatMode::Queue);
+    queue
+        .add_to_queue(track("spotify", "request"), None)
+        .unwrap();
+    let first_of_next_pass = queue
+        .upcoming()
+        .iter()
+        .find(|entry| entry.origin != Origin::Request)
+        .unwrap()
+        .id;
+
+    assert!(queue.advance_to(first_of_next_pass));
+
+    assert!(queue.snapshot().trimmed.is_empty());
+}

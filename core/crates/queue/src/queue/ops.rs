@@ -68,6 +68,11 @@ pub enum Rejection {
     /// A Disabled Track cannot enter the Canonical Queue.
     #[error("the Track is unavailable")]
     Unavailable,
+    /// The queue has handed out every entry id there is. Starting a new
+    /// collection does not reset ids, so this stays until the session is
+    /// replaced; it cannot happen in practice (2^64 entries).
+    #[error("the queue has no entry ids left")]
+    IdsExhausted,
 }
 
 /// Which part of the queue a removed entry came from.
@@ -109,19 +114,27 @@ impl CanonicalQueue {
         origin: Origin,
         slot: Option<SlotId>,
         submitter: Option<Submitter>,
-    ) -> QueueEntry {
+    ) -> Option<QueueEntry> {
         let id = self.state.next_id;
-        self.state.next_id = EntryId(id.0 + 1);
-        QueueEntry {
+        // u64::MAX is never handed out (`QueueState::check` rejects it as the
+        // next id), so the increment cannot overflow.
+        let next = id.0.checked_add(1).filter(|&next| next < u64::MAX)?;
+        self.state.next_id = EntryId(next);
+        Some(QueueEntry {
             id,
             track,
             origin,
             slot,
             submitter,
-        }
+        })
     }
 
-    fn create_from(&mut self, entry: CollectionEntry) -> QueueEntry {
+    /// How many more entries can be created.
+    fn ids_left(&self) -> u64 {
+        u64::MAX - 1 - self.state.next_id.0
+    }
+
+    fn create_from(&mut self, entry: CollectionEntry) -> Option<QueueEntry> {
         self.create(
             entry.track,
             Origin::Collection {
@@ -221,7 +234,8 @@ impl CanonicalQueue {
             .enumerate()
             .filter(|(_, entry)| entry.track.is_queueable())
             .position(|(index, _)| index >= start);
-        let Some(cursor) = first else {
+        let fits = u64::try_from(accepted).is_ok_and(|needed| needed <= self.ids_left());
+        let Some(cursor) = first.filter(|_| fits) else {
             return StartOutcome {
                 accepted,
                 skipped,
@@ -239,7 +253,7 @@ impl CanonicalQueue {
             .filter(|entry| entry.track.is_queueable())
         {
             let entry = self.create_from(entry);
-            self.state.collection.push(entry);
+            self.state.collection.extend(entry);
         }
         self.state.cursor = Some(cursor);
         self.state.current = Some(Current::AtCursor);
@@ -259,7 +273,9 @@ impl CanonicalQueue {
         if !track.is_queueable() {
             return Err(Rejection::Unavailable);
         }
-        let entry = self.create(track, Origin::Request, None, by);
+        let entry = self
+            .create(track, Origin::Request, None, by)
+            .ok_or(Rejection::IdsExhausted)?;
         let id = entry.id;
         self.state.requests.push(entry);
         Ok(id)
@@ -271,7 +287,7 @@ impl CanonicalQueue {
         for track in tracks {
             match self.add_to_queue(track, by.clone()) {
                 Ok(_) => outcome.added += 1,
-                Err(Rejection::Unavailable) => outcome.skipped += 1,
+                Err(Rejection::Unavailable | Rejection::IdsExhausted) => outcome.skipped += 1,
             }
         }
         outcome
@@ -283,7 +299,9 @@ impl CanonicalQueue {
         if !track.is_queueable() {
             return Err(Rejection::Unavailable);
         }
-        let entry = self.create(track, Origin::Request, None, by);
+        let entry = self
+            .create(track, Origin::Request, None, by)
+            .ok_or(Rejection::IdsExhausted)?;
         let id = entry.id;
         self.state
             .requests
@@ -313,9 +331,13 @@ impl CanonicalQueue {
                 outcome.skipped += 1;
                 continue;
             }
-            let entry = self.create_from(entry);
-            self.state.collection.push(entry);
-            outcome.added += 1;
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
         }
         outcome
     }
@@ -439,9 +461,13 @@ impl CanonicalQueue {
             }
         };
         for entry in remaining {
-            let entry = self.create_from(entry);
-            self.state.collection.push(entry);
-            outcome.added += 1;
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
         }
         // While shuffled, the new tail is shuffled too, with the same seed.
         // What stayed in place (requests, the continuation) keeps its place.
@@ -479,9 +505,13 @@ impl CanonicalQueue {
             self.state.cursor = Some(0);
         }
         for entry in entries {
-            let entry = self.create_from(entry);
-            self.state.collection.push(entry);
-            outcome.added += 1;
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
         }
         if let Some(seed) = self.state.shuffle {
             let first = self.upcoming_start();
@@ -589,6 +619,10 @@ impl CanonicalQueue {
                     .state
                     .cursor
                     .is_some_and(|cursor| cursor + 1 >= self.state.collection.len());
+            if wraps {
+                // The jump starts the next pass.
+                self.state.trimmed.clear();
+            }
             let at = if wraps { 0 } else { self.upcoming_start() };
             self.state.collection.splice(at..at, history);
             let Some(cursor) = self

@@ -226,21 +226,21 @@ CREATE TABLE command_receipts (
 ) STRICT, WITHOUT ROWID;
 
 -- Local Tracks: audio content found under a Folder Grant, grouped by
--- fingerprint. The Track's metadata comes from its preferred file.
+-- fingerprint.
 CREATE TABLE local_tracks (
   connection_id TEXT NOT NULL REFERENCES provider_connections (connection_id) ON DELETE CASCADE,
   content_id TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
   fingerprint_hash INTEGER NOT NULL,
   duration_ms INTEGER CHECK (duration_ms >= 0),
-  track TEXT NOT NULL,
   indexed_ms INTEGER NOT NULL,
   PRIMARY KEY (connection_id, content_id)
 ) STRICT;
 
 CREATE INDEX local_tracks_fingerprint ON local_tracks (fingerprint_hash, duration_ms);
 
--- Every file of a Local Track, each a hidden playback candidate.
+-- Every file of a Local Track, each a hidden playback candidate, with the
+-- metadata read from it. The Local Track shows its preferred file's.
 CREATE TABLE local_files (
   connection_id TEXT NOT NULL,
   location TEXT NOT NULL,
@@ -250,9 +250,10 @@ CREATE TABLE local_files (
   size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
   modified_ms INTEGER NOT NULL,
   available INTEGER NOT NULL CHECK (available IN (0, 1)),
+  track TEXT NOT NULL,
   PRIMARY KEY (connection_id, location),
   FOREIGN KEY (connection_id, content_id)
     REFERENCES local_tracks (connection_id, content_id) ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) STRICT;
 
 CREATE INDEX local_files_track ON local_files (connection_id, content_id);

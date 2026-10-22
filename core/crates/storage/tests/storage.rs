@@ -6,14 +6,14 @@
 mod common;
 
 use common::{Dirs, detailed, reference, stored_sequence};
-use ristle_domain::{ConnectionId, PlaylistId, PluginId, RistlePlaylist};
+use ristle_domain::{ConnectionId, PlaylistId, PluginId, RistlePlaylist, Track};
 use ristle_queue::sequence::{SequenceId, SlotId};
 use ristle_queue::{
     CollectionPosition, Current, EntryId, Origin, QueueEntry, QueueState, RepeatMode,
 };
 use ristle_storage::repo::{
-    Account, CachedResponse, ConfirmedOrigin, FolderGrant, HttpKey, Intent, KvScope,
-    PlaybackSession, PluginRecord, ServerGrant,
+    Account, CachedResponse, ConfirmedOrigin, FolderGrant, HttpKey, Intent, KvScope, LocalContent,
+    LocalFile, PlaybackSession, PluginRecord, ServerGrant,
 };
 use ristle_storage::{Changes, Error, OpenStatus, Storage};
 
@@ -618,6 +618,7 @@ fn http_key(plugin: &str, connection: &str, key: &str) -> HttpKey {
     HttpKey {
         plugin: plugin.into(),
         connection: connection.into(),
+        generation: 0,
         key: key.into(),
     }
 }
@@ -820,4 +821,158 @@ fn connection_records_round_trip() {
 fn storage_is_shared_across_threads() {
     fn shared<T: Send + Sync>() {}
     shared::<Storage>();
+}
+
+// Codex review: a crash between the generation change in ristle.sqlite and
+// the cache deletion must not serve the old account's responses.
+#[test]
+fn cached_rows_of_an_older_generation_are_never_read() {
+    let dirs = Dirs::new();
+    let storage = dirs.open();
+    with_connections(&storage);
+    let old = HttpKey {
+        generation: 0,
+        ..http_key("spotify", "spotify-1", "me")
+    };
+    let put = old.clone();
+    storage
+        .write_blocking(move |tx| {
+            tx.http_cache().put(
+                &put,
+                &CachedResponse {
+                    response: b"old account".to_vec(),
+                    fetched_ms: 1,
+                },
+            )
+        })
+        .unwrap();
+    // The generation changes and the cache is not cleared, as after a crash
+    // between the two commits.
+    let generation = storage
+        .write_blocking(|tx| tx.connections().begin_generation(&"spotify-1".into(), None))
+        .unwrap();
+    let current = HttpKey {
+        generation,
+        ..old.clone()
+    };
+    assert_eq!(
+        storage
+            .read_blocking(move |tx| tx.http_cache().get(&current))
+            .unwrap(),
+        None
+    );
+    // The old row is still cleared with the connection.
+    assert_eq!(
+        storage
+            .write_blocking(|tx| tx
+                .http_cache()
+                .clear_connection(&"spotify".into(), &"spotify-1".into()))
+            .unwrap(),
+        1
+    );
+}
+
+// Codex review: a database at the current version with a damaged schema
+// opens in recovery instead of failing call by call.
+#[test]
+fn a_damaged_schema_at_the_current_version_opens_in_recovery() {
+    let dirs = Dirs::new();
+    drop(dirs.open());
+    dirs.raw("DROP TABLE command_receipts;");
+    let storage = dirs.open();
+    let OpenStatus::Recovery { reason } = storage.status() else {
+        panic!("a missing table was accepted");
+    };
+    assert!(reason.contains("command_receipts"), "{reason}");
+}
+
+#[test]
+fn a_damaged_cache_schema_is_recreated() {
+    let dirs = Dirs::new();
+    drop(dirs.open());
+    common::raw(
+        &dirs.paths.cache_database(),
+        "DROP INDEX http_cache_fetched;",
+    );
+    let storage = dirs.open();
+    assert_eq!(storage.status(), &OpenStatus::Ready);
+    drop(storage);
+    let conn = rusqlite::Connection::open(dirs.paths.cache_database()).unwrap();
+    let index: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'http_cache_fetched'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}
+
+// Codex review: the shown metadata follows the preferred file after the
+// previously preferred file is reindexed as a worse one.
+#[test]
+fn local_track_metadata_follows_the_preferred_file() {
+    let dirs = Dirs::new();
+    let storage = dirs.open();
+    storage
+        .write_blocking(|tx| {
+            tx.plugins().put(&plugin("local-files"))?;
+            tx.connections()
+                .create(&"local-1".into(), &"local-files".into())?;
+            Ok(())
+        })
+        .unwrap();
+    let content = LocalContent {
+        content_id: "c1".into(),
+        fingerprint: "fp".into(),
+        fingerprint_hash: 1,
+        duration_ms: None,
+    };
+    let titled = |title: &str| Track {
+        title: title.into(),
+        ..detailed("local-files", "c1")
+    };
+    let file = |location: &str, format: &str, bitrate_kbps: u32| LocalFile {
+        location: location.into(),
+        content_id: "c1".into(),
+        format: format.into(),
+        bitrate_kbps,
+        size_bytes: 1,
+        modified_ms: 1,
+        available: true,
+    };
+    let upsert = |track: Track, file: LocalFile| {
+        let content = content.clone();
+        storage
+            .write_blocking(move |tx| {
+                tx.local_index()
+                    .upsert(&"local-1".into(), &content, &track, &file)
+            })
+            .unwrap();
+    };
+    let shown = || {
+        storage
+            .read_blocking(|tx| tx.local_index().tracks(&"local-1".into()))
+            .unwrap()[0]
+            .title
+            .clone()
+    };
+
+    upsert(titled("From the FLAC"), file("a.flac", "flac", 900));
+    upsert(titled("From the MP3"), file("b.mp3", "mp3", 320));
+    assert_eq!(shown(), "From the FLAC");
+
+    // The FLAC's location now holds a 128 kbps MP3: the 320 kbps MP3 wins.
+    upsert(titled("Downgraded"), file("a.flac", "mp3", 128));
+    assert_eq!(shown(), "From the MP3");
+
+    // When the preferred file goes missing, the one that would play shows.
+    storage
+        .write_blocking(|tx| {
+            let index = tx.local_index();
+            index.begin_scan(&"local-1".into())?;
+            index.confirm_file(&"local-1".into(), "a.flac", 1, 1)
+        })
+        .unwrap();
+    assert_eq!(shown(), "Downgraded");
 }

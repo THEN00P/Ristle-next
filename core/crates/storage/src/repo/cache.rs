@@ -7,8 +7,16 @@
 //! [`HttpCache::evict_to_budget`] and their page cache counterparts. Reads
 //! do not write, so a hit is recorded for the least-recently-used order
 //! with `touch`.
+//!
+//! Keys include the Provider Connection's generation. A generation change
+//! in `ristle.sqlite` and the deletion of the old generation's rows here do
+//! not commit atomically (WAL does not make attached databases atomic), so
+//! a row of an old generation may survive a crash. It is never read, since
+//! callers ask with the current generation, and it ages out or is cleared
+//! with the connection.
 
 use ristle_domain::{ConnectionId, PluginId, ProviderId};
+use rusqlite::types::Value;
 
 use crate::sql::{int, optional, to_u64, uint};
 use crate::{Error, Tx};
@@ -24,8 +32,24 @@ pub struct HttpKey {
     pub plugin: PluginId,
     /// Its connection; empty for the anonymous connection.
     pub connection: ConnectionId,
+    /// The connection's generation when the response was fetched; 0 for the
+    /// anonymous connection.
+    pub generation: u64,
     /// `ristle-net`'s key for the request.
     pub key: String,
+}
+
+impl HttpKey {
+    const WHERE: &str = "plugin_id = ?1 AND connection_id = ?2 AND generation = ?3 AND key = ?4";
+
+    fn values(&self) -> Result<[Value; 4], Error> {
+        Ok([
+            Value::Text(self.plugin.as_str().to_owned()),
+            Value::Text(self.connection.as_str().to_owned()),
+            Value::Integer(int(self.generation, "generation")?),
+            Value::Text(self.key.clone()),
+        ])
+    }
 }
 
 /// A cached HTTP response, encoded by `ristle-net`.
@@ -51,9 +75,11 @@ impl<'a> HttpCache<'a> {
     pub fn get(&self, key: &HttpKey) -> Result<Option<CachedResponse>, Error> {
         optional(
             self.tx.conn(),
-            "SELECT response, fetched_ms FROM cache.http_cache
-             WHERE plugin_id = ?1 AND connection_id = ?2 AND key = ?3",
-            [key.plugin.as_str(), key.connection.as_str(), &key.key],
+            &format!(
+                "SELECT response, fetched_ms FROM cache.http_cache WHERE {}",
+                HttpKey::WHERE
+            ),
+            rusqlite::params_from_iter(key.values()?),
             |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
         )?
         .map(|(response, fetched)| {
@@ -67,43 +93,39 @@ impl<'a> HttpCache<'a> {
 
     /// Stores a response, used now.
     pub fn put(&self, key: &HttpKey, response: &CachedResponse) -> Result<(), Error> {
+        let mut values = key.values()?.to_vec();
+        values.extend([
+            Value::Blob(response.response.clone()),
+            Value::Integer(size(key.key.len() + response.response.len())?),
+            Value::Integer(int(response.fetched_ms, "fetch time")?),
+            Value::Integer(int(self.tx.now_ms(), "time")?),
+        ]);
         self.tx
             .write_conn()?
             .prepare_cached(
-                "INSERT INTO cache.http_cache
-                     (plugin_id, connection_id, key, response, size, fetched_ms, accessed_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (plugin_id, connection_id, key) DO UPDATE SET
+                "INSERT INTO cache.http_cache (plugin_id, connection_id, generation, key, response,
+                     size, fetched_ms, accessed_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (plugin_id, connection_id, generation, key) DO UPDATE SET
                      response = excluded.response, size = excluded.size,
                      fetched_ms = excluded.fetched_ms, accessed_ms = excluded.accessed_ms",
             )?
-            .execute(rusqlite::params![
-                key.plugin.as_str(),
-                key.connection.as_str(),
-                key.key,
-                response.response,
-                size(key.key.len() + response.response.len())?,
-                int(response.fetched_ms, "fetch time")?,
-                int(self.tx.now_ms(), "time")?,
-            ])?;
+            .execute(rusqlite::params_from_iter(values))?;
         Ok(())
     }
 
     /// Records a hit for the least-recently-used order.
     pub fn touch(&self, key: &HttpKey) -> Result<bool, Error> {
+        let mut values = key.values()?.to_vec();
+        values.push(Value::Integer(int(self.tx.now_ms(), "time")?));
         Ok(self
             .tx
             .write_conn()?
-            .prepare_cached(
-                "UPDATE cache.http_cache SET accessed_ms = ?4
-                 WHERE plugin_id = ?1 AND connection_id = ?2 AND key = ?3",
-            )?
-            .execute(rusqlite::params![
-                key.plugin.as_str(),
-                key.connection.as_str(),
-                key.key,
-                int(self.tx.now_ms(), "time")?,
-            ])?
+            .prepare_cached(&format!(
+                "UPDATE cache.http_cache SET accessed_ms = ?5 WHERE {}",
+                HttpKey::WHERE
+            ))?
+            .execute(rusqlite::params_from_iter(values))?
             > 0)
     }
 
@@ -112,15 +134,16 @@ impl<'a> HttpCache<'a> {
         Ok(self
             .tx
             .write_conn()?
-            .prepare_cached(
-                "DELETE FROM cache.http_cache WHERE plugin_id = ?1 AND connection_id = ?2 AND key = ?3",
-            )?
-            .execute([key.plugin.as_str(), key.connection.as_str(), &key.key])?
+            .prepare_cached(&format!(
+                "DELETE FROM cache.http_cache WHERE {}",
+                HttpKey::WHERE
+            ))?
+            .execute(rusqlite::params_from_iter(key.values()?))?
             > 0)
     }
 
-    /// Removes every response of a connection, as a generation change
-    /// requires.
+    /// Removes every response of a connection, of every generation, as a
+    /// generation change requires.
     pub fn clear_connection(
         &self,
         plugin: &PluginId,
@@ -166,11 +189,28 @@ pub struct PageKey {
     pub provider: ProviderId,
     /// The connection it was read through; empty for the anonymous one.
     pub connection: ConnectionId,
+    /// The connection's generation when it was read; 0 for the anonymous
+    /// connection.
+    pub generation: u64,
     /// What kind of result, such as `playlist` or `library`, so one kind
     /// can be cleared alone.
     pub namespace: String,
     /// Which result of that kind.
     pub key: String,
+}
+
+impl PageKey {
+    const WHERE: &str = "provider_id = ?1 AND connection_id = ?2 AND generation = ?3 AND namespace = ?4 AND key = ?5";
+
+    fn values(&self) -> Result<[Value; 5], Error> {
+        Ok([
+            Value::Text(self.provider.as_str().to_owned()),
+            Value::Text(self.connection.as_str().to_owned()),
+            Value::Integer(int(self.generation, "generation")?),
+            Value::Text(self.namespace.clone()),
+            Value::Text(self.key.clone()),
+        ])
+    }
 }
 
 /// A cached Provider page, encoded by its user.
@@ -198,14 +238,11 @@ impl<'a> PageCache<'a> {
     pub fn get(&self, key: &PageKey) -> Result<Option<CachedPage>, Error> {
         optional(
             self.tx.conn(),
-            "SELECT revision, payload, fetched_ms FROM cache.page_cache
-             WHERE provider_id = ?1 AND connection_id = ?2 AND namespace = ?3 AND key = ?4",
-            [
-                key.provider.as_str(),
-                key.connection.as_str(),
-                &key.namespace,
-                &key.key,
-            ],
+            &format!(
+                "SELECT revision, payload, fetched_ms FROM cache.page_cache WHERE {}",
+                PageKey::WHERE
+            ),
+            rusqlite::params_from_iter(key.values()?),
             |row| {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
@@ -226,46 +263,42 @@ impl<'a> PageCache<'a> {
 
     /// Stores a page, used now.
     pub fn put(&self, key: &PageKey, page: &CachedPage) -> Result<(), Error> {
+        let mut values = key.values()?.to_vec();
+        values.extend([
+            page.revision.clone().map_or(Value::Null, Value::Text),
+            Value::Blob(page.payload.clone()),
+            Value::Integer(size(
+                key.namespace.len() + key.key.len() + page.payload.len(),
+            )?),
+            Value::Integer(int(page.fetched_ms, "fetch time")?),
+            Value::Integer(int(self.tx.now_ms(), "time")?),
+        ]);
         self.tx
             .write_conn()?
             .prepare_cached(
-                "INSERT INTO cache.page_cache (provider_id, connection_id, namespace, key, revision,
-                     payload, size, fetched_ms, accessed_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT (provider_id, connection_id, namespace, key) DO UPDATE SET
+                "INSERT INTO cache.page_cache (provider_id, connection_id, generation, namespace, key,
+                     revision, payload, size, fetched_ms, accessed_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT (provider_id, connection_id, generation, namespace, key) DO UPDATE SET
                      revision = excluded.revision, payload = excluded.payload, size = excluded.size,
                      fetched_ms = excluded.fetched_ms, accessed_ms = excluded.accessed_ms",
             )?
-            .execute(rusqlite::params![
-                key.provider.as_str(),
-                key.connection.as_str(),
-                key.namespace,
-                key.key,
-                page.revision,
-                page.payload,
-                size(key.namespace.len() + key.key.len() + page.payload.len())?,
-                int(page.fetched_ms, "fetch time")?,
-                int(self.tx.now_ms(), "time")?,
-            ])?;
+            .execute(rusqlite::params_from_iter(values))?;
         Ok(())
     }
 
     /// Records a hit for the least-recently-used order.
     pub fn touch(&self, key: &PageKey) -> Result<bool, Error> {
+        let mut values = key.values()?.to_vec();
+        values.push(Value::Integer(int(self.tx.now_ms(), "time")?));
         Ok(self
             .tx
             .write_conn()?
-            .prepare_cached(
-                "UPDATE cache.page_cache SET accessed_ms = ?5
-                 WHERE provider_id = ?1 AND connection_id = ?2 AND namespace = ?3 AND key = ?4",
-            )?
-            .execute(rusqlite::params![
-                key.provider.as_str(),
-                key.connection.as_str(),
-                key.namespace,
-                key.key,
-                int(self.tx.now_ms(), "time")?,
-            ])?
+            .prepare_cached(&format!(
+                "UPDATE cache.page_cache SET accessed_ms = ?6 WHERE {}",
+                PageKey::WHERE
+            ))?
+            .execute(rusqlite::params_from_iter(values))?
             > 0)
     }
 
@@ -274,20 +307,16 @@ impl<'a> PageCache<'a> {
         Ok(self
             .tx
             .write_conn()?
-            .prepare_cached(
-                "DELETE FROM cache.page_cache
-                 WHERE provider_id = ?1 AND connection_id = ?2 AND namespace = ?3 AND key = ?4",
-            )?
-            .execute([
-                key.provider.as_str(),
-                key.connection.as_str(),
-                &key.namespace,
-                &key.key,
-            ])?
+            .prepare_cached(&format!(
+                "DELETE FROM cache.page_cache WHERE {}",
+                PageKey::WHERE
+            ))?
+            .execute(rusqlite::params_from_iter(key.values()?))?
             > 0)
     }
 
-    /// Removes every page of one namespace of one connection.
+    /// Removes every page of one namespace of one connection, of every
+    /// generation.
     pub fn clear_namespace(
         &self,
         provider: &ProviderId,
@@ -305,7 +334,8 @@ impl<'a> PageCache<'a> {
         ))
     }
 
-    /// Removes every page of a connection, as a generation change requires.
+    /// Removes every page of a connection, of every generation, as a
+    /// generation change requires.
     pub fn clear_connection(
         &self,
         provider: &ProviderId,

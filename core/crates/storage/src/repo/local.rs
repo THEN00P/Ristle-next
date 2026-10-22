@@ -4,7 +4,9 @@
 //! grouped into Local Tracks by content. Every file stays as a hidden
 //! playback candidate; the preferred one is FLAC, then MP3, then any other
 //! format, and within a rank the higher bitrate (`CONTEXT.md`, Local Track).
-//! A Local Track's metadata comes from its preferred file.
+//! Each file keeps the metadata read from it, and a Local Track shows that
+//! of its preferred available file, or of its preferred file when none is
+//! available, so the choice follows every reindex and rescan.
 //!
 //! A rescan marks every file unavailable ([`LocalIndex::begin_scan`]), then
 //! confirms each file still found with the same size and modification time
@@ -14,7 +16,7 @@
 
 use ristle_domain::{Availability, ConnectionId, Track};
 
-use crate::sql::{flag, int, optional, read_flag, to_u64, uint};
+use crate::sql::{flag, int, read_flag, to_u64, uint};
 use crate::{Error, Tx};
 
 const TRACKS: &str = "local_tracks";
@@ -69,9 +71,8 @@ impl<'a> LocalIndex<'a> {
         Self { tx }
     }
 
-    /// Indexes one file of a Local Track, stamped with the clock. The Track
-    /// metadata is kept only when this file is now the preferred one, so a
-    /// worse duplicate never replaces the tags of a better file.
+    /// Indexes one file of a Local Track with the metadata read from it,
+    /// stamped with the clock.
     pub fn upsert(
         &self,
         connection: &ConnectionId,
@@ -98,42 +99,15 @@ impl<'a> LocalIndex<'a> {
                 "the Track id is not the content id",
             ));
         }
-        let key = rusqlite::params![connection.as_str(), content.content_id];
-
-        let preferred = optional(
-            conn,
-            &format!(
-                "SELECT location, format, bitrate_kbps FROM local_files
-                 WHERE connection_id = ?1 AND content_id = ?2 ORDER BY {PREFERENCE} LIMIT 1"
-            ),
-            key,
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )?;
-        let keep_metadata = match &preferred {
-            None => true,
-            Some((location, format, bitrate)) => {
-                *location == file.location
-                    || rank(&file.format) < rank(format)
-                    || (rank(&file.format) == rank(format)
-                        && i64::from(file.bitrate_kbps) > *bitrate)
-            }
-        };
         let json = serde_json::to_string(track)
             .map_err(|error| Error::invalid("Track", error.to_string()))?;
         conn.prepare_cached(
             "INSERT INTO local_tracks (connection_id, content_id, fingerprint, fingerprint_hash,
-                 duration_ms, track, indexed_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 duration_ms, indexed_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (connection_id, content_id) DO UPDATE SET
                  fingerprint = excluded.fingerprint, fingerprint_hash = excluded.fingerprint_hash,
-                 duration_ms = excluded.duration_ms, indexed_ms = excluded.indexed_ms,
-                 track = CASE WHEN ?8 THEN excluded.track ELSE track END",
+                 duration_ms = excluded.duration_ms, indexed_ms = excluded.indexed_ms",
         )?
         .execute(rusqlite::params![
             connection.as_str(),
@@ -144,18 +118,16 @@ impl<'a> LocalIndex<'a> {
                 .duration_ms
                 .map(|d| int(d, "duration"))
                 .transpose()?,
-            json,
             int(self.tx.now_ms(), "index time")?,
-            keep_metadata,
         ])?;
         conn.prepare_cached(
             "INSERT INTO local_files (connection_id, location, content_id, format, bitrate_kbps,
-                 size_bytes, modified_ms, available)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 size_bytes, modified_ms, available, track)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (connection_id, location) DO UPDATE SET content_id = excluded.content_id,
                  format = excluded.format, bitrate_kbps = excluded.bitrate_kbps,
                  size_bytes = excluded.size_bytes, modified_ms = excluded.modified_ms,
-                 available = excluded.available",
+                 available = excluded.available, track = excluded.track",
         )?
         .execute(rusqlite::params![
             connection.as_str(),
@@ -166,6 +138,7 @@ impl<'a> LocalIndex<'a> {
             int(file.size_bytes, "file size")?,
             int(file.modified_ms, "modification time")?,
             flag(file.available),
+            json,
         ])?;
         // A file that moved to other content may leave a Local Track
         // without files; it no longer exists.
@@ -227,11 +200,14 @@ impl<'a> LocalIndex<'a> {
     /// Every Local Track of a connection, by content id, available while one
     /// of its files is.
     pub fn tracks(&self, connection: &ConnectionId) -> Result<Vec<Track>, Error> {
-        let mut select = self.tx.conn().prepare_cached(
-            "SELECT t.track, EXISTS (SELECT 1 FROM local_files f WHERE f.connection_id = t.connection_id
-                                     AND f.content_id = t.content_id AND f.available = 1)
-             FROM local_tracks t WHERE t.connection_id = ?1 ORDER BY t.content_id",
-        )?;
+        let mut select = self.tx.conn().prepare_cached(&format!(
+            "SELECT (SELECT track FROM local_files f
+                     WHERE f.connection_id = t.connection_id AND f.content_id = t.content_id
+                     ORDER BY available DESC, {PREFERENCE} LIMIT 1),
+                    EXISTS (SELECT 1 FROM local_files f WHERE f.connection_id = t.connection_id
+                            AND f.content_id = t.content_id AND f.available = 1)
+             FROM local_tracks t WHERE t.connection_id = ?1 ORDER BY t.content_id"
+        ))?;
         let mut rows = select.query([connection.as_str()])?;
         let mut tracks = Vec::new();
         while let Some(row) = rows.next()? {
@@ -308,14 +284,6 @@ impl<'a> LocalIndex<'a> {
                 int(modified_ms, "modification time")?,
             ])?
             > 0)
-    }
-}
-
-fn rank(format: &str) -> u8 {
-    match format {
-        "flac" => 0,
-        "mp3" => 1,
-        _ => 2,
     }
 }
 

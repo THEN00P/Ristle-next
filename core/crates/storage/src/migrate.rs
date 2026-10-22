@@ -81,7 +81,15 @@ pub(crate) fn migrate(conn: &mut Connection, path: &Path, migrations: &[Migratio
         return Migrated::Newer { version };
     }
     if version == target {
-        return Migrated::Ready { from: version };
+        return match expected_schema(migrations)
+            .and_then(|expected| check_schema(conn, "main", &expected))
+        {
+            Ok(()) => Migrated::Ready { from: version },
+            Err(error) => Migrated::Failed {
+                version,
+                reason: error.to_string(),
+            },
+        };
     }
 
     if version > 0
@@ -135,6 +143,7 @@ fn apply(conn: &mut Connection, from: u32, to: u32, migrations: &[Migration]) ->
             format!("{table} violates a foreign key after migrating"),
         ));
     }
+    check_schema(&tx, "main", &expected_schema(migrations)?)?;
     tx.pragma_update(None, "user_version", to)?;
     tx.commit()?;
     Ok(())
@@ -149,6 +158,53 @@ fn back_up(conn: &Connection, path: &Path, version: u32) -> Result<(), Error> {
     })?;
     conn.execute("VACUUM INTO ?1", [target])?;
     Ok(())
+}
+
+/// The tables and indexes of a schema, by kind and name, as SQLite stores
+/// their definitions. Triggers and views are not compared: Ristle creates
+/// none.
+type Schema = Vec<(String, String, String)>;
+
+fn schema_of(conn: &Connection, schema: &str) -> Result<Schema, Error> {
+    let mut select = conn.prepare(&format!(
+        "SELECT type, name, sql FROM {schema}.sqlite_master
+         WHERE type IN ('table', 'index') AND sql IS NOT NULL ORDER BY type, name"
+    ))?;
+    let rows = select
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// The schema `migrations` produce, built in memory.
+fn expected_schema(migrations: &[Migration]) -> Result<Schema, Error> {
+    let mut conn = Connection::open_in_memory()?;
+    let tx = conn.transaction()?;
+    for migration in migrations {
+        (migration.apply)(&tx)?;
+    }
+    schema_of(&tx, "main")
+}
+
+/// Fails when the database's tables and indexes differ from `expected`, so a
+/// damaged or hand-edited database opens in recovery instead of failing
+/// call by call.
+fn check_schema(conn: &Connection, schema: &str, expected: &Schema) -> Result<(), Error> {
+    let actual = schema_of(conn, schema)?;
+    if actual == *expected {
+        return Ok(());
+    }
+    let missing = expected.iter().find(|object| !actual.contains(object));
+    let unexpected = actual.iter().find(|object| !expected.contains(object));
+    let detail = match (missing, unexpected) {
+        (Some((kind, name, _)), _) => format!("{kind} {name} is missing or differs"),
+        (None, Some((kind, name, _))) => format!("{kind} {name} is unexpected"),
+        (None, None) => "the schema differs".to_owned(),
+    };
+    Err(Error::corrupt(
+        "schema",
+        format!("{schema} does not match its version: {detail}"),
+    ))
 }
 
 pub(crate) fn user_version(conn: &Connection, schema: &str) -> rusqlite::Result<u32> {
@@ -184,7 +240,10 @@ fn prepare_cache(conn: &Connection, name: &str) -> Result<(), Error> {
     conn.execute("ATTACH DATABASE ?1 AS cache", [name])?;
     let version = user_version(conn, "cache")?;
     if version == CACHE_VERSION {
-        return Ok(());
+        let mut expected = Connection::open_in_memory()?;
+        let tx = expected.transaction()?;
+        tx.execute_batch(CACHE_V1)?;
+        return check_schema(conn, "cache", &schema_of(&tx, "main")?);
     }
     let tables: i64 =
         conn.query_row("SELECT count(*) FROM cache.sqlite_master", [], |r| r.get(0))?;

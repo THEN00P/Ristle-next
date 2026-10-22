@@ -301,7 +301,9 @@ hash and engine configuration.
 
 As built in M3: `cache.sqlite` is attached to the same connections as schema
 `cache`, so one `Tx` reaches both; it is never migrated, and a cache database
-of another version is recreated. Tracks are stored as `ristle_domain::Track`
+of another version is recreated. WAL does not commit the two atomically, so
+cache keys carry the Provider Connection's generation and are read with the
+current one: an old account's rows that survive a crash are never served. Tracks are stored as `ristle_domain::Track`
 JSON, and a sequence's `Opened` as JSON, so **the serde shape of `Track`,
 `TrackRef`, `MediaDate`, `Artwork`, `Named`, `MetadataAttribute` and
 `Opened` is part of schema v1.** Adding an optional field with

@@ -254,6 +254,7 @@ fn page_key(provider: &str, connection: &str, namespace: &str, key: &str) -> Pag
     PageKey {
         provider: provider.into(),
         connection: connection.into(),
+        generation: 0,
         namespace: namespace.into(),
         key: key.into(),
     }

@@ -84,7 +84,7 @@ impl HlsStream {
             Playlist::Media(media) => (media, source.hint.codecs()),
             Playlist::Master(master) => {
                 let choice = playlist::choose(&master)?;
-                tracing::debug!(url = %choice.url, codecs = ?choice.codecs, "chose an HLS variant");
+                tracing::debug!(url = %crate::fetch::redact_url(choice.url.as_str()), codecs = ?choice.codecs, "chose an HLS variant");
                 match shared.playlist(&choice.url).await? {
                     Playlist::Media(media) => (media, choice.codecs.or(source.hint.codecs())),
                     Playlist::Master(_) => {

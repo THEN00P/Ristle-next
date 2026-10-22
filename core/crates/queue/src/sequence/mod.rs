@@ -16,6 +16,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CorruptState;
 
+mod order;
+mod shuffle;
+#[cfg(test)]
+mod tests;
+
+pub use order::StartAt;
+
 /// One occurrence in a sequence. Unique within the sequence and never
 /// reused, so the same Track twice in a playlist is two slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -229,7 +236,7 @@ impl Sequence {
 }
 
 #[cfg(test)]
-mod tests {
+mod state_tests {
     use ristle_domain::{CollectionRef, Count};
 
     use super::*;

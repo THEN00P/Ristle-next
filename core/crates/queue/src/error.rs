@@ -73,10 +73,27 @@ pub enum CorruptState {
     },
 }
 
+/// Why a sequence could not start.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidSequence {
+    /// There is nothing to play.
+    #[error("the sequence has no slots")]
+    Empty,
+    /// The start slot is not in the sequence.
+    #[error("the start slot {0} is not in the sequence")]
+    UnknownStart(SlotId),
+    /// The slots break a sequence invariant.
+    #[error(transparent)]
+    Invalid(#[from] CorruptState),
+}
+
 /// Every error this crate returns.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// Persisted state was rejected.
     #[error(transparent)]
     CorruptState(#[from] CorruptState),
+    /// A sequence could not start.
+    #[error(transparent)]
+    InvalidSequence(#[from] InvalidSequence),
 }

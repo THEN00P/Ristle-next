@@ -255,7 +255,7 @@ impl HlsDemuxer {
                     numer: 1,
                     denom: fmp4.track.timescale,
                 },
-                Parser::Fmp4(SegmentParser::new(fmp4.track)),
+                Parser::Fmp4(SegmentParser::new(fmp4.track.clone())),
             ),
             // Known from the first frame.
             None => (
@@ -366,7 +366,7 @@ impl HlsDemuxer {
                 current.codec.codec, next.codec.codec
             )));
         }
-        self.parser = Parser::Fmp4(SegmentParser::new(next.track));
+        self.parser = Parser::Fmp4(SegmentParser::new(next.track.clone()));
         self.fmp4 = Some(next);
         Ok(())
     }
@@ -379,9 +379,13 @@ impl HlsDemuxer {
                     *parser = match resume {
                         Some(resume) => {
                             origin = Some(i64::try_from(resume.origin).unwrap_or(0));
-                            SegmentParser::resume(fmp4.track, resume.samples, resume.mdat_end)
+                            SegmentParser::resume(
+                                fmp4.track.clone(),
+                                resume.samples,
+                                resume.mdat_end,
+                            )
                         }
-                        None => SegmentParser::new(fmp4.track),
+                        None => SegmentParser::new(fmp4.track.clone()),
                     };
                 }
             }
@@ -525,7 +529,7 @@ impl HlsDemuxer {
         match &mut self.parser {
             Parser::Fmp4(parser) => {
                 if let Some(fmp4) = &self.fmp4 {
-                    *parser = SegmentParser::new(fmp4.track);
+                    *parser = SegmentParser::new(fmp4.track.clone());
                 }
             }
             Parser::Ts(ts) => ts.discontinuity(),
@@ -662,7 +666,7 @@ impl Demuxer for HlsDemuxer {
             .filter(|_| one_map)
             .map(|fmp4| RangedSeek {
                 offset_us: us - segment_start,
-                track: fmp4.track,
+                track: fmp4.track.clone(),
             });
         self.restart(Plan::Vod {
             playlist: self.playlist.clone(),

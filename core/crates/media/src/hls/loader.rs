@@ -211,7 +211,7 @@ pub(crate) enum Plan {
 }
 
 /// A byte-range seek inside the first segment.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RangedSeek {
     /// Microseconds into the segment.
     pub(crate) offset_us: u64,
@@ -264,7 +264,7 @@ async fn vod(
     let mut map: Option<Arc<Map>> = None;
     for (index, segment) in playlist.segments.iter().enumerate().skip(start) {
         send_init_if_changed(shared, segment, &mut map, tx).await?;
-        let ranged = match seek {
+        let ranged = match &seek {
             Some(seek) if index == start && segment.map.is_some() => {
                 match ranged_start(shared, segment, seek).await {
                     Ok(found) => found,
@@ -505,7 +505,7 @@ fn sub_range(range: Option<ByteRange>, offset: u64) -> Option<ByteRange> {
 async fn ranged_start(
     shared: &Shared,
     segment: &Segment,
-    seek: RangedSeek,
+    seek: &RangedSeek,
 ) -> Result<Option<Ranged>, Error> {
     let mut probe = MOOF_PROBE;
     let head = loop {

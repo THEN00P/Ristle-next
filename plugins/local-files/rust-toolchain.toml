@@ -1,0 +1,6 @@
+# The core's toolchain (core/rust-toolchain.toml), plus the component target.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-wasip2"]

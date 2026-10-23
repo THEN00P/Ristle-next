@@ -489,7 +489,8 @@ fn a_failed_stream_plays_what_it_decoded_then_stops_without_moving_on() {
     assert!(!rig.output.is_running());
     // A seek leaves the stop, as it does an end.
     rig.engine.seek(0).unwrap();
-    assert!(rig.engine.state().error.is_none());
+    rig.engine.play().unwrap();
+    assert!(rig.output.is_running());
 }
 
 #[test]
@@ -844,4 +845,57 @@ fn a_heard_end_is_the_whole_track_even_if_the_latency_grew() {
     // The device reports a longer latency after the end was heard.
     rig.output.set_latency(50);
     assert_eq!(rig.engine.state().position_ms, 10);
+}
+
+#[test]
+fn a_held_end_is_still_reported_when_its_latency_estimate_grows() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 10, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(5);
+    rig.engine.play().unwrap();
+    rig.output.render(12);
+    // The end was rendered at frame 10; the estimate grows before it is
+    // due, and the end waits for the new one.
+    rig.output.set_latency(30);
+    rig.output.render(10);
+    thread::sleep(Duration::from_millis(50));
+    assert!(!rig.events.all().contains(&EngineEvent::Ended { track: T1 }));
+    assert!(rig.output.is_running());
+    rig.output.render(20);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Ended { track: T1 })
+    );
+}
+
+#[test]
+fn pausing_before_the_end_is_heard_keeps_play_able_to_finish_it() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 10, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(20);
+    rig.engine.play().unwrap();
+    // The last frame is rendered, not yet heard.
+    rig.output.render(15);
+    rig.engine.pause();
+    rig.engine.play().unwrap();
+    assert!(rig.output.is_running());
+    rig.output.render(20);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Ended { track: T1 })
+    );
+    assert!(until(|| !rig.output.is_running()));
+    // Heard now: play leaves it stopped.
+    rig.engine.play().unwrap();
+    assert!(!rig.output.is_running());
 }

@@ -89,7 +89,8 @@ pub(crate) struct RenderState {
     ramp_frames: u64,
     /// Frames handed to the output so far, silence included.
     rendered: u64,
-    /// Notes held until the output has played the frame they are about.
+    /// Notes held until the output has played the frame they are about,
+    /// with that frame's position on the `rendered` clock.
     deferred: [Option<(u64, Note)>; DEFERRED],
 }
 
@@ -214,14 +215,19 @@ impl RenderState {
 
     /// Sends `note` once the frame rendered at `frame` has been heard.
     fn send_when_heard(&mut self, note: Note, frame: u64) {
-        let due = frame + self.shared.latency.frames();
-        if due <= self.rendered {
+        if self.heard(frame) {
             self.send(note);
         } else if let Some(free) = self.deferred.iter_mut().find(|entry| entry.is_none()) {
-            *free = Some((due, note));
+            *free = Some((frame, note));
         } else {
             self.send(note);
         }
+    }
+
+    /// Whether the frame rendered at `frame` has been heard, by the latency
+    /// as it is now: the estimate can grow after a note is held.
+    fn heard(&self, frame: u64) -> bool {
+        frame + self.shared.latency.frames() <= self.rendered
     }
 
     /// Sends the held notes whose frame has been heard, oldest first.
@@ -231,8 +237,8 @@ impl RenderState {
                 .deferred
                 .iter()
                 .enumerate()
-                .filter_map(|(index, entry)| entry.map(|(due, _)| (due, index)))
-                .filter(|(due, _)| *due <= self.rendered)
+                .filter_map(|(index, entry)| entry.map(|(frame, _)| (frame, index)))
+                .filter(|(frame, _)| self.heard(*frame))
                 .min();
             let Some((_, index)) = due else {
                 return;

@@ -279,10 +279,11 @@ impl Engine {
             return Err(Error::NoCurrent);
         }
         // An ended Track, or a failed one whose audio has played out, stays
-        // stopped until it is replaced or sought.
-        if shared.ended.load(Ordering::Acquire) == record.seq
-            || shared.stopped.load(Ordering::Acquire) == record.seq
-        {
+        // stopped until it is replaced or sought, once its end has been
+        // heard. Before that, output still has its last frames to play.
+        let finished = shared.ended.load(Ordering::Acquire) == record.seq
+            || shared.stopped.load(Ordering::Acquire) == record.seq;
+        if finished && shared.heard_end.load(Ordering::Acquire) == record.seq {
             return Ok(());
         }
         shared.playing.store(true, Ordering::Release);

@@ -1,7 +1,0 @@
-== mp3: total delta 0 frames, SNR 17.0 dB, boundary windows [30.8, 37.1] dB, window median 35.2 / p1 6.5 / min 2.3 dB
-== m4a: total delta 4104 frames, SNR -3.4 dB, boundary windows [-0.0, -0.0] dB, window median -3.5 / p1 -9.1 / min -14.2 dB
-== m4a+host-elst: total delta 0 frames, SNR 24.1 dB, boundary windows [21.4, 26.3] dB, window median 35.9 / p1 14.3 / min 7.4 dB
-== aac: total delta 4104 frames, SNR -3.4 dB, boundary windows [-0.0, -0.0] dB, window median -3.5 / p1 -9.1 / min -14.2 dB
-== ogg: total delta 0 frames, SNR 35.7 dB, boundary windows [38.5, 38.7] dB, window median 36.2 / p1 29.0 / min 24.4 dB
-== opus: total delta 0 frames, SNR 14.2 dB, boundary windows [24.8, 31.5] dB, window median 24.1 / p1 4.1 / min 0.8 dB
-== flac: total delta 0 frames, SNR 240.7 dB, boundary windows [201.6, 202.9] dB, window median 204.9 / p1 198.8 / min 193.6 dB

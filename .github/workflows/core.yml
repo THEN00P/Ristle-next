@@ -85,6 +85,29 @@ jobs:
         run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
       - run: cargo ndk -t arm64-v8a -t x86_64 --platform 28 clippy -p ristle-audio --all-targets --all-features --locked -- -D warnings
 
+  android-media:
+    # ristle-media's Android code (the MediaCodec AAC provider) and its
+    # device tests compile for Android. The device run itself is recorded in
+    # the PR: CI has no emulator.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: android-media
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - name: NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - run: cargo ndk -t arm64-v8a -t x86_64 --platform 28 clippy -p ristle-media --all-targets --all-features --locked -- -D warnings
+
   deny:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -1124,6 +1124,7 @@ dependencies = [
  "bytes",
  "cbc",
  "ctr",
+ "ndk",
  "ristle-domain",
  "ristle-net",
  "symphonia",

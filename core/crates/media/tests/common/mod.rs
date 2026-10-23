@@ -15,9 +15,14 @@ use ristle_media::{ContainerStream, DecoderRegistry, MediaHint, MediaStream, Rea
 pub const CUTS_44: [usize; 4] = [0, 52_517, 105_011, 158_760];
 pub const CUTS_48: [usize; 4] = [0, 57_131, 114_287, 172_800];
 
+/// A fixture file. `RISTLE_MEDIA_FIXTURES` overrides the directory for test
+/// binaries run on a device, where the source tree is not.
 pub fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+    std::env::var_os("RISTLE_MEDIA_FIXTURES")
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+            PathBuf::from,
+        )
         .join(name)
 }
 

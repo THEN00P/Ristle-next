@@ -13,6 +13,8 @@
 //! ([`crate::stream`]), so a stream sounds the same whichever provider
 //! decodes it.
 
+#[cfg(target_os = "android")]
+mod mediacodec;
 mod symphonia;
 
 use std::sync::Arc;
@@ -20,6 +22,8 @@ use std::sync::Arc;
 use crate::codec::CodecDescription;
 use crate::{Error, StreamFormat};
 
+#[cfg(target_os = "android")]
+pub use self::mediacodec::MediaCodecProvider;
 pub(crate) use self::symphonia::opus_pre_skip;
 pub use self::symphonia::{LibopusProvider, SymphoniaProvider};
 
@@ -141,12 +145,15 @@ impl DecoderRegistry {
         Self::default()
     }
 
-    /// Symphonia and libopus, the providers on every platform. The platform
-    /// glue registers its AAC provider after these.
+    /// Symphonia and libopus, the providers on every platform, and on
+    /// Android MediaCodec for HE-AAC. AudioToolbox and Media Foundation
+    /// (phases 6 and 4) are registered by their platform glue after these.
     pub fn with_defaults() -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(SymphoniaProvider::new()));
         registry.register(Arc::new(LibopusProvider::new()));
+        #[cfg(target_os = "android")]
+        registry.register(Arc::new(MediaCodecProvider::new()));
         registry
     }
 

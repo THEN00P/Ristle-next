@@ -798,3 +798,40 @@ fn a_seek_across_a_format_discontinuity_reads_the_other_container() {
     let (again, _) = read_all(&mut stream).unwrap();
     assert!((again.len() / 2).abs_diff(expected - 22_050) <= 4 * 1024);
 }
+
+#[test]
+fn signed_urls_reach_the_server_unredacted() {
+    // Playlist, key and segments all carry signatures in their queries;
+    // only errors and logs may redact them.
+    let harness = Harness::new(4096);
+    let plain = String::from_utf8(hls_file("ts/index.m3u8")).unwrap();
+    let key = [4u8; 16];
+    harness.fetch.put(&format!("{BASE}k?sig=KEY"), key.to_vec());
+    let mut playlist = String::new();
+    let mut sequence = 0u64;
+    for line in plain.lines() {
+        if line.starts_with("#EXTINF") && sequence == 0 {
+            playlist.push_str("#EXT-X-KEY:METHOD=AES-128,URI=\"k?sig=KEY\"\n");
+        }
+        if !line.starts_with('#') && !line.is_empty() {
+            use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+            let iv = u128::from(sequence).to_be_bytes();
+            let encrypted = cbc::Encryptor::<aes::Aes128>::new(&key.into(), &iv.into())
+                .encrypt_padded_vec_mut::<Pkcs7>(&hls_file(&format!("ts/{line}")));
+            harness
+                .fetch
+                .put(&format!("{BASE}{line}?sig=SEG{sequence}"), encrypted);
+            playlist.push_str(&format!("{line}?sig=SEG{sequence}\n"));
+            sequence += 1;
+        } else {
+            playlist.push_str(line);
+            playlist.push('\n');
+        }
+    }
+    harness
+        .fetch
+        .put(&format!("{BASE}index.m3u8?token=PLAYLIST"), playlist);
+    let mut stream = harness.open(&format!("{BASE}index.m3u8?token=PLAYLIST"));
+    let (samples, _) = read_all(&mut stream).unwrap();
+    assert!(samples.len() / 2 >= SOURCE_FRAMES);
+}

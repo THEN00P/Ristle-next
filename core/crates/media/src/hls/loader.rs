@@ -100,7 +100,7 @@ impl Shared {
             Vec::new()
         };
         FetchRequest {
-            url: redact_url(url.as_str()),
+            url: url.to_string(),
             headers,
             range,
         }

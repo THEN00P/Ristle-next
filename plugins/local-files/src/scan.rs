@@ -92,6 +92,8 @@ pub struct Limits {
     pub max_depth: usize,
     /// Audio files in all.
     pub max_files: usize,
+    /// Directories in all, below the granted folders.
+    pub max_dirs: usize,
 }
 
 impl Default for Limits {
@@ -99,6 +101,7 @@ impl Default for Limits {
         Self {
             max_depth: 32,
             max_files: 200_000,
+            max_dirs: 50_000,
         }
     }
 }
@@ -110,8 +113,8 @@ pub struct Walk {
     pub files: BTreeMap<FileKey, Stamp>,
     /// Directories that could not be read now, as `(folder, dir)`.
     pub unreadable: Vec<(String, String)>,
-    /// The scan stopped at [`Limits::max_files`] or [`Limits::max_depth`];
-    /// what it did not reach is kept like an unreadable directory.
+    /// The scan stopped at one of its [`Limits`]; what it did not reach is
+    /// kept like an unreadable directory.
     pub truncated: bool,
 }
 
@@ -138,91 +141,126 @@ pub fn is_audio_name(name: &str) -> bool {
         })
 }
 
-/// Walks every granted folder.
+/// Walks every granted folder, one listing page at a time, so memory and
+/// host calls stay within `limits` however large a directory is.
 pub fn walk<F: Folders + ?Sized>(
     folders: &F,
     roots: &[String],
     limits: Limits,
 ) -> Result<Walk, ScanError> {
     let mut walk = Walk::default();
-    for root in roots {
+    let mut directories = 0usize;
+    for (index, root) in roots.iter().enumerate() {
         // Depth-first, in name order: (dir, depth).
         let mut pending = vec![(String::new(), 0usize)];
         while let Some((dir, depth)) = pending.pop() {
-            let entries = match list_all(folders, root, &dir) {
-                Ok(entries) => entries,
-                Err(SourceError::Revoked) => return Err(ScanError::Revoked(root.clone())),
-                Err(SourceError::Unavailable(_)) => {
+            match walk_dir(
+                folders,
+                root,
+                &dir,
+                depth,
+                limits,
+                &mut walk,
+                &mut directories,
+            ) {
+                Ok(Listed::Complete(subdirs)) => {
+                    pending.extend(subdirs.into_iter().rev().map(|path| (path, depth + 1)));
+                }
+                Ok(Listed::Unreadable) => walk.unreadable.push((root.clone(), dir)),
+                Ok(Listed::LimitReached) => {
+                    // Everything not reached is kept as it was.
+                    walk.truncated = true;
                     walk.unreadable.push((root.clone(), dir));
-                    continue;
-                }
-            };
-            let mut subdirs = Vec::new();
-            for entry in entries {
-                if entry.name.is_empty()
-                    || entry.name.contains('/')
-                    || entry.name == "."
-                    || entry.name == ".."
-                    || entry.name.starts_with('.')
-                {
-                    continue;
-                }
-                let path = if dir.is_empty() {
-                    entry.name.clone()
-                } else {
-                    format!("{dir}/{}", entry.name)
-                };
-                if entry.folder {
-                    if depth < limits.max_depth {
-                        subdirs.push(path);
-                    } else {
-                        walk.truncated = true;
-                        walk.unreadable.push((root.clone(), path));
-                    }
-                } else if is_audio_name(&entry.name) {
-                    if walk.files.len() >= limits.max_files {
-                        walk.truncated = true;
-                        walk.unreadable.push((root.clone(), dir.clone()));
-                        break;
-                    }
-                    walk.files.insert(
-                        FileKey {
-                            folder: root.clone(),
-                            path,
-                        },
-                        Stamp {
-                            size: entry.size,
-                            modified_ms: entry.modified_ms,
-                        },
+                    walk.unreadable
+                        .extend(pending.into_iter().map(|(dir, _)| (root.clone(), dir)));
+                    walk.unreadable.extend(
+                        roots[index + 1..]
+                            .iter()
+                            .map(|root| (root.clone(), String::new())),
                     );
+                    return Ok(walk);
                 }
+                Err(ScanError::Revoked(folder)) => return Err(ScanError::Revoked(folder)),
             }
-            pending.extend(subdirs.into_iter().rev().map(|path| (path, depth + 1)));
         }
     }
     Ok(walk)
 }
 
-/// Every entry of one directory, following `after` until an empty page.
-fn list_all<F: Folders + ?Sized>(
+enum Listed {
+    /// Every page was read; these subdirectories remain.
+    Complete(Vec<String>),
+    /// The directory could not be read, or not to its end.
+    Unreadable,
+    /// The scan reached its limits inside this directory.
+    LimitReached,
+}
+
+/// Lists one directory page by page, recording its audio files.
+fn walk_dir<F: Folders + ?Sized>(
     folders: &F,
     root: &str,
     dir: &str,
-) -> Result<Vec<DirEntry>, SourceError> {
-    let mut entries: Vec<DirEntry> = Vec::new();
+    depth: usize,
+    limits: Limits,
+    walk: &mut Walk,
+    directories: &mut usize,
+) -> Result<Listed, ScanError> {
+    let mut subdirs = Vec::new();
+    let mut after: Option<String> = None;
     loop {
-        let after = entries.last().map(|entry| entry.name.as_str());
-        let page = folders.list(root, dir, after)?;
+        let page = match folders.list(root, dir, after.as_deref()) {
+            Ok(page) => page,
+            Err(SourceError::Revoked) => return Err(ScanError::Revoked(root.to_owned())),
+            // Files already recorded stay; the rest is kept by the
+            // unreadable mark.
+            Err(SourceError::Unavailable(_)) => return Ok(Listed::Unreadable),
+        };
         // A page that does not move past `after` would repeat forever.
-        let advances = match (page.last(), after) {
+        let advances = match (page.last(), after.as_deref()) {
             (None, _) => false,
             (Some(last), Some(after)) => last.name.as_str() > after,
             (Some(_), None) => true,
         };
         if !advances {
-            return Ok(entries);
+            return Ok(Listed::Complete(subdirs));
         }
-        entries.extend(page);
+        after = page.last().map(|entry| entry.name.clone());
+        for entry in page {
+            if entry.name.is_empty() || entry.name.contains('/') || entry.name.starts_with('.') {
+                continue;
+            }
+            let path = if dir.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{dir}/{}", entry.name)
+            };
+            if entry.folder {
+                if depth >= limits.max_depth {
+                    walk.truncated = true;
+                    walk.unreadable.push((root.to_owned(), path));
+                } else if *directories >= limits.max_dirs {
+                    return Ok(Listed::LimitReached);
+                } else {
+                    *directories += 1;
+                    subdirs.push(path);
+                }
+            } else if is_audio_name(&entry.name) {
+                if walk.files.len() >= limits.max_files {
+                    return Ok(Listed::LimitReached);
+                }
+                walk.files.insert(
+                    FileKey {
+                        folder: root.to_owned(),
+                        path,
+                    },
+                    Stamp {
+                        size: entry.size,
+                        modified_ms: entry.modified_ms,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -424,7 +462,7 @@ mod tests {
             .file("music", "deep/er/c.mp3", 1, Some(1));
         let limits = Limits {
             max_depth: 1,
-            max_files: 10,
+            ..Limits::default()
         };
 
         let walk = walk(&tree, &roots(&["music"]), limits).unwrap();
@@ -435,6 +473,59 @@ mod tests {
             walk.unreadable,
             [("music".to_owned(), "deep/er".to_owned())]
         );
+    }
+
+    #[test]
+    fn stops_listing_at_the_file_limit() {
+        let mut tree = Tree {
+            page: 2,
+            ..Tree::default()
+        };
+        for i in 0..100 {
+            tree = tree.file("music", &format!("big/{i:03}.mp3"), 1, Some(1));
+        }
+        tree = tree
+            .file("music", "later/a.mp3", 1, Some(1))
+            .file("other", "b.mp3", 1, Some(1));
+        let limits = Limits {
+            max_files: 3,
+            ..Limits::default()
+        };
+
+        let walk = walk(&tree, &roots(&["music", "other"]), limits).unwrap();
+
+        assert_eq!(walk.files.len(), 3);
+        assert!(walk.truncated);
+        // The root's page and the empty one that ends it, then two pages of
+        // `big`, the second of which reaches the limit. `big`'s other pages,
+        // `later` and `other` are never listed.
+        assert_eq!(tree.calls.get(), 4);
+        assert_eq!(
+            walk.unreadable,
+            [
+                ("music".to_owned(), "big".to_owned()),
+                ("music".to_owned(), "later".to_owned()),
+                ("other".to_owned(), String::new()),
+            ]
+        );
+        // Nothing beyond the limit counts as removed.
+        let mut previous = walk.files.clone();
+        previous.insert(
+            key("music", "big/099.mp3"),
+            Stamp {
+                size: 1,
+                modified_ms: Some(1),
+            },
+        );
+        previous.insert(
+            key("other", "b.mp3"),
+            Stamp {
+                size: 1,
+                modified_ms: Some(1),
+            },
+        );
+        let changes = diff(&previous, &walk, &roots(&["music", "other"]));
+        assert!(changes.removed.is_empty());
     }
 
     /// Legacy `LocalProviderSkipsUnchangedFilesAndDisablesMissingTracks`,

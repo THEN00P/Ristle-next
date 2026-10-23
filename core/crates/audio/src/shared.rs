@@ -313,6 +313,8 @@ impl Shared {
     /// Frames of Track audio rendered but not yet heard: the output latency,
     /// less the silence rendered since the last frame of audio.
     pub(crate) fn in_flight(&self) -> u64 {
+        // The clock first: the callback publishes the boundary before it,
+        // so the boundary read next is at least as new as the clock.
         let rendered = self.rendered.load(Ordering::Acquire);
         let audio_until = self.audio_until.load(Ordering::Acquire);
         self.latency

@@ -121,16 +121,33 @@ impl RenderState {
     }
 
     fn render(&mut self, out: &mut [f32]) {
-        let shared = Arc::clone(&self.shared);
-        let channels = usize::from(shared.info.channels);
+        let channels = usize::from(self.shared.info.channels);
         let frames = out.len() / channels;
         let start = self.rendered;
         self.rendered += frames as u64;
-        shared.rendered.store(self.rendered, Ordering::Release);
         self.release_heard();
+        let done = self.render_audio(out, start);
+        // Published after the buffer is filled, audio boundary first: a
+        // reader that sees this buffer on the clock also sees how much of it
+        // was audio, so it never counts the buffer as silence.
+        if done > 0 {
+            self.shared
+                .audio_until
+                .store(start + done as u64, Ordering::Release);
+        }
+        self.shared.rendered.store(self.rendered, Ordering::Release);
+    }
+
+    /// Fills `out` from the slots and returns the frames of audio written;
+    /// the rest of `out` stays silent. `start` is `out`'s first frame on the
+    /// `rendered` clock.
+    fn render_audio(&mut self, out: &mut [f32], start: u64) -> usize {
+        let shared = Arc::clone(&self.shared);
+        let channels = usize::from(shared.info.channels);
+        let frames = out.len() / channels;
         if !shared.playing.load(Ordering::Acquire) {
             self.audible = false;
-            return;
+            return 0;
         }
         let mut done = 0;
         // Each pass either reads audio, or stops, or switches slots. Two
@@ -206,11 +223,7 @@ impl RenderState {
         }
         self.apply_gain(&mut out[..done * channels], channels);
         self.audible = done > 0;
-        if done > 0 {
-            shared
-                .audio_until
-                .store(start + done as u64, Ordering::Release);
-        }
+        done
     }
 
     /// Sends `note` once the frame rendered at `frame` has been heard.

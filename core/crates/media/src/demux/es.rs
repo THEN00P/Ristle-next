@@ -341,18 +341,16 @@ impl Framer {
             Some(codec)
                 if codec.codec != header.codec
                     || codec.sample_rate != Some(header.rate)
-                    || codec.channels != Some(header.channels) =>
+                    || codec.channels != Some(header.channels)
+                    || codec.extra_data.as_deref() != header.asc.as_ref().map(|a| &a[..]) =>
             {
-                // A decoder cannot follow a mid-stream change of rate or
-                // layout; HLS signals such a change with a discontinuity, which
-                // starts a new stream.
-                Err(Error::malformed(
-                    "elementary stream",
-                    format!(
-                        "changed from {:?} {:?} Hz to {:?} {} Hz",
-                        codec.codec, codec.sample_rate, header.codec, header.rate
-                    ),
-                ))
+                // The decoder was opened for the first configuration and is
+                // not reopened, also not across an HLS discontinuity: a
+                // change of rate, layout or AAC profile ends the stream.
+                Err(Error::UnsupportedCodec(format!(
+                    "a change from {:?} {:?} Hz to {:?} {} Hz mid-stream",
+                    codec.codec, codec.sample_rate, header.codec, header.rate
+                )))
             }
             Some(_) => Ok(()),
         }
@@ -540,6 +538,22 @@ pub(crate) mod tests {
         framer.push(&adts_frame(&[4; 10]), None);
         let packets = drain(&mut framer, true);
         assert_eq!(packets.len(), 1);
+    }
+
+    #[test]
+    fn a_profile_change_after_a_discontinuity_is_refused() {
+        let mut main = adts_frame(&[0; 20]);
+        main[2] &= 0x3f; // object type 1 (AAC Main), same rate and layout
+        let mut framer = Framer::new(EsKind::Adts);
+        framer.push(&adts_frame(&[0; 20]), None);
+        assert!(framer.next_packet(true).unwrap().is_some());
+        framer.discontinuity();
+        framer.push(&main, None);
+        framer.push(&main, None);
+        assert!(matches!(
+            framer.next_packet(true),
+            Err(Error::UnsupportedCodec(_))
+        ));
     }
 
     #[test]

@@ -672,3 +672,129 @@ fn ts_segments_may_split_frames() {
     .unwrap();
     assert_eq!(cut, read_all(&mut whole).unwrap().0);
 }
+
+/// `(EXTINF line, URI)` pairs of a fixture rendition's playlist.
+fn rendition_segments(rendition: &str) -> Vec<(String, String)> {
+    let text = String::from_utf8(hls_file(&format!("{rendition}/index.m3u8"))).unwrap();
+    let mut out = Vec::new();
+    let mut extinf = None;
+    for line in text.lines() {
+        if line.starts_with("#EXTINF") {
+            extinf = Some(line.to_owned());
+        } else if !line.starts_with('#') && !line.is_empty() {
+            out.push((extinf.take().unwrap(), line.to_owned()));
+        }
+    }
+    out
+}
+
+fn extinf_frames(extinf: &str) -> usize {
+    let seconds: f64 = extinf
+        .trim_start_matches("#EXTINF:")
+        .trim_end_matches(',')
+        .parse()
+        .unwrap();
+    (seconds * 44_100.0).round() as usize
+}
+
+/// A playlist that plays `first` (rendition, segment indices), then a
+/// discontinuity, then `second`. fMP4 parts carry their `EXT-X-MAP`.
+fn mixed_playlist(harness: &Harness, first: (&str, &[usize]), second: (&str, &[usize])) -> usize {
+    serve_rendition(&harness.fetch, "ts", "ts/");
+    serve_rendition(&harness.fetch, "fmp4", "fmp4/");
+    let mut text = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:2\n");
+    let mut frames = 0;
+    for (part, (rendition, indices)) in [first, second].into_iter().enumerate() {
+        if part == 1 {
+            text.push_str("#EXT-X-DISCONTINUITY\n");
+        }
+        if rendition == "fmp4" {
+            text.push_str("#EXT-X-MAP:URI=\"fmp4/init.mp4\"\n");
+        }
+        let segments = rendition_segments(rendition);
+        for &index in indices {
+            let (extinf, uri) = &segments[index];
+            frames += extinf_frames(extinf);
+            text.push_str(&format!("{extinf}\n{rendition}/{uri}\n"));
+        }
+    }
+    text.push_str("#EXT-X-ENDLIST\n");
+    harness.fetch.put(&format!("{BASE}mixed.m3u8"), text);
+    frames
+}
+
+#[test]
+fn a_format_discontinuity_from_ts_to_fmp4_keeps_playing() {
+    let harness = Harness::new(4096);
+    let expected = mixed_playlist(&harness, ("ts", &[0, 1]), ("fmp4", &[2, 3]));
+    let (samples, _) = read_all(&mut harness.open(&format!("{BASE}mixed.m3u8"))).unwrap();
+    let frames = samples.len() / 2;
+    // Each container keeps its own priming and padding: within a frame per
+    // segment of the playlist's duration.
+    assert!(
+        frames.abs_diff(expected) <= 4 * 1024,
+        "{frames} against {expected}"
+    );
+    assert!(
+        harness
+            .fetch
+            .requests()
+            .iter()
+            .any(|r| r.url.ends_with("fmp4/seg3.m4s"))
+    );
+}
+
+#[test]
+fn a_format_discontinuity_from_fmp4_to_ts_keeps_playing() {
+    let harness = Harness::new(4096);
+    let expected = mixed_playlist(&harness, ("fmp4", &[0, 1]), ("ts", &[2, 3]));
+    let (samples, _) = read_all(&mut harness.open(&format!("{BASE}mixed.m3u8"))).unwrap();
+    let frames = samples.len() / 2;
+    assert!(
+        frames.abs_diff(expected) <= 4 * 1024,
+        "{frames} against {expected}"
+    );
+    assert!(
+        harness
+            .fetch
+            .requests()
+            .iter()
+            .any(|r| r.url.ends_with("ts/seg3.ts"))
+    );
+}
+
+#[test]
+fn a_format_discontinuity_into_another_codec_configuration_is_refused() {
+    let harness = Harness::new(4096);
+    mixed_playlist(&harness, ("ts", &[0, 1]), ("fmp4", &[2, 3]));
+    // AAC Main instead of AAC-LC in the fMP4 part.
+    let mut other = hls_file("fmp4/init.mp4");
+    let asc = other.windows(2).position(|w| w == [0x12, 0x10]).unwrap();
+    other[asc] = 0x0a;
+    harness.fetch.put(&format!("{BASE}fmp4/init.mp4"), other);
+    let mut stream = harness.open(&format!("{BASE}mixed.m3u8"));
+    assert!(matches!(
+        read_all(&mut stream),
+        Err(Error::UnsupportedCodec(_))
+    ));
+}
+
+#[test]
+fn a_seek_across_a_format_discontinuity_reads_the_other_container() {
+    let harness = Harness::new(4096);
+    let expected = mixed_playlist(&harness, ("fmp4", &[0, 1]), ("ts", &[2, 3]));
+    let mut stream = harness.open(&format!("{BASE}mixed.m3u8"));
+    // Into the TS part's second segment (no discontinuity tag of its own),
+    // then back into the fMP4 part.
+    stream.seek(3_100).unwrap();
+    let (tail, _) = read_all(&mut stream).unwrap();
+    let after = expected - 3_100 * 44_100 / 1000;
+    assert!(
+        (tail.len() / 2).abs_diff(after) <= 3 * 1024,
+        "{} against {after}",
+        tail.len() / 2
+    );
+    stream.seek(500).unwrap();
+    let (again, _) = read_all(&mut stream).unwrap();
+    assert!((again.len() / 2).abs_diff(expected - 22_050) <= 4 * 1024);
+}

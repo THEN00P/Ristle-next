@@ -221,7 +221,16 @@ pub(crate) struct HlsDemuxer {
     fmp4: Option<Fmp4>,
     profile_hint: Option<String>,
     codec: CodecDescription,
+    /// Packets are stamped in this time base whatever their container: the
+    /// stream's decoder and timeline were set up with it.
     time_base: TimeBase,
+    /// TS and packed audio learn the time base from their first frame.
+    time_base_known: bool,
+    /// A container switch happened: the new container's codec must match
+    /// the decoder before its packets are used.
+    recheck: bool,
+    /// A TS init section (PAT and PMT), pushed into each new TS parser.
+    ts_init: Option<Arc<Vec<u8>>>,
     rx: mpsc::Receiver<Message>,
     task: JoinHandle<()>,
     parser: Parser,
@@ -248,6 +257,7 @@ impl HlsDemuxer {
         plan: Plan,
     ) -> Self {
         let (rx, task) = spawn(&runtime, &shared, plan);
+        let time_base_known = fmp4.is_some();
         let (codec, time_base, parser) = match &fmp4 {
             Some(fmp4) => (
                 fmp4.codec.clone(),
@@ -272,7 +282,10 @@ impl HlsDemuxer {
             fmp4,
             profile_hint,
             codec,
+            time_base_known,
             time_base,
+            recheck: false,
+            ts_init: None,
             rx,
             task,
             parser,
@@ -310,10 +323,7 @@ impl HlsDemuxer {
             let rate = codec.sample_rate.ok_or(Error::NoAudioTrack)?;
             codec.profile_hint = self.profile_hint.clone();
             self.codec = codec;
-            self.time_base = TimeBase {
-                numer: 1,
-                denom: rate,
-            };
+            debug_assert_eq!(self.time_base.denom, rate);
         }
         Ok(())
     }
@@ -340,70 +350,74 @@ impl HlsDemuxer {
         Ok(())
     }
 
+    /// A new init section. An fMP4 one replaces the configuration the fMP4
+    /// parser uses (it applies across discontinuities until the next
+    /// `EXT-X-MAP`); a TS one (PAT and PMT) is fed to each TS parser first.
     fn on_init(&mut self, init: Arc<Vec<u8>>) -> Result<(), Error> {
-        let Some(current) = &self.fmp4 else {
-            return Err(Error::malformed(
-                "HLS playlist",
-                "an EXT-X-MAP in a playlist that started without one",
-            ));
-        };
-        if current.init == init {
+        if TsDemuxer::sniff(&init) {
+            self.ts_init = Some(init);
+            return Ok(());
+        }
+        if self
+            .fmp4
+            .as_ref()
+            .is_some_and(|current| current.init == init)
+        {
             return Ok(());
         }
         let next = Fmp4::from_init(init)?;
         // The decoder was opened from the first configuration and is not
-        // reopened, so anything it was configured with must stay the same.
-        if next.codec.codec != current.codec.codec
-            || next.codec.sample_rate != current.codec.sample_rate
-            || next.codec.channels != current.codec.channels
-            || next.codec.extra_data != current.codec.extra_data
-            || next.track.timescale != current.track.timescale
-        {
-            // One decoder per stream: a new codec after a discontinuity
-            // (an ad in another encoding) is not followed.
+        // reopened: a new codec after a discontinuity (an ad in another
+        // encoding) is not followed.
+        if self.codec.codec != crate::Codec::Other && !compatible(&self.codec, &next.codec) {
             return Err(Error::UnsupportedCodec(format!(
                 "a codec configuration change mid-stream ({:?} to {:?})",
-                current.codec.codec, next.codec.codec
+                self.codec.codec, next.codec.codec
             )));
         }
-        self.parser = Parser::Fmp4(SegmentParser::new(next.track.clone()));
+        if matches!(self.parser, Parser::Fmp4(_)) {
+            self.parser = Parser::Fmp4(SegmentParser::new(next.track.clone()));
+        }
         self.fmp4 = Some(next);
         Ok(())
     }
 
     fn on_segment(&mut self, start_us: u64, discontinuity: bool, resume: Option<Resume>) {
         let mut origin = None;
-        match &mut self.parser {
-            Parser::Fmp4(parser) => {
-                if let Some(fmp4) = &self.fmp4 {
-                    *parser = match resume {
-                        Some(resume) => {
-                            origin = Some(i64::try_from(resume.origin).unwrap_or(0));
-                            SegmentParser::resume(
-                                fmp4.track.clone(),
-                                resume.samples,
-                                resume.mdat_end,
-                            )
-                        }
-                        None => SegmentParser::new(fmp4.track.clone()),
-                    };
-                }
+        if let Some(resume) = resume {
+            // A byte-range seek, which only fMP4 segments get.
+            if let Some(fmp4) = &self.fmp4 {
+                origin = Some(i64::try_from(resume.origin).unwrap_or(0));
+                self.parser = Parser::Fmp4(SegmentParser::resume(
+                    fmp4.track.clone(),
+                    resume.samples,
+                    resume.mdat_end,
+                ));
             }
-            Parser::Ts(ts) => {
-                if discontinuity {
-                    ts.discontinuity();
+        } else if discontinuity {
+            // The container may change at a discontinuity (fMP4, TS and
+            // packed audio can follow each other): tell it from the bytes.
+            self.resniff();
+        } else {
+            match &mut self.parser {
+                Parser::Fmp4(parser) => {
+                    if let Some(fmp4) = &self.fmp4 {
+                        *parser = SegmentParser::new(fmp4.track.clone());
+                    }
                 }
-            }
-            Parser::Packed { framer, head } => {
-                if discontinuity {
-                    framer.discontinuity();
-                }
+                Parser::Ts(_) | Parser::Unknown { .. } => {}
                 // Every packed segment starts with its own ID3 tag.
-                *head = Some(Vec::new());
+                Parser::Packed { head, .. } => *head = Some(Vec::new()),
             }
-            Parser::Unknown { .. } => {}
         }
         self.placement = Some(Placement { start_us, origin });
+    }
+
+    /// Forgets the container: the next bytes decide it. Packets of the new
+    /// container must then match the open decoder.
+    fn resniff(&mut self) {
+        self.parser = Parser::Unknown { head: Vec::new() };
+        self.recheck = self.codec.codec != crate::Codec::Other;
     }
 
     fn on_data(&mut self, data: &[u8]) -> Result<(), Error> {
@@ -413,8 +427,22 @@ impl HlsDemuxer {
                 let head = std::mem::take(head);
                 match sniff(&head) {
                     Sniffed::NeedMore => self.parser = Parser::Unknown { head },
+                    Sniffed::Fmp4 => {
+                        let Some(fmp4) = &self.fmp4 else {
+                            return Err(Error::malformed(
+                                "HLS playlist",
+                                "an fMP4 segment without an EXT-X-MAP",
+                            ));
+                        };
+                        let mut parser = SegmentParser::new(fmp4.track.clone());
+                        parser.push(&head)?;
+                        self.parser = Parser::Fmp4(parser);
+                    }
                     Sniffed::Ts => {
                         let mut ts = TsDemuxer::new();
+                        if let Some(init) = &self.ts_init {
+                            ts.push(init)?;
+                        }
                         ts.push(&head)?;
                         self.parser = Parser::Ts(Box::new(ts));
                     }
@@ -481,13 +509,16 @@ impl HlsDemuxer {
     }
 
     fn ready_from_framer_end(&mut self) -> Result<(), Error> {
-        if let Parser::Packed { framer, .. } = &mut self.parser {
-            while let Some(packet) = framer.next_packet(true)? {
-                let rate = framer.codec().and_then(|c| c.sample_rate).unwrap_or(1);
-                stamp(&mut self.placement, &mut self.ready, packet, rate);
-            }
+        loop {
+            let (packet, codec) = match &mut self.parser {
+                Parser::Packed { framer, .. } => {
+                    (framer.next_packet(true)?, framer.codec().cloned())
+                }
+                _ => return Ok(()),
+            };
+            let Some(packet) = packet else { return Ok(()) };
+            self.place(packet, codec.as_ref())?;
         }
-        Ok(())
     }
 
     /// Moves parsed packets to `ready`, placed on the stream's timeline.
@@ -495,26 +526,59 @@ impl HlsDemuxer {
         loop {
             // Ticks per second of the packets' clock: the fMP4 timescale, or
             // the sample rate for framed audio.
-            let (packet, clock) = match &mut self.parser {
-                Parser::Fmp4(parser) => (
-                    parser.next_packet(),
-                    self.fmp4.as_ref().map(|f| f.track.timescale),
-                ),
-                Parser::Ts(ts) => (ts.next_packet()?, ts.codec().and_then(|c| c.sample_rate)),
-                Parser::Packed { framer, .. } => (
-                    framer.next_packet(false)?,
-                    framer.codec().and_then(|c| c.sample_rate),
-                ),
+            let (packet, codec) = match &mut self.parser {
+                Parser::Fmp4(parser) => (parser.next_packet(), None),
+                Parser::Ts(ts) => (ts.next_packet()?, ts.codec().cloned()),
+                Parser::Packed { framer, .. } => {
+                    (framer.next_packet(false)?, framer.codec().cloned())
+                }
                 Parser::Unknown { .. } => (None, None),
             };
             let Some(packet) = packet else { return Ok(()) };
-            stamp(
-                &mut self.placement,
-                &mut self.ready,
-                packet,
-                clock.unwrap_or(1),
-            );
+            self.place(packet, codec.as_ref())?;
         }
+    }
+
+    /// Checks a framed container's codec after a switch, then stamps the
+    /// packet. `codec` is the framer's, `None` for fMP4.
+    fn place(
+        &mut self,
+        packet: DemuxedPacket,
+        codec: Option<&CodecDescription>,
+    ) -> Result<(), Error> {
+        // Ticks per second of the packet's clock: the fMP4 timescale, or the
+        // sample rate for framed audio.
+        let clock = match codec {
+            Some(codec) => codec.sample_rate,
+            None => self.fmp4.as_ref().map(|f| f.track.timescale),
+        }
+        .unwrap_or(1);
+        if !self.time_base_known {
+            self.time_base = TimeBase {
+                numer: 1,
+                denom: clock,
+            };
+            self.time_base_known = true;
+        }
+        if self.recheck
+            && let Some(codec) = codec
+        {
+            if !compatible(&self.codec, codec) {
+                return Err(Error::UnsupportedCodec(format!(
+                    "a codec configuration change mid-stream ({:?} to {:?})",
+                    self.codec.codec, codec.codec
+                )));
+            }
+            self.recheck = false;
+        }
+        stamp(
+            &mut self.placement,
+            &mut self.ready,
+            packet,
+            clock,
+            self.time_base.denom,
+        );
+        Ok(())
     }
 
     fn restart(&mut self, plan: Plan) {
@@ -526,19 +590,9 @@ impl HlsDemuxer {
         self.placement = None;
         self.ended = false;
         self.failed = None;
-        match &mut self.parser {
-            Parser::Fmp4(parser) => {
-                if let Some(fmp4) = &self.fmp4 {
-                    *parser = SegmentParser::new(fmp4.track.clone());
-                }
-            }
-            Parser::Ts(ts) => ts.discontinuity(),
-            Parser::Packed { framer, head } => {
-                framer.discontinuity();
-                *head = Some(Vec::new());
-            }
-            Parser::Unknown { head } => head.clear(),
-        }
+        // The target segment may be in another container than the current
+        // one; a byte-range seek sets fMP4 itself.
+        self.resniff();
     }
 }
 
@@ -553,31 +607,73 @@ fn spawn(
 }
 
 /// Places a packet at its segment's start plus its offset within the
-/// segment's own clock.
+/// segment, converted from the container's clock to the stream's time base
+/// (`denom` ticks per second).
 fn stamp(
     placement: &mut Option<Placement>,
     ready: &mut VecDeque<DemuxedPacket>,
     mut packet: DemuxedPacket,
     clock: u32,
+    denom: u32,
 ) {
+    let (clock, denom) = (i128::from(clock.max(1)), i128::from(denom.max(1)));
+    let convert = |ticks: i128| (ticks * denom + clock / 2).div_euclid(clock);
     if let Some(placement) = placement {
         let origin = *placement.origin.get_or_insert(packet.pts);
         // To the nearest tick: EXTINF is rounded to microseconds, so 45056
         // frames arrive as 45055.998.
-        let start = (i128::from(placement.start_us) * i128::from(clock) + 500_000) / 1_000_000;
-        packet.pts = i64::try_from(start).unwrap_or(i64::MAX) + (packet.pts - origin);
+        let start = (i128::from(placement.start_us) * denom + 500_000) / 1_000_000;
+        let offset = convert(i128::from(packet.pts) - i128::from(origin));
+        packet.pts = i64::try_from(start + offset).unwrap_or(i64::MAX);
     }
+    packet.dur = u64::try_from(convert(i128::from(packet.dur))).unwrap_or(u64::MAX);
     ready.push_back(packet);
+}
+
+/// Whether a decoder opened for `open` can decode `next`: the same codec,
+/// rate and layout, and the same configuration. For AAC that is the
+/// AudioSpecificConfig's object type, rate and channel configuration (its
+/// first two bytes), so an ADTS-derived configuration matches an fMP4 one
+/// that only adds extension signalling.
+fn compatible(open: &CodecDescription, next: &CodecDescription) -> bool {
+    if open.codec != next.codec
+        || open.sample_rate != next.sample_rate
+        || open.channels != next.channels
+    {
+        return false;
+    }
+    match (
+        open.codec,
+        open.extra_data.as_deref(),
+        next.extra_data.as_deref(),
+    ) {
+        (crate::Codec::Aac, Some(a), Some(b)) => a.get(..2) == b.get(..2),
+        (_, a, b) => a == b,
+    }
 }
 
 enum Sniffed {
     NeedMore,
+    Fmp4,
     Ts,
     Packed(EsKind),
     Unknown,
 }
 
 fn sniff(head: &[u8]) -> Sniffed {
+    if let Some(kind) = head.get(4..8) {
+        if matches!(
+            kind,
+            b"styp" | b"sidx" | b"moof" | b"prft" | b"emsg" | b"ftyp" | b"free"
+        ) {
+            return Sniffed::Fmp4;
+        }
+    } else if head.first() != Some(&0x47)
+        && !head.starts_with(b"ID3")
+        && head.first() != Some(&0xff)
+    {
+        return Sniffed::NeedMore;
+    }
     if head.first() == Some(&0x47) {
         return if head.len() > 188 {
             if head[188] == 0x47 {

@@ -287,15 +287,29 @@ fn parse_date(value: &str) -> Option<Date> {
         Some(m) => Some(m.parse::<u8>().ok().filter(|m| (1..=12).contains(m))?),
         None => None,
     };
-    let day = match parts.next() {
-        Some(d) if month.is_some() => Some(d.parse::<u8>().ok().filter(|d| (1..=31).contains(d))?),
-        Some(_) => return None,
-        None => None,
+    let day = match (parts.next(), month) {
+        (Some(d), Some(month)) => {
+            let last = days_in_month(year, month);
+            Some(d.parse::<u8>().ok().filter(|d| (1..=last).contains(d))?)
+        }
+        (Some(_), None) => return None,
+        (None, _) => None,
     };
     if parts.next().is_some() {
         return None;
     }
     Some(Date { year, month, day })
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 /// An ISRC is two letters, three alphanumerics and seven digits.

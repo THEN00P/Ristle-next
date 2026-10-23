@@ -31,6 +31,8 @@ pub mod test_support;
 pub use engine::{
     Engine, EngineConfig, EngineEvent, EngineObserver, EngineState, Error, TrackToken,
 };
-pub use output::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
+pub use output::{
+    AudioOutput, OutputError, OutputErrors, OutputInfo, OutputLatency, OutputRequest, Render,
+};
 // The stream contract is `ristle-media`'s (section 3 of the phase 2 plan).
 pub use ristle_media::{MediaError, MediaStream, Read, StreamFormat};

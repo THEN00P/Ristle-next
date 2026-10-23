@@ -735,3 +735,113 @@ fn promoting_right_after_a_transition_does_not_go_back() {
     let left = render_left(&rig.output, 5, 5, 2);
     assert!(left.iter().all(|s| *s == 0.2));
 }
+
+#[test]
+fn position_is_what_has_been_heard_not_what_was_rendered() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::counter(0.0, 5000, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(20);
+    rig.engine.play().unwrap();
+
+    rig.output.render(50);
+    assert_eq!(rig.engine.state().position_ms, 30);
+    rig.output.render(10);
+    assert_eq!(rig.engine.state().position_ms, 40);
+
+    // A seek's target holds until its first frame is heard.
+    rig.engine.seek(2000).unwrap();
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.render(15);
+    assert_eq!(rig.engine.state().position_ms, 2000);
+    rig.output.render(10);
+    assert_eq!(rig.engine.state().position_ms, 2005);
+}
+
+#[test]
+fn output_runs_until_the_last_frame_is_heard() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 10, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(20);
+    rig.engine.play().unwrap();
+
+    // The Track's 10 frames are rendered; 20 more frames are still ahead
+    // of the listener.
+    rig.output.render(20);
+    thread::sleep(Duration::from_millis(50));
+    assert!(rig.output.is_running());
+    assert!(!rig.events.all().contains(&EngineEvent::Ended { track: T1 }));
+
+    rig.output.render(10);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Ended { track: T1 })
+    );
+    assert!(until(|| !rig.output.is_running()));
+    // Once heard, the position is the whole Track.
+    assert_eq!(rig.engine.state().position_ms, 10);
+}
+
+#[test]
+fn a_transition_is_reported_when_it_is_heard() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.1, 10, format(1000, 2))),
+        0,
+    );
+    rig.engine
+        .set_next(
+            T2,
+            Box::new(FakeStream::constant(0.2, 100, format(1000, 2))),
+        )
+        .unwrap();
+    assert!(rig.engine.wait_until_next_buffered(WAIT));
+    rig.output.set_latency(15);
+    rig.engine.play().unwrap();
+
+    // The switch is rendered at frame 10 and heard at frame 25.
+    rig.output.render(20);
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        !rig.events
+            .all()
+            .iter()
+            .any(|e| matches!(e, EngineEvent::Transitioned { .. }))
+    );
+    rig.output.render(5);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Transitioned { from: T1, to: T2 })
+    );
+}
+
+#[test]
+fn a_heard_end_is_the_whole_track_even_if_the_latency_grew() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 10, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(5);
+    rig.engine.play().unwrap();
+    rig.output.render(15);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Ended { track: T1 })
+    );
+    // The device reports a longer latency after the end was heard.
+    rig.output.set_latency(50);
+    assert_eq!(rig.engine.state().position_ms, 10);
+}

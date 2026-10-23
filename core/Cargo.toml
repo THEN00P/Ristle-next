@@ -37,6 +37,7 @@ ctr = "0.9"
 tokio = { version = "1", default-features = false }
 url = "2"
 cpal = "0.18.2"
+libc = "0.2"
 ndk = { version = "0.9", default-features = false }
 rtrb = "0.4"
 rubato = "0.16"

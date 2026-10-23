@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::thread::Thread;
 
 use crate::TrackToken;
-use crate::output::OutputInfo;
+use crate::output::{OutputInfo, OutputLatency};
 use crate::ring::Ring;
 
 /// What a slot holds.
@@ -205,12 +205,23 @@ pub(crate) struct Shared {
     pub(crate) ended: AtomicU64,
     /// `seq` of the failed record whose audio has played out, 0 when none.
     pub(crate) stopped: AtomicU64,
+    /// Frames the render callback has handed to the output, silence
+    /// included: the clock the output latency is measured on.
+    pub(crate) rendered: AtomicU64,
+    /// The `rendered` count at the end of the last frame of Track audio,
+    /// so silence after it is known to push that audio out.
+    pub(crate) audio_until: AtomicU64,
+    /// `seq` of the record whose end (or failure point) has been reported
+    /// as heard. All of its audio counts as heard from then on, whatever
+    /// the latency estimate has drifted to.
+    pub(crate) heard_end: AtomicU64,
+    pub(crate) latency: OutputLatency,
     wake_requested: AtomicBool,
     pub(crate) decoder: OnceLock<Thread>,
 }
 
 impl Shared {
-    pub(crate) fn new(info: OutputInfo, ring_frames: usize) -> Self {
+    pub(crate) fn new(info: OutputInfo, ring_frames: usize, latency: OutputLatency) -> Self {
         let channels = usize::from(info.channels);
         let slot = || Slot {
             ring: Ring::new(ring_frames, channels),
@@ -225,6 +236,10 @@ impl Shared {
             volume: AtomicU32::new(1.0_f32.to_bits()),
             ended: AtomicU64::new(0),
             stopped: AtomicU64::new(0),
+            rendered: AtomicU64::new(0),
+            audio_until: AtomicU64::new(0),
+            heard_end: AtomicU64::new(0),
+            latency,
             wake_requested: AtomicBool::new(false),
             decoder: OnceLock::new(),
         }
@@ -295,6 +310,16 @@ impl Shared {
         self.wake_requested.store(false, Ordering::Release);
     }
 
+    /// Frames of Track audio rendered but not yet heard: the output latency,
+    /// less the silence rendered since the last frame of audio.
+    pub(crate) fn in_flight(&self) -> u64 {
+        let rendered = self.rendered.load(Ordering::Acquire);
+        let audio_until = self.audio_until.load(Ordering::Acquire);
+        self.latency
+            .frames()
+            .saturating_sub(rendered.saturating_sub(audio_until))
+    }
+
     pub(crate) fn frames_to_ms(&self, frames: u64) -> u64 {
         frames.saturating_mul(1000) / u64::from(self.info.sample_rate)
     }
@@ -316,6 +341,7 @@ mod tests {
                 channels: 1,
             },
             4,
+            OutputLatency::default(),
         );
         let seen = shared.word();
         {

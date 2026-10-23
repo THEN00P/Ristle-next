@@ -4,7 +4,9 @@
 use std::sync::{Arc, Mutex};
 
 use crate::feed::lock;
-use crate::output::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
+use crate::output::{
+    AudioOutput, OutputError, OutputErrors, OutputInfo, OutputLatency, OutputRequest, Render,
+};
 use ristle_media::{MediaError, MediaStream, Read, StreamFormat};
 
 /// An output with no device: the test pulls rendered audio through its
@@ -23,6 +25,7 @@ struct CaptureState {
     info: OutputInfo,
     render: Option<Box<dyn Render>>,
     errors: Option<OutputErrors>,
+    latency: Option<OutputLatency>,
     running: bool,
     opened: usize,
 }
@@ -37,6 +40,7 @@ impl CaptureOutput {
             },
             render: None,
             errors: None,
+            latency: None,
             running: false,
             opened: 0,
         }));
@@ -58,6 +62,7 @@ impl AudioOutput for CaptureOutput {
         let mut state = lock(&self.state);
         state.render = Some(render);
         state.errors = Some(request.errors);
+        state.latency = Some(request.latency);
         state.running = false;
         state.opened += 1;
         Ok(state.info)
@@ -101,6 +106,14 @@ impl CaptureHandle {
     /// How many times the engine opened the output.
     pub fn opened(&self) -> usize {
         lock(&self.state).opened
+    }
+
+    /// Reports an output latency of `frames`, as a device with that much
+    /// buffering would.
+    pub fn set_latency(&self, frames: u64) {
+        if let Some(latency) = &lock(&self.state).latency {
+            latency.set_frames(frames);
+        }
     }
 
     /// Reports an output failure, as a device error callback would.

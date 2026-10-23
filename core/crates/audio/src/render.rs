@@ -34,6 +34,11 @@ pub(crate) const NOTE_CAPACITY: usize = 64;
 /// Length of a gain change, in milliseconds.
 const GAIN_RAMP_MS: u64 = 10;
 
+/// Notes waiting to be heard. A Track change is held back until the output
+/// has played its frame; more than this many in one output latency (Tracks
+/// shorter than the device buffer) are sent at once instead.
+const DEFERRED: usize = 4;
+
 /// The `Render` handed to the output. The output may call it before the
 /// engine knows the output format, so the engine installs the real state
 /// through a one-element queue once `open` has returned.
@@ -82,6 +87,10 @@ pub(crate) struct RenderState {
     /// then; otherwise it applies at once.
     audible: bool,
     ramp_frames: u64,
+    /// Frames handed to the output so far, silence included.
+    rendered: u64,
+    /// Notes held until the output has played the frame they are about.
+    deferred: [Option<(u64, Note)>; DEFERRED],
 }
 
 impl RenderState {
@@ -98,6 +107,8 @@ impl RenderState {
             ramp_step: 0.0,
             audible: false,
             ramp_frames,
+            rendered: 0,
+            deferred: [None; DEFERRED],
         }
     }
 
@@ -110,12 +121,16 @@ impl RenderState {
 
     fn render(&mut self, out: &mut [f32]) {
         let shared = Arc::clone(&self.shared);
+        let channels = usize::from(shared.info.channels);
+        let frames = out.len() / channels;
+        let start = self.rendered;
+        self.rendered += frames as u64;
+        shared.rendered.store(self.rendered, Ordering::Release);
+        self.release_heard();
         if !shared.playing.load(Ordering::Acquire) {
             self.audible = false;
             return;
         }
-        let channels = usize::from(shared.info.channels);
-        let frames = out.len() / channels;
         let mut done = 0;
         // Each pass either reads audio, or stops, or switches slots. Two
         // switches in one buffer need two empty Tracks in a row; the bound
@@ -159,8 +174,7 @@ impl RenderState {
                 // output now that the audio before it has played.
                 self.ended = record.seq;
                 shared.stopped.store(record.seq, Ordering::Release);
-                let _ = self.notes.push(Note::Stopped { record });
-                shared.wake_decoder();
+                self.send_when_heard(Note::Stopped { record }, start + done as u64);
                 break;
             }
             switches += 1;
@@ -170,24 +184,71 @@ impl RenderState {
                 shared.mark_played(current, record.seq);
                 if shared.try_switch(word) {
                     self.played[current] = record.seq;
-                    let _ = self.notes.push(Note::Transitioned {
-                        from_slot: current,
-                        from: record,
-                        to: next,
-                    });
-                    shared.wake_decoder();
+                    self.send_when_heard(
+                        Note::Transitioned {
+                            from_slot: current,
+                            from: record,
+                            to: next,
+                        },
+                        start + done as u64,
+                    );
                 }
                 continue;
             }
             self.ended = record.seq;
             shared.ended.store(record.seq, Ordering::Release);
             shared.advance_generation();
-            let _ = self.notes.push(Note::Ended { record });
-            shared.wake_decoder();
+            // Output keeps running until the last frame has been heard; the
+            // decode thread stops it on this note.
+            self.send_when_heard(Note::Ended { record }, start + done as u64);
             break;
         }
         self.apply_gain(&mut out[..done * channels], channels);
         self.audible = done > 0;
+        if done > 0 {
+            shared
+                .audio_until
+                .store(start + done as u64, Ordering::Release);
+        }
+    }
+
+    /// Sends `note` once the frame rendered at `frame` has been heard.
+    fn send_when_heard(&mut self, note: Note, frame: u64) {
+        let due = frame + self.shared.latency.frames();
+        if due <= self.rendered {
+            self.send(note);
+        } else if let Some(free) = self.deferred.iter_mut().find(|entry| entry.is_none()) {
+            *free = Some((due, note));
+        } else {
+            self.send(note);
+        }
+    }
+
+    /// Sends the held notes whose frame has been heard, oldest first.
+    fn release_heard(&mut self) {
+        loop {
+            let due = self
+                .deferred
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| entry.map(|(due, _)| (due, index)))
+                .filter(|(due, _)| *due <= self.rendered)
+                .min();
+            let Some((_, index)) = due else {
+                return;
+            };
+            if let Some((_, note)) = self.deferred[index].take() {
+                self.send(note);
+            }
+        }
+    }
+
+    fn send(&mut self, note: Note) {
+        if let Note::Ended { record } | Note::Stopped { record } = note {
+            self.shared.heard_end.store(record.seq, Ordering::Release);
+        }
+        let _ = self.notes.push(note);
+        self.shared.wake_decoder();
     }
 
     fn apply_gain(&mut self, out: &mut [f32], channels: usize) {
@@ -231,6 +292,7 @@ mod tests {
                 channels: 1,
             },
             16,
+            crate::output::OutputLatency::default(),
         ));
         let (notes, _notes_out) = rtrb::RingBuffer::new(NOTE_CAPACITY);
         let mut state = RenderState::new(Arc::clone(&shared), notes);

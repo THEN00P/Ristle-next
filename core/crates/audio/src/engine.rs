@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::feed::{self, Control, ErrorInbox, Feed, lock};
-use crate::output::{AudioOutput, OutputError, OutputErrors, OutputRequest};
+use crate::output::{AudioOutput, OutputError, OutputErrors, OutputLatency, OutputRequest};
 use crate::render::{NOTE_CAPACITY, RenderState, Renderer};
 use crate::shared::{Shared, generation_of, slot_of};
 use ristle_media::MediaStream;
@@ -149,7 +149,9 @@ impl Engine {
                 let errors = Arc::clone(&errors);
                 OutputErrors::new(move |error| errors.report(error))
             },
+            latency: OutputLatency::new(),
         };
+        let latency = request.latency.clone();
         let info = output.open(request, Box::new(Renderer::new(installed)))?;
         if info.sample_rate == 0 || info.channels == 0 {
             output.close();
@@ -157,7 +159,7 @@ impl Engine {
         }
         let ring_frames =
             (u64::from(info.sample_rate) * u64::from(config.buffer_ms.max(1)) / 1000).max(1);
-        let shared = Arc::new(Shared::new(info, ring_frames as usize));
+        let shared = Arc::new(Shared::new(info, ring_frames as usize, latency));
         let (notes, notes_out) = rtrb::RingBuffer::new(NOTE_CAPACITY);
         if install
             .push(RenderState::new(Arc::clone(&shared), notes))
@@ -345,7 +347,15 @@ impl Engine {
         let next = feed.slots[1 - current].record;
         let next_played = shared.has_played(1 - current, next.seq);
         let ring = &shared.slots[current].ring;
-        let position = record.start_frame + ring.read_position().saturating_sub(record.start);
+        // What has been heard: what was rendered of this record, less what
+        // is still in the output, never before the record's start.
+        let rendered = ring.read_position().saturating_sub(record.start);
+        let in_flight = if shared.heard_end.load(Ordering::Acquire) == record.seq {
+            0
+        } else {
+            shared.in_flight()
+        };
+        let position = record.start_frame + rendered.saturating_sub(in_flight);
         let ended = record.token.is_some() && shared.ended.load(Ordering::Acquire) == record.seq;
         EngineState {
             current: record.token,

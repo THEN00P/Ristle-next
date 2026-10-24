@@ -222,7 +222,9 @@ async fn serve(
             head.push_str(&format!("content-length: {length}\r\n\r\n"));
         }
         stream.write_all(head.as_bytes()).await?;
-        if let Some(chunks) = &response.chunks {
+        if request.method == "HEAD" {
+            // A HEAD response ends with its head.
+        } else if let Some(chunks) = &response.chunks {
             for chunk in chunks {
                 tokio::time::sleep(response.chunk_delay).await;
                 stream
@@ -233,7 +235,7 @@ async fn serve(
                 stream.flush().await?;
             }
             stream.write_all(b"0\r\n\r\n").await?;
-        } else if request.method != "HEAD" {
+        } else {
             stream.write_all(&response.body).await?;
         }
         stream.flush().await?;

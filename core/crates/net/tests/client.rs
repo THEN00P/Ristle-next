@@ -321,6 +321,16 @@ async fn bodies_are_bounded() {
     assert_eq!(stream.chunk().await.unwrap().unwrap().len(), 1_000);
     assert!(matches!(stream.chunk().await, Err(Error::TooLarge(_))));
 
+    // A HEAD names the resource's length but has no body.
+    let large = serving(TestResponse::ok(vec![7u8; 2_000])).await;
+    let mut head = Request::new(Method::Head, large.url("/"), large.reach());
+    head.max_body = 10;
+    assert_eq!(h.client.send(head.clone()).await.unwrap().status, 200);
+    assert_eq!(
+        h.client.stream(head).await.unwrap().total_length(),
+        Some(2_000)
+    );
+
     // The default bound is 16 MiB.
     let at_limit = serving(TestResponse::ok(vec![
         0u8;
@@ -509,6 +519,52 @@ async fn cross_origin_redirects_that_resend_a_body_are_not_followed() {
         .await
         .unwrap();
     assert_eq!(response.status, 200);
+}
+
+#[tokio::test]
+async fn bodies_and_state_changing_methods_never_follow_a_redirect_to_another_origin() {
+    let h = harness();
+    let target = serving(TestResponse::ok("there")).await;
+    let to = target.url("/landing");
+    let status = Arc::new(Mutex::new(301u16));
+    let answer = status.clone();
+    let origin = TestServer::start(move |_| {
+        TestResponse::status(*answer.lock().unwrap()).header("Location", to.as_str())
+    })
+    .await
+    .unwrap();
+    let reach = Arc::new(Reach::none().with_granted(vec![origin.granted(), target.granted()]));
+    let request = |method: Method, body: &'static str| {
+        let mut request = Request::new(method, origin.url("/x"), reach.clone());
+        request.body = Bytes::from(body);
+        request
+    };
+    for code in [301, 302, 307, 308] {
+        *status.lock().unwrap() = code;
+        // PUT and PATCH keep their method on 301 and 302, so they are replays.
+        for method in [Method::Put, Method::Patch, Method::Delete] {
+            let response = h.client.send(request(method, "secret")).await.unwrap();
+            assert_eq!(response.status, code, "{method:?} {code}");
+            let response = h.client.send(request(method, "")).await.unwrap();
+            assert_eq!(response.status, code, "{method:?} {code} without a body");
+        }
+        // A GET that carries a body would replay it.
+        let response = h.client.send(request(Method::Get, "secret")).await.unwrap();
+        assert_eq!(response.status, code, "GET with a body, {code}");
+    }
+    assert!(target.requests().is_empty());
+    // A POST answered with 302 becomes a bodiless GET, which may go.
+    *status.lock().unwrap() = 302;
+    let response = h
+        .client
+        .send(request(Method::Post, "secret"))
+        .await
+        .unwrap();
+    assert_eq!(response.status, 200);
+    let landed = target.requests();
+    assert_eq!(landed.len(), 1);
+    assert_eq!(landed[0].method, "GET");
+    assert!(landed[0].body.is_empty());
 }
 
 #[tokio::test]
@@ -722,6 +778,76 @@ async fn expired_responses_are_revalidated_with_their_validators() {
             .cached
     );
     assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_revalidation_that_adds_vary_selects_by_it_from_then_on() {
+    let h = harness();
+    let scripted = Scripted::new(
+        TestResponse::ok("de")
+            .header("Cache-Control", "max-age=10")
+            .header("ETag", "\"v1\""),
+    )
+    .await;
+    let with = |language: &str| {
+        let mut request = cached_get(&scripted.server, "/a");
+        request
+            .headers
+            .push(("Accept-Language".into(), language.into()));
+        request
+    };
+    h.client.send(with("de")).await.unwrap();
+    h.clock.advance(11_000);
+    scripted.answer(
+        TestResponse::status(304)
+            .header("Cache-Control", "max-age=60")
+            .header("Vary", "Accept-Language"),
+    );
+    assert!(h.client.send(with("de")).await.unwrap().cached);
+    assert!(h.client.send(with("de")).await.unwrap().cached);
+    assert_eq!(scripted.server.requests().len(), 2);
+    scripted.answer(TestResponse::ok("fr").header("Cache-Control", "max-age=60"));
+    let french = h.client.send(with("fr")).await.unwrap();
+    assert!(!french.cached);
+    assert_eq!(french.body, Bytes::from("fr"));
+}
+
+#[tokio::test]
+async fn cached_responses_respect_the_requests_body_bound() {
+    let h = harness();
+    let scripted = Scripted::new(
+        TestResponse::ok(vec![1u8; 100])
+            .header("Cache-Control", "max-age=10, stale-if-error=600")
+            .header("ETag", "\"v1\""),
+    )
+    .await;
+    let bounded = |max_body: u64| Request {
+        max_body,
+        ..cached_get(&scripted.server, "/a")
+    };
+    h.client.send(bounded(100)).await.unwrap();
+    // Fresh.
+    assert!(matches!(
+        h.client.send(bounded(99)).await,
+        Err(Error::TooLarge(_))
+    ));
+    // Revalidated.
+    h.clock.advance(11_000);
+    scripted.answer(
+        TestResponse::status(304).header("Cache-Control", "max-age=10, stale-if-error=600"),
+    );
+    assert!(matches!(
+        h.client.send(bounded(99)).await,
+        Err(Error::TooLarge(_))
+    ));
+    // Stale on error.
+    h.clock.advance(11_000);
+    scripted.answer(TestResponse::status(500));
+    assert!(matches!(
+        h.client.send(bounded(99)).await,
+        Err(Error::TooLarge(_))
+    ));
+    assert_eq!(h.client.send(bounded(100)).await.unwrap().body.len(), 100);
 }
 
 #[tokio::test]

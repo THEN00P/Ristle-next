@@ -339,7 +339,7 @@ impl Client {
             && !request.revalidate
             && !cache::request_wants_revalidation(&request.headers)
         {
-            return Ok(from_stored(stored, &request.url));
+            return served(stored, &request);
         }
         let conditional = match &stored {
             Some(stored)
@@ -353,7 +353,13 @@ impl Client {
         let max_body = request.max_body;
         let result = tokio::time::timeout(timeout, async {
             let exchange = self.open(&request, &caller_headers, &conditional).await?;
-            let body = read_body(exchange.body, &exchange.headers, max_body).await?;
+            let body = read_body(
+                exchange.body,
+                &exchange.headers,
+                bodiless(request.method, exchange.status),
+                max_body,
+            )
+            .await?;
             Ok::<_, Error>((exchange.status, exchange.headers, exchange.url, body))
         })
         .await
@@ -366,7 +372,7 @@ impl Client {
                     && let Some(stored) = &stored
                     && stored.usable_on_error(now)
                 {
-                    return Ok(from_stored(stored, &request.url));
+                    return served(stored, &request);
                 }
                 return Err(error);
             }
@@ -376,15 +382,15 @@ impl Client {
             && !conditional.is_empty()
             && let (Some(stored), Some(key)) = (&stored, &key)
         {
-            return Ok(self
+            return self
                 .revalidated(key, stored, &request, response_headers, now)
-                .await);
+                .await;
         }
         if matches!(status, 500 | 502 | 503 | 504)
             && let Some(stored) = &stored
             && stored.usable_on_error(now)
         {
-            return Ok(from_stored(stored, &request.url));
+            return served(stored, &request);
         }
         if let Some(key) = &key {
             self.store_response(key, &request, status, &response_headers, &body, &url, now)
@@ -414,8 +420,9 @@ impl Client {
             tokio::time::timeout(request.timeout, self.open(&request, &caller_headers, &[]))
                 .await
                 .unwrap_or(Err(Error::Timeout))?;
-        if let Some(length) = headers::get(&exchange.headers, "content-length")
-            .and_then(|length| length.trim().parse::<u64>().ok())
+        if !bodiless(request.method, exchange.status)
+            && let Some(length) = headers::get(&exchange.headers, "content-length")
+                .and_then(|length| length.trim().parse::<u64>().ok())
             && length > request.max_body
         {
             return Err(Error::TooLarge(format!(
@@ -542,15 +549,23 @@ impl Client {
                 });
             };
             let cross_origin = !reach::same_origin(&url, &next);
-            let resends_body = matches!(status, 307 | 308)
-                && !matches!(method, http::Method::GET | http::Method::HEAD);
+            // As browsers do: 303 becomes GET (HEAD stays HEAD), and so does
+            // a POST answered with 301 or 302. The body and the headers
+            // describing it go. Any other redirect replays the request as
+            // it was.
+            let to_get = (status == 303 && method != http::Method::HEAD)
+                || (matches!(status, 301 | 302) && method == http::Method::POST);
+            let replays = !to_get
+                && (!body.is_empty() || !matches!(method, http::Method::GET | http::Method::HEAD));
             if hop == MAX_REDIRECTS {
                 return Err(Error::Network(format!(
                     "more than {MAX_REDIRECTS} redirects"
                 )));
             }
-            if request.reach.check(&next).is_err() || (cross_origin && resends_body) {
-                // Not followed: the caller gets the redirect and decides.
+            // Not followed: the caller gets the redirect and decides. A
+            // body, or a method that changes state, is never replayed to
+            // another origin.
+            if request.reach.check(&next).is_err() || (cross_origin && replays) {
                 return Ok(Exchange {
                     status,
                     headers: response_headers,
@@ -558,11 +573,6 @@ impl Client {
                     body: response.into_body(),
                 });
             }
-            // As browsers do: 303 becomes GET (HEAD stays HEAD), and so does
-            // a POST answered with 301 or 302. The body and the headers
-            // describing it go.
-            let to_get = (status == 303 && method != http::Method::HEAD)
-                || (matches!(status, 301 | 302) && method == http::Method::POST);
             if to_get {
                 method = http::Method::GET;
                 body = Bytes::new();
@@ -687,14 +697,22 @@ impl Client {
         request: &Request,
         received: Vec<Header>,
         now: u64,
-    ) -> Response {
+    ) -> Result<Response, Error> {
         let merged = cache::merge_headers(&stored.headers, &received);
-        let freshness = match &request.cache {
-            CachePolicy::Override(_, rule) => cache::override_freshness(stored.status, rule, now),
-            _ => cache::http_freshness(stored.status, &merged, now),
+        let (freshness, vary) = match &request.cache {
+            CachePolicy::Override(_, rule) => (
+                cache::override_freshness(stored.status, rule, now),
+                Vec::new(),
+            ),
+            _ => (
+                cache::http_freshness(stored.status, &merged, now),
+                // The 304 may have changed `Vary`; select by the new one.
+                cache::vary_of(&merged, &request.headers),
+            ),
         };
         let updated = StoredResponse {
             headers: merged,
+            vary,
             fetched_at_ms: now,
             fresh_until_ms: freshness.map_or(now, |f| f.fresh_until_ms),
             stale_until_ms: freshness.map_or(now, |f| f.stale_until_ms),
@@ -706,7 +724,8 @@ impl Client {
             let gone = key.clone();
             self.with_store(move |store| store.remove(&gone)).await;
         }
-        Response {
+        check_body(updated.body.len(), request.max_body)?;
+        Ok(Response {
             status: updated.status,
             headers: updated.headers,
             body: Bytes::from(updated.body),
@@ -715,7 +734,7 @@ impl Client {
             received,
             reached_provider: true,
             fetched_at_ms: now,
-        }
+        })
     }
 
     /// A successful unsafe request invalidates what the cache holds for its
@@ -814,6 +833,25 @@ fn expiry_cutoff(now_ms: u64) -> u64 {
     now_ms.saturating_sub(cache::MAX_AGE_MS).saturating_add(1)
 }
 
+/// A cached response as the caller sees it, within the request's body
+/// bound like a fetched one.
+fn served(stored: &StoredResponse, request: &Request) -> Result<Response, Error> {
+    check_body(stored.body.len(), request.max_body)?;
+    Ok(from_stored(stored, &request.url))
+}
+
+fn check_body(length: usize, max: u64) -> Result<(), Error> {
+    if length as u64 > max {
+        return Err(Error::TooLarge(format!("body exceeds {max} bytes")));
+    }
+    Ok(())
+}
+
+/// Responses that carry no body whatever their `Content-Length` says.
+fn bodiless(method: Method, status: u16) -> bool {
+    method == Method::Head || status == 204 || status == 304 || (100..200).contains(&status)
+}
+
 /// A cached response as the caller sees it.
 fn from_stored(stored: &StoredResponse, request_url: &Url) -> Response {
     Response {
@@ -852,10 +890,12 @@ fn without_fragment(url: &Url) -> Url {
 async fn read_body(
     mut body: Incoming,
     response_headers: &[Header],
+    bodiless: bool,
     max: u64,
 ) -> Result<Bytes, Error> {
-    if let Some(length) = headers::get(response_headers, "content-length")
-        .and_then(|length| length.trim().parse::<u64>().ok())
+    if !bodiless
+        && let Some(length) = headers::get(response_headers, "content-length")
+            .and_then(|length| length.trim().parse::<u64>().ok())
         && length > max
     {
         return Err(Error::TooLarge(format!(

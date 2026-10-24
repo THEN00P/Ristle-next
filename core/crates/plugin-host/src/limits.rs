@@ -62,13 +62,33 @@ pub const LOG_PER_SECOND: u32 = 10;
 pub const LOG_MESSAGE_BYTES: usize = 4 * 1024;
 
 /// Refuses growth beyond the instance limits, and records how large linear
-/// memory became.
+/// memory and tables became. Growth is charged when it is allowed and given
+/// back if wasmtime then fails it.
 #[derive(Debug, Default)]
 pub(crate) struct Limiter {
     /// Linear memory now, in bytes, over every memory of the instance.
     pub(crate) memory_bytes: usize,
     /// Table elements now, over every table of the instance.
     pub(crate) table_elements: usize,
+    /// What the counters were before the growth wasmtime is performing.
+    memory_before: Option<usize>,
+    tables_before: Option<usize>,
+}
+
+/// The instance-wide total after one item grows from `current` to
+/// `desired`, if it fits `limit` and the item's own `maximum`.
+fn grown(
+    total: usize,
+    current: usize,
+    desired: usize,
+    maximum: Option<usize>,
+    limit: usize,
+) -> Option<usize> {
+    if maximum.is_some_and(|maximum| desired > maximum) {
+        return None;
+    }
+    let total = total - current.min(total) + desired;
+    (total <= limit).then_some(total)
 }
 
 impl wasmtime::ResourceLimiter for Limiter {
@@ -76,28 +96,64 @@ impl wasmtime::ResourceLimiter for Limiter {
         &mut self,
         current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        let total = self.memory_bytes - current.min(self.memory_bytes) + desired;
-        if total > MAX_MEMORY_BYTES {
-            return Ok(false);
+        match grown(
+            self.memory_bytes,
+            current,
+            desired,
+            maximum,
+            MAX_MEMORY_BYTES,
+        ) {
+            Some(total) => {
+                self.memory_before = Some(self.memory_bytes);
+                self.memory_bytes = total;
+                Ok(true)
+            }
+            None => {
+                self.memory_before = None;
+                Ok(false)
+            }
         }
-        self.memory_bytes = total;
-        Ok(true)
+    }
+
+    fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some(before) = self.memory_before.take() {
+            self.memory_bytes = before;
+        }
+        Ok(())
     }
 
     fn table_growing(
         &mut self,
         current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        let total = self.table_elements - current.min(self.table_elements) + desired;
-        if total > MAX_TABLE_ELEMENTS {
-            return Ok(false);
+        match grown(
+            self.table_elements,
+            current,
+            desired,
+            maximum,
+            MAX_TABLE_ELEMENTS,
+        ) {
+            Some(total) => {
+                self.tables_before = Some(self.table_elements);
+                self.table_elements = total;
+                Ok(true)
+            }
+            None => {
+                self.tables_before = None;
+                Ok(false)
+            }
         }
-        self.table_elements = total;
-        Ok(true)
+    }
+
+    fn table_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some(before) = self.tables_before.take() {
+            self.table_elements = before;
+        }
+        Ok(())
     }
 }
 
@@ -121,5 +177,40 @@ mod tests {
         assert!(limiter.memory_growing(0, half, None).unwrap());
         assert!(limiter.memory_growing(0, half, None).unwrap());
         assert!(!limiter.memory_growing(0, 1, None).unwrap());
+    }
+
+    #[test]
+    fn refused_or_failed_growth_costs_nothing() {
+        let mib = 1024 * 1024;
+        let mut limiter = Limiter::default();
+        assert!(limiter.memory_growing(0, mib, Some(2 * mib)).unwrap());
+        // Beyond the memory's own maximum: refused, nothing charged.
+        assert!(
+            !limiter
+                .memory_growing(mib, 64 * mib, Some(2 * mib))
+                .unwrap()
+        );
+        assert_eq!(limiter.memory_bytes, mib);
+        // Allowed, but wasmtime fails it: given back.
+        assert!(limiter.memory_growing(mib, 2 * mib, Some(2 * mib)).unwrap());
+        limiter
+            .memory_grow_failed(wasmtime::Error::msg("mmap failed"))
+            .unwrap();
+        assert_eq!(limiter.memory_bytes, mib);
+        // A refusal never rolls back an earlier success.
+        assert!(limiter.memory_growing(mib, 2 * mib, None).unwrap());
+        assert!(!limiter.memory_growing(2 * mib, 100 * mib, None).unwrap());
+        limiter
+            .memory_grow_failed(wasmtime::Error::msg("refused"))
+            .unwrap();
+        assert_eq!(limiter.memory_bytes, 2 * mib);
+        // Tables alike.
+        assert!(!limiter.table_growing(0, 20, Some(10)).unwrap());
+        assert_eq!(limiter.table_elements, 0);
+        assert!(limiter.table_growing(0, 10, Some(10)).unwrap());
+        limiter
+            .table_grow_failed(wasmtime::Error::msg("failed"))
+            .unwrap();
+        assert_eq!(limiter.table_elements, 0);
     }
 }

@@ -10,12 +10,21 @@ publish.workspace = true
 
 [features]
 # Signed test packages for this crate's and other crates' tests.
-test-support = []
+test-support = ["dep:wit-component"]
 
 [dependencies]
 ristle-domain.workspace = true
 ristle-net.workspace = true
+aes.workspace = true
+base64.workspace = true
+cbc = { workspace = true, features = ["block-padding"] }
+ctr.workspace = true
 ed25519-dalek.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+md-5.workspace = true
+sha1.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,9 +34,16 @@ toml = { workspace = true, features = ["parse", "serde"] }
 tracing.workspace = true
 url.workspace = true
 wasmsign2.workspace = true
+wit-component = { workspace = true, optional = true }
+# Cranelift where the OS allows a JIT, Pulley where it does not (iOS), the
+# component model; no WASI, no wasmtime cache (artifacts are cached here).
+wasmtime = { workspace = true, features = ["std", "runtime", "cranelift", "pulley", "component-model", "parallel-compilation"] }
 
 [dev-dependencies]
+ristle-domain = { workspace = true, features = ["test-support"] }
+ristle-net = { workspace = true, features = ["test-support"] }
 ristle-plugin-host = { path = ".", features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

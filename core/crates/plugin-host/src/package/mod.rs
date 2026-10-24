@@ -72,6 +72,20 @@ pub enum PackageError {
     /// This version is installed already.
     #[error("this version is already installed")]
     AlreadyInstalled,
+    /// The component cannot run on this host: it does not compile, imports
+    /// something Ristle does not provide, lacks `catalog`, or cannot be
+    /// instantiated within the instance limits.
+    #[error("the component cannot run here: {0}")]
+    Component(String),
+    /// The component is built for a `ristle:plugin` version this Ristle
+    /// does not implement.
+    #[error("this plugin needs another version of Ristle: {0}")]
+    NeedsNewerRistle(String),
+}
+
+/// Lowercase hex of a package hash, as in artifact file names.
+pub(crate) fn hex_digest(digest: &[u8; 32]) -> String {
+    key::hex(digest)
 }
 
 /// A package whose signature and manifest have been checked.

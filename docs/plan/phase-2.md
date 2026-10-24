@@ -315,6 +315,15 @@ pub trait HttpCacheStore: Send + Sync {
 }
 
 // ristle-plugin-host
+/// One namespace: a Plugin's `storage`, or one connection's data. The quota
+/// (`storage-mib`) counts the Plugin's storage and all its connections' data
+/// together; `set` checks it and writes in one step.
+pub trait KvScope: Send + Sync {
+    fn get(&self, key: &str, now_ms: u64) -> Result<Option<Vec<u8>>, StoreError>;
+    fn set(&self, key: &str, value: &[u8], expires_at_ms: Option<u64>, quota_bytes: u64, now_ms: u64) -> Result<Stored, StoreError>; // Yes | OverQuota
+    fn delete(&self, key: &str) -> Result<(), StoreError>;
+    fn clear(&self) -> Result<(), StoreError>;   // a generation changed or ended
+}
 pub trait PluginStore: Send + Sync {
     fn plugin_kv(&self, plugin: &PluginId) -> Box<dyn KvScope>;
     fn connection_kv(&self, connection: &ConnectionId) -> Box<dyn KvScope>;

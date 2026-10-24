@@ -20,9 +20,21 @@
 //! Persistence and secrets are ports this crate declares and `ristle-app`
 //! implements. Milestone M5 (`docs/plan/phase-2.md`).
 
+mod engine;
+mod exports;
+mod inspect;
+pub mod limits;
 pub mod package;
+mod ports;
+mod runtime;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+
+pub use engine::{Backend, Engine, EngineConfig, TICK};
+pub use exports::{MAX_RESULT_BYTES, MAX_RESULT_STRING, PluginError};
+pub use inspect::{API, API_VERSION};
+pub use ports::{KvScope, PluginStore, StoreError, Stored};
+pub use runtime::{CallError, HostPorts, HostSettings, LoadedPlugin, PluginHost};
 
 /// Every error this crate returns.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -31,4 +43,13 @@ pub enum Error {
     /// A package was refused.
     #[error(transparent)]
     Package(#[from] package::PackageError),
+    /// The engine could not be set up.
+    #[error("plugin engine: {0}")]
+    Engine(String),
+    /// A call failed before the Plugin could answer.
+    #[error(transparent)]
+    Call(#[from] CallError),
 }
+
+mod bindings;
+mod host;

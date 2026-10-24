@@ -231,6 +231,20 @@ fn a_higher_version_by_the_same_key_is_an_update() {
         review(&same, &Exports::default(), Some(&old), &[]),
         Err(PackageError::AlreadyInstalled)
     );
+    // Build metadata does not order releases.
+    let rebuilt = package("1.0.0+build.2", &publisher, "");
+    assert_eq!(
+        review(&rebuilt, &Exports::default(), Some(&old), &[]),
+        Err(PackageError::AlreadyInstalled)
+    );
+    let built = installed(
+        &package("1.0.0+build.2", &publisher, ""),
+        Exports::default(),
+    );
+    assert_eq!(
+        review(&same, &Exports::default(), Some(&built), &[]),
+        Err(PackageError::AlreadyInstalled)
+    );
 }
 
 #[test]

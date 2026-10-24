@@ -60,10 +60,11 @@ pub enum Offer {
 #[derive(Deserialize)]
 struct RawFeed {
     id: String,
+    // Entries are read one by one, so a malformed one costs only itself.
     #[serde(default)]
-    releases: Vec<RawRelease>,
+    releases: Vec<serde_json::Value>,
     #[serde(default)]
-    revoked: Vec<Revocation>,
+    revoked: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +94,7 @@ pub fn parse(body: &[u8], id: &PluginId, updates: &Url) -> Result<UpdateFeed, Pa
         .releases
         .into_iter()
         .filter_map(|release| {
+            let release: RawRelease = serde_json::from_value(release).ok()?;
             let url = Url::parse(&release.url).ok()?;
             let on_feed_host = url.scheme() == "https"
                 && url.host_str() == updates.host_str()
@@ -113,11 +115,12 @@ pub fn parse(body: &[u8], id: &PluginId, updates: &Url) -> Result<UpdateFeed, Pa
             })
         })
         .collect();
-    releases.sort_by(|a, b| b.version.cmp(&a.version));
+    releases.sort_by(|a, b| b.version.cmp_precedence(&a.version));
     let revoked = raw
         .revoked
-        .iter()
-        .filter_map(Revocation::verified)
+        .into_iter()
+        .filter_map(|revocation| serde_json::from_value::<Revocation>(revocation).ok())
+        .filter_map(|revocation| revocation.verified())
         .collect();
     Ok(UpdateFeed { releases, revoked })
 }
@@ -129,7 +132,7 @@ impl UpdateFeed {
         let newer = self
             .releases
             .iter()
-            .filter(|release| &release.version > installed);
+            .filter(|release| release.version.cmp_precedence(installed).is_gt());
         let mut needs_newer = None;
         for release in newer {
             if apis.contains(&release.api.as_str()) {
@@ -197,6 +200,41 @@ mod tests {
             Offer::NeedsNewerRistle(v("2.0.0"))
         );
         assert_eq!(feed.offer(&v("2.0.0"), &["0.1"]), Offer::Current);
+    }
+
+    #[test]
+    fn a_malformed_entry_costs_only_itself() {
+        let signing = SigningKey::from_bytes(&[9; 32]);
+        let key = PublisherKey::from_bytes(signing.verifying_key().to_bytes());
+        let at = "2026-11-02T10:00:00Z";
+        let good = hex(&signing.sign(&Revocation::message(&key, at)).to_bytes());
+        let json = format!(
+            r#"{{"id":"dev.example.soundcloud","releases":[
+                {{"version":"1.5.0","url":"https://example.com/a.wasm"}},
+                {{"version":15,"url":"https://example.com/a.wasm","sha256":"{SHA}","api":"0.1"}},
+                "nonsense",
+                {{"version":"1.6.0","url":"https://example.com/b.wasm","sha256":"{SHA}","api":"0.1"}}
+            ],"revoked":[
+                {{"key":"{key}"}},
+                {{"key":"{key}","at":"{at}","signature":"{good}"}}
+            ]}}"#
+        );
+        let feed = feed(&json).unwrap();
+        assert_eq!(feed.releases.len(), 1);
+        assert_eq!(feed.releases[0].version, semver::Version::new(1, 6, 0));
+        assert_eq!(feed.revoked, vec![key]);
+    }
+
+    #[test]
+    fn build_metadata_never_makes_a_release_newer() {
+        let json = format!(
+            r#"{{"id":"dev.example.soundcloud","releases":[
+                {{"version":"1.5.0+build.2","url":"https://example.com/a.wasm","sha256":"{SHA}","api":"0.1"}}
+            ]}}"#
+        );
+        let feed = feed(&json).unwrap();
+        let installed = semver::Version::parse("1.5.0+build.1").unwrap();
+        assert_eq!(feed.offer(&installed, &["0.1"]), Offer::Current);
     }
 
     #[test]

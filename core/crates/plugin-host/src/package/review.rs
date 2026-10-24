@@ -310,7 +310,8 @@ pub fn review(
             ends_folder_grants: installed.manifest.permissions.folders
                 && !manifest.permissions.folders,
         };
-        return match manifest.version.cmp(&installed.manifest.version) {
+        // SemVer precedence: build metadata never orders releases.
+        return match manifest.version.cmp_precedence(&installed.manifest.version) {
             std::cmp::Ordering::Greater => Ok(Review::Update(change)),
             std::cmp::Ordering::Less => Ok(Review::Downgrade(change)),
             std::cmp::Ordering::Equal => Err(PackageError::AlreadyInstalled),

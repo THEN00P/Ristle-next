@@ -47,6 +47,7 @@ fn host_on(
         HostSettings {
             locale: "de-DE".to_owned(),
             concurrent_calls,
+            ..HostSettings::default()
         },
     )
     .unwrap()
@@ -170,6 +171,29 @@ async fn results_over_the_bounds_fail_the_call() {
         titles(&plugin, &connection("c1"), &["huge-title"]).await,
         Err(PluginError::Internal(_))
     ));
+}
+
+#[tokio::test]
+async fn copying_a_result_is_bounded_before_it_happens() {
+    let plugin = plugin(Backend::Cranelift);
+    // 150 Tracks with 120 KiB of names are 18 MiB: over the hostcall fuel, so wasmtime
+    // stops lifting before the host holds them, not the 4 MiB check after.
+    let error = titles(&plugin, &connection("c1"), &["many:150"])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("too much data")),
+        "{error:?}"
+    );
+    // Within the fuel, the 4 MiB result bound still applies.
+    // 50 of them (one batch) are 6 MiB.
+    let mut ids = vec!["many:50".to_owned()];
+    ids.extend((1..50).map(|index| format!("id{index}")));
+    let error = plugin.tracks(&connection("c1"), ids).await.unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("4 MiB")),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
@@ -404,8 +428,8 @@ async fn loading_reports_the_exports() {
     assert_eq!(plugin.id().as_str(), "dev.ristle.mock");
 }
 
-#[test]
-fn a_manifest_without_the_limits_its_exports_need_is_refused() {
+#[tokio::test]
+async fn a_manifest_without_the_limits_its_exports_need_is_refused() {
     let publisher = Publisher::new(1);
     let manifest = mock_manifest(&publisher, "1.0.0", "").replace("liked-states = 40\n", "");
     let mut pieces = Unsigned::new(manifest);
@@ -420,8 +444,8 @@ fn a_manifest_without_the_limits_its_exports_need_is_refused() {
     );
 }
 
-#[test]
-fn a_package_that_is_no_plugin_is_refused() {
+#[tokio::test]
+async fn a_package_that_is_no_plugin_is_refused() {
     let publisher = Publisher::new(1);
     // The empty component exports nothing.
     let package = ristle_plugin_host::package::Package::read(
@@ -493,4 +517,48 @@ async fn calls_beyond_the_concurrency_limit_wait() {
     a.unwrap();
     b.unwrap();
     assert!(started.elapsed() >= Duration::from_millis(800));
+}
+
+#[tokio::test]
+async fn idle_instances_are_released_without_further_calls() {
+    let clock = Arc::new(ManualClock::new(NOW));
+    let host = PluginHost::new(
+        Engine::new(EngineConfig {
+            backend: Backend::Cranelift,
+            artifacts: None,
+        })
+        .unwrap(),
+        HostPorts {
+            clock: clock.clone(),
+            store: Arc::new(MemoryPluginStore::new()),
+            net: Client::new(ClientConfig::default(), clock, None).unwrap(),
+        },
+        HostSettings {
+            idle_instance: Duration::from_millis(200),
+            sweep_interval: Duration::from_millis(50),
+            ..HostSettings::default()
+        },
+    )
+    .unwrap();
+    let plugin = host.load(&mock_package(&Publisher::new(1), "")).unwrap();
+    let c1 = connection("c1");
+    titles(&plugin, &c1, &["count"]).await.unwrap();
+    assert_eq!(plugin.idle_instances(&c1), 1);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(plugin.idle_instances(&c1), 0);
+}
+
+#[test]
+fn a_host_needs_the_runtime() {
+    let clock = Arc::new(ManualClock::new(NOW));
+    let result = PluginHost::new(
+        Engine::new(EngineConfig::default()).unwrap(),
+        HostPorts {
+            clock: clock.clone(),
+            store: Arc::new(MemoryPluginStore::new()),
+            net: Client::new(ClientConfig::default(), clock, None).unwrap(),
+        },
+        HostSettings::default(),
+    );
+    assert!(matches!(result, Err(Error::Engine(_))));
 }

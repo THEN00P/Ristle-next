@@ -17,6 +17,7 @@
 //! | `store:<key>=<value>`, `store:<key>` | `storage.set`; `storage.get` as a title |
 //! | `fill:<n>` | stores `<n>` values of 1 MiB |
 //! | `huge-title` | a title over 64 KiB |
+//! | `many:<n>` | `<n>` Tracks with 60 KiB titles and album names |
 //! | `rich` | Tracks with every field set, some of them invalid |
 //! | anything else | a Track per id; ids starting `gone` are unavailable |
 //!
@@ -158,6 +159,20 @@ fn script(command: &str, calls: u64) -> Option<Tracks> {
         }),
         "too-random" => Some(crypto::random(4096).map(|_| Vec::new())),
         "huge-title" => Some(titled(vec!["x".repeat(64 * 1024 + 1)])),
+        command if command.starts_with("many:") => {
+            let count: usize = command["many:".len()..].parse().unwrap_or(0);
+            let name = "y".repeat(60 * 1024);
+            Some(Ok((0..count)
+                .map(|index| {
+                    let mut big = track(&format!("t{index}"), &name);
+                    big.album = Some(Named {
+                        id: None,
+                        name: name.clone(),
+                    });
+                    Ok(big)
+                })
+                .collect()))
+        }
         "fetch" => Some(Err(Error::Internal(
             "fetch arrives with the connection services".to_string(),
         ))),

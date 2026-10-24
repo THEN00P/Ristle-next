@@ -16,8 +16,8 @@
 //!   Plugins (more on desktop).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use ristle_domain::{Clock, ConnectionId, PluginId};
 use wasmtime::component::{InstancePre, Linker, Resource};
@@ -49,6 +49,10 @@ pub struct HostSettings {
     pub concurrent_calls: usize,
     /// The user's locale as a BCP 47 tag.
     pub locale: String,
+    /// How long an idle instance is kept.
+    pub idle_instance: Duration,
+    /// How often idle instances are released.
+    pub sweep_interval: Duration,
 }
 
 impl Default for HostSettings {
@@ -56,6 +60,8 @@ impl Default for HostSettings {
         Self {
             concurrent_calls: limits::PHONE_CONCURRENT_CALLS,
             locale: "en-US".to_owned(),
+            idle_instance: limits::IDLE_INSTANCE,
+            sweep_interval: limits::SWEEP_INTERVAL,
         }
     }
 }
@@ -100,6 +106,9 @@ pub struct PluginHost {
     linker: Arc<Linker<HostState>>,
     services: Arc<Services>,
     calls: Arc<tokio::sync::Semaphore>,
+    idle_instance: Duration,
+    /// Every loaded Plugin, for the sweeper.
+    loaded: Arc<Mutex<Vec<Weak<PluginInner>>>>,
 }
 
 impl std::fmt::Debug for PluginHost {
@@ -111,8 +120,11 @@ impl std::fmt::Debug for PluginHost {
 }
 
 impl PluginHost {
-    /// A host on `engine`.
+    /// A host on `engine`. Must be created inside the core's tokio runtime,
+    /// which runs the sweeper that releases idle instances.
     pub fn new(engine: Engine, ports: HostPorts, settings: HostSettings) -> Result<Self, Error> {
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|_| Error::Engine("the plugin host needs a tokio runtime".to_owned()))?;
         let mut linker = Linker::new(engine.wasmtime());
         FullProvider::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
             &mut linker,
@@ -131,6 +143,8 @@ impl PluginHost {
             calls: Arc::new(tokio::sync::Semaphore::new(
                 settings.concurrent_calls.max(1),
             )),
+            idle_instance: settings.idle_instance,
+            loaded: start_sweeper(&runtime, settings.sweep_interval),
         })
     }
 
@@ -168,6 +182,7 @@ impl PluginHost {
             engine: self.engine.wasmtime().clone(),
             pools: Mutex::new(HashMap::new()),
             calls: self.calls.clone(),
+            idle_instance: self.idle_instance,
         });
         // A component that cannot be instantiated within the limits, such
         // as one declaring more initial memory, is refused now.
@@ -175,8 +190,38 @@ impl PluginHost {
             .instantiate()
             .map_err(|error| PackageError::Component(format!("cannot start: {error}")))?;
         drop(trial);
+        let mut loaded = lock(&self.loaded);
+        loaded.retain(|plugin| plugin.strong_count() > 0);
+        loaded.push(Arc::downgrade(&inner));
         Ok(LoadedPlugin { inner })
     }
+}
+
+/// Releases idle instances past their time every `interval`, until the
+/// host is dropped.
+fn start_sweeper(
+    runtime: &tokio::runtime::Handle,
+    interval: Duration,
+) -> Arc<Mutex<Vec<Weak<PluginInner>>>> {
+    let loaded: Arc<Mutex<Vec<Weak<PluginInner>>>> = Arc::default();
+    let registry = Arc::downgrade(&loaded);
+    runtime.spawn(async move {
+        let mut ticks = tokio::time::interval(interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            let Some(loaded) = registry.upgrade() else {
+                return;
+            };
+            let plugins: Vec<Arc<PluginInner>> =
+                lock(&loaded).iter().filter_map(Weak::upgrade).collect();
+            drop(loaded);
+            for plugin in plugins {
+                plugin.sweep();
+            }
+        }
+    });
+    loaded
 }
 
 /// A Plugin ready to be called.
@@ -202,6 +247,7 @@ struct PluginInner {
     engine: wasmtime::Engine,
     pools: Mutex<HashMap<ConnectionId, Vec<Instance>>>,
     calls: Arc<tokio::sync::Semaphore>,
+    idle_instance: Duration,
 }
 
 /// Where each export this host calls lives in the component, found once
@@ -243,6 +289,7 @@ impl PluginInner {
         let failed = |error: wasmtime::Error| CallError::Instantiate(format!("{error:#}"));
         let mut store = Store::new(&self.engine, HostState::new(self.context.clone()));
         store.limiter(|state| &mut state.limiter);
+        store.set_hostcall_fuel(limits::HOSTCALL_FUEL_BYTES);
         store.epoch_deadline_callback(|mut context| {
             Ok(match context.data_mut().clock.check() {
                 Some(_) => UpdateDeadline::Interrupt,
@@ -290,18 +337,42 @@ impl PluginInner {
     fn checkout(&self, connection: &ConnectionId) -> Option<Instance> {
         let mut pools = lock(&self.pools);
         let pool = pools.get_mut(connection)?;
-        pool.retain(|instance| instance.last_used.elapsed() < limits::IDLE_INSTANCE);
+        let idle = self.idle_instance;
+        pool.retain(|instance| instance.last_used.elapsed() < idle);
         pool.pop()
     }
 
     fn give_back(&self, connection: ConnectionId, mut instance: Instance) {
         instance.last_used = Instant::now();
         let mut pools = lock(&self.pools);
+        Self::expire(&mut pools, self.idle_instance);
         let pool = pools.entry(connection).or_default();
-        pool.retain(|instance| instance.last_used.elapsed() < limits::IDLE_INSTANCE);
         if pool.len() < limits::IDLE_PER_CONNECTION {
             pool.push(instance);
         }
+    }
+
+    /// Releases every idle instance past its time, in every pool.
+    fn sweep(&self) {
+        let expired = {
+            let mut pools = lock(&self.pools);
+            Self::expire(&mut pools, self.idle_instance)
+        };
+        // Stores are dropped outside the lock.
+        drop(expired);
+    }
+
+    fn expire(pools: &mut HashMap<ConnectionId, Vec<Instance>>, idle: Duration) -> Vec<Instance> {
+        let mut expired = Vec::new();
+        for pool in pools.values_mut() {
+            let (keep, old): (Vec<Instance>, Vec<Instance>) = std::mem::take(pool)
+                .into_iter()
+                .partition(|instance| instance.last_used.elapsed() < idle);
+            *pool = keep;
+            expired.extend(old);
+        }
+        pools.retain(|_, pool| !pool.is_empty());
+        expired
     }
 }
 

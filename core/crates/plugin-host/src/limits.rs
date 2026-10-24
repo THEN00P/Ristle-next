@@ -37,6 +37,18 @@ pub const RECYCLE_GROWTH_BYTES: usize = 8 * 1024 * 1024;
 /// How long an idle instance is kept for its connection.
 pub const IDLE_INSTANCE: Duration = Duration::from_secs(5 * 60);
 
+/// How often idle instances past their time are released, whether or not
+/// their Plugin is called.
+pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// What the host may allocate while lifting one value out of a Plugin: an
+/// import's arguments or an export's result. wasmtime charges every string
+/// and list against it before copying, so descriptors that point at the
+/// same guest memory many times cannot make the host copy it many times.
+/// It is the import bound of `host.wit`: 16 MiB of byte payloads plus 1 MiB
+/// of everything else.
+pub const HOSTCALL_FUEL_BYTES: usize = 17 * 1024 * 1024;
+
 /// Idle instances kept per connection.
 pub const IDLE_PER_CONNECTION: usize = 2;
 

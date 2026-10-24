@@ -271,6 +271,16 @@ struct Exchange {
     headers: Vec<Header>,
     url: Url,
     body: Incoming,
+    /// Every URL that received the request with a method that changes
+    /// state, for invalidation.
+    unsafe_targets: Vec<Url>,
+}
+
+/// A cached response's validators and the URL that supplied them: they are
+/// sent to that resource only.
+struct Validators {
+    url: Url,
+    headers: Vec<Header>,
 }
 
 impl Client {
@@ -346,13 +356,21 @@ impl Client {
                 if !headers::has(&request.headers, "if-none-match")
                     && !headers::has(&request.headers, "if-modified-since") =>
             {
-                stored.validators()
+                Url::parse(&stored.url)
+                    .ok()
+                    .map(|url| Validators {
+                        url,
+                        headers: stored.validators(),
+                    })
+                    .filter(|validators| !validators.headers.is_empty())
             }
-            _ => Vec::new(),
+            _ => None,
         };
         let max_body = request.max_body;
         let result = tokio::time::timeout(timeout, async {
-            let exchange = self.open(&request, &caller_headers, &conditional).await?;
+            let exchange = self
+                .open(&request, &caller_headers, conditional.as_ref())
+                .await?;
             let body = read_body(
                 exchange.body,
                 &exchange.headers,
@@ -360,12 +378,18 @@ impl Client {
                 max_body,
             )
             .await?;
-            Ok::<_, Error>((exchange.status, exchange.headers, exchange.url, body))
+            Ok::<_, Error>((
+                exchange.status,
+                exchange.headers,
+                exchange.url,
+                body,
+                exchange.unsafe_targets,
+            ))
         })
         .await
         .unwrap_or(Err(Error::Timeout));
         let now = self.inner.clock.now_ms();
-        let (status, response_headers, url, body) = match result {
+        let (status, response_headers, url, body, unsafe_targets) = match result {
             Ok(parts) => parts,
             Err(error) => {
                 if provider_failed(&error)
@@ -378,8 +402,11 @@ impl Client {
             }
         };
 
+        // Only the resource that supplied the validators can confirm them.
         if status == 304
-            && !conditional.is_empty()
+            && conditional
+                .as_ref()
+                .is_some_and(|validators| validators.url == url)
             && let (Some(stored), Some(key)) = (&stored, &key)
         {
             return self
@@ -396,7 +423,7 @@ impl Client {
             self.store_response(key, &request, status, &response_headers, &body, &url, now)
                 .await;
         } else if request.method.cache_method().is_none() && (200..400).contains(&status) {
-            self.invalidate(&request).await;
+            self.invalidate(&request, unsafe_targets).await;
         }
         Ok(Response {
             status,
@@ -417,7 +444,7 @@ impl Client {
         let caller_headers = headers::checked(&request.headers)?;
         request.reach.check(&request.url)?;
         let exchange =
-            tokio::time::timeout(request.timeout, self.open(&request, &caller_headers, &[]))
+            tokio::time::timeout(request.timeout, self.open(&request, &caller_headers, None))
                 .await
                 .unwrap_or(Err(Error::Timeout))?;
         if !bodiless(request.method, exchange.status)
@@ -479,9 +506,13 @@ impl Client {
         &self,
         request: &Request,
         caller_headers: &[(HeaderName, HeaderValue)],
-        conditional: &[Header],
+        validators: Option<&Validators>,
     ) -> Result<Exchange, Error> {
-        let conditional = headers::checked(conditional)?;
+        let conditional = match validators {
+            Some(validators) => headers::checked(&validators.headers)?,
+            None => Vec::new(),
+        };
+        let mut unsafe_targets = Vec::new();
         let mut url = without_fragment(&request.url);
         let mut method = request.method.as_http();
         let mut body = request.body.clone();
@@ -507,10 +538,15 @@ impl Client {
             let mut builder = http::Request::builder().method(method.clone()).uri(uri);
             if let Some(map) = builder.headers_mut() {
                 if keep_caller_headers {
-                    for (name, value) in caller_headers.iter().chain(conditional.iter()) {
+                    for (name, value) in caller_headers {
                         if !keep_content_headers && is_content_header(name) {
                             continue;
                         }
+                        map.append(name.clone(), value.clone());
+                    }
+                }
+                if validators.is_some_and(|validators| validators.url == url) {
+                    for (name, value) in &conditional {
                         map.append(name.clone(), value.clone());
                     }
                 }
@@ -521,6 +557,9 @@ impl Client {
             let outgoing = builder
                 .body(Full::new(body.clone()))
                 .map_err(|error| Error::NotAllowed(format!("request: {error}")))?;
+            if !matches!(method, http::Method::GET | http::Method::HEAD) {
+                unsafe_targets.push(url.clone());
+            }
             let response = client.request(outgoing).await.map_err(map_hyper_error)?;
             let status = response.status().as_u16();
             let response_headers = headers::from_response(response.headers())?;
@@ -546,6 +585,7 @@ impl Client {
                     headers: response_headers,
                     url,
                     body: response.into_body(),
+                    unsafe_targets,
                 });
             };
             let cross_origin = !reach::same_origin(&url, &next);
@@ -571,6 +611,7 @@ impl Client {
                     headers: response_headers,
                     url,
                     body: response.into_body(),
+                    unsafe_targets,
                 });
             }
             if to_get {
@@ -737,23 +778,26 @@ impl Client {
         })
     }
 
-    /// A successful unsafe request invalidates what the cache holds for its
-    /// URL (RFC 9111, section 4.4).
-    async fn invalidate(&self, request: &Request) {
+    /// A successful unsafe request invalidates what the cache holds for
+    /// every URL it reached, redirect targets included (RFC 9111, section
+    /// 4.4).
+    async fn invalidate(&self, request: &Request, targets: Vec<Url>) {
         let Some(scope) = request.cache.scope().cloned() else {
             return;
         };
         if !matches!(request.cache, CachePolicy::Http(_)) {
             return;
         }
-        let url = without_fragment(&request.url).to_string();
+        let urls: Vec<String> = targets.iter().map(ToString::to_string).collect();
         self.with_store(move |store| {
-            for method in [CacheMethod::Get, CacheMethod::Head] {
-                store.remove(&CacheKey {
-                    scope: scope.clone(),
-                    method,
-                    key: url.clone(),
-                })?;
+            for url in &urls {
+                for method in [CacheMethod::Get, CacheMethod::Head] {
+                    store.remove(&CacheKey {
+                        scope: scope.clone(),
+                        method,
+                        key: url.clone(),
+                    })?;
+                }
             }
             Ok::<_, StoreError>(())
         })

@@ -1289,3 +1289,77 @@ async fn streams_deliver_chunks_as_they_arrive() {
     let stream = h.client.stream(get(&whole, "/")).await.unwrap();
     assert_eq!(stream.total_length(), Some(5));
 }
+
+#[tokio::test]
+async fn validators_go_only_to_the_resource_that_supplied_them() {
+    let h = harness();
+    let server = TestServer::start(|request| match request.path.as_str() {
+        "/a" => TestResponse::status(302).header("Location", "/b"),
+        _ if request.header("if-none-match").is_some() => TestResponse::status(304),
+        _ => TestResponse::ok("b")
+            .header("ETag", "\"e\"")
+            .header("Cache-Control", "no-cache"),
+    })
+    .await
+    .unwrap();
+    h.client.send(cached_get(&server, "/a")).await.unwrap();
+    let response = h.client.send(cached_get(&server, "/a")).await.unwrap();
+    assert_eq!(response.body, Bytes::from("b"));
+    assert!(response.cached);
+    let seen = server.requests();
+    assert_eq!(seen[2].path, "/a");
+    assert_eq!(
+        seen[2].header("if-none-match"),
+        None,
+        "sent to the redirecting URL"
+    );
+    assert_eq!(seen[3].path, "/b");
+    assert_eq!(seen[3].header("if-none-match"), Some("\"e\""));
+}
+
+#[tokio::test]
+async fn a_304_from_another_resource_is_no_revalidation() {
+    let h = harness();
+    let redirect = Arc::new(Mutex::new(false));
+    let toggle = redirect.clone();
+    let server = TestServer::start(move |request| {
+        match (request.path.as_str(), *toggle.lock().unwrap()) {
+            // /a first answers itself, later redirects to /b, which answers
+            // 304 whatever it is asked.
+            ("/a", false) => TestResponse::ok("a")
+                .header("ETag", "\"e\"")
+                .header("Cache-Control", "no-cache"),
+            ("/a", true) => TestResponse::status(302).header("Location", "/b"),
+            _ => TestResponse::status(304),
+        }
+    })
+    .await
+    .unwrap();
+    h.client.send(cached_get(&server, "/a")).await.unwrap();
+    *redirect.lock().unwrap() = true;
+    let response = h.client.send(cached_get(&server, "/a")).await.unwrap();
+    // The validators were for /a; /b's 304 is passed on, not merged.
+    assert_eq!(response.status, 304);
+    assert!(!response.cached);
+}
+
+#[tokio::test]
+async fn an_unsafe_request_invalidates_its_redirect_target() {
+    let h = harness();
+    let server =
+        TestServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("DELETE", "/old-item") => TestResponse::status(307).header("Location", "/item"),
+                ("DELETE", _) => TestResponse::status(204),
+                _ => TestResponse::ok("item").header("Cache-Control", "max-age=600"),
+            },
+        )
+        .await
+        .unwrap();
+    h.client.send(cached_get(&server, "/item")).await.unwrap();
+    assert_eq!(h.store.len(), 1);
+    let mut delete = cached_get(&server, "/old-item");
+    delete.method = Method::Delete;
+    assert_eq!(h.client.send(delete).await.unwrap().status, 204);
+    assert!(h.store.is_empty());
+}

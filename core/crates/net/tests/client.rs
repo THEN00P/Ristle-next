@@ -1363,3 +1363,87 @@ async fn an_unsafe_request_invalidates_its_redirect_target() {
     assert_eq!(h.client.send(delete).await.unwrap().status, 204);
     assert!(h.store.is_empty());
 }
+
+#[tokio::test]
+async fn vary_through_a_redirect_selects_by_the_final_hops_headers() {
+    struct CookieForB(Mutex<String>);
+    impl Attach for CookieForB {
+        fn headers(&self, url: &Url) -> Vec<(String, String)> {
+            if url.path() == "/b" {
+                vec![("Cookie".into(), self.0.lock().unwrap().clone())]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+    let h = harness();
+    let server = TestServer::start(|request| match request.path.as_str() {
+        "/a" => TestResponse::status(302).header("Location", "/b"),
+        _ => TestResponse::ok(request.header("cookie").unwrap_or("none").to_owned())
+            .header("Cache-Control", "max-age=60")
+            .header("Vary", "Cookie"),
+    })
+    .await
+    .unwrap();
+    let cookie = Arc::new(CookieForB(Mutex::new("b=1".into())));
+    let request = Request {
+        attach: Some(cookie.clone()),
+        ..cached_get(&server, "/a")
+    };
+    assert_eq!(
+        h.client.send(request.clone()).await.unwrap().body,
+        Bytes::from("b=1")
+    );
+    assert!(h.client.send(request.clone()).await.unwrap().cached);
+    *cookie.0.lock().unwrap() = "b=2".into();
+    let rotated = h.client.send(request).await.unwrap();
+    assert!(!rotated.cached);
+    assert_eq!(rotated.body, Bytes::from("b=2"));
+}
+
+#[tokio::test]
+async fn a_mutation_invalidates_even_when_its_body_breaks_off() {
+    let h = harness();
+    let server = TestServer::start(|request| match request.method.as_str() {
+        "PUT" => TestResponse {
+            truncate: true,
+            ..TestResponse::ok("partial")
+        },
+        _ => TestResponse::ok("item").header("Cache-Control", "max-age=600"),
+    })
+    .await
+    .unwrap();
+    h.client.send(cached_get(&server, "/item")).await.unwrap();
+    assert_eq!(h.store.len(), 1);
+    let mut put = cached_get(&server, "/item");
+    put.method = Method::Put;
+    assert!(h.client.send(put).await.is_err());
+    assert!(h.store.is_empty());
+}
+
+#[tokio::test]
+async fn a_304_cannot_grow_the_headers_past_their_bounds() {
+    let h = harness();
+    let scripted = {
+        let mut first = TestResponse::ok("x")
+            .header("Cache-Control", "no-cache")
+            .header("ETag", "\"e\"");
+        for index in 0..150 {
+            first = first.header(&format!("x-a-{index}"), "v");
+        }
+        Scripted::new(first).await
+    };
+    h.client
+        .send(cached_get(&scripted.server, "/a"))
+        .await
+        .unwrap();
+    let mut second = TestResponse::status(304);
+    for index in 0..100 {
+        second = second.header(&format!("x-b-{index}"), "v");
+    }
+    scripted.answer(second);
+    assert!(matches!(
+        h.client.send(cached_get(&scripted.server, "/a")).await,
+        Err(Error::TooLarge(_))
+    ));
+}

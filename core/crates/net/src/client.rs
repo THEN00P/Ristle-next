@@ -274,6 +274,9 @@ struct Exchange {
     /// Every URL that received the request with a method that changes
     /// state, for invalidation.
     unsafe_targets: Vec<Url>,
+    /// The headers the final hop was sent, the caller's (where kept) and
+    /// the attached ones, which a `Vary` selector is built from.
+    sent: Vec<Header>,
 }
 
 /// A cached response's validators and the URL that supplied them: they are
@@ -340,7 +343,7 @@ impl Client {
         let timeout = request.timeout.min(MAX_TIMEOUT);
         let key = self.cache_key(&request);
         let stored = match &key {
-            Some(key) => self.cache_get(key, &selecting_headers(&request)).await,
+            Some(key) => self.cache_get(key, &request).await,
             None => None,
         };
         let now = self.inner.clock.now_ms();
@@ -371,6 +374,13 @@ impl Client {
             let exchange = self
                 .open(&request, &caller_headers, conditional.as_ref())
                 .await?;
+            // A successful mutation is known from its status: the cache
+            // forgets the URLs it changed before the body is read, which
+            // may still fail.
+            if request.method.cache_method().is_none() && (200..400).contains(&exchange.status) {
+                self.invalidate(&request, exchange.unsafe_targets.clone())
+                    .await;
+            }
             let body = read_body(
                 exchange.body,
                 &exchange.headers,
@@ -383,13 +393,13 @@ impl Client {
                 exchange.headers,
                 exchange.url,
                 body,
-                exchange.unsafe_targets,
+                exchange.sent,
             ))
         })
         .await
         .unwrap_or(Err(Error::Timeout));
         let now = self.inner.clock.now_ms();
-        let (status, response_headers, url, body, unsafe_targets) = match result {
+        let (status, response_headers, url, body, sent) = match result {
             Ok(parts) => parts,
             Err(error) => {
                 if provider_failed(&error)
@@ -410,7 +420,7 @@ impl Client {
             && let (Some(stored), Some(key)) = (&stored, &key)
         {
             return self
-                .revalidated(key, stored, &request, response_headers, now)
+                .revalidated(key, stored, &request, response_headers, &sent, now)
                 .await;
         }
         if matches!(status, 500 | 502 | 503 | 504)
@@ -420,10 +430,17 @@ impl Client {
             return served(stored, &request);
         }
         if let Some(key) = &key {
-            self.store_response(key, &request, status, &response_headers, &body, &url, now)
-                .await;
-        } else if request.method.cache_method().is_none() && (200..400).contains(&status) {
-            self.invalidate(&request, unsafe_targets).await;
+            self.store_response(
+                key,
+                &request,
+                status,
+                &response_headers,
+                &body,
+                &url,
+                &sent,
+                now,
+            )
+            .await;
         }
         Ok(Response {
             status,
@@ -527,10 +544,26 @@ impl Client {
                     retry_after_ms: Some(remaining),
                 });
             }
-            let attached = match &request.attach {
-                Some(attach) => headers::checked(&attach.headers(&url))?,
+            let attached_text = match &request.attach {
+                Some(attach) => attach.headers(&url),
                 None => Vec::new(),
             };
+            let attached = headers::checked(&attached_text)?;
+            let mut sent: Vec<Header> = if keep_caller_headers {
+                request
+                    .headers
+                    .iter()
+                    .filter(|(name, _)| {
+                        keep_content_headers
+                            || !HeaderName::from_bytes(name.as_bytes())
+                                .is_ok_and(|name| is_content_header(&name))
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            sent.extend(attached_text);
             let uri: Uri = url
                 .as_str()
                 .parse()
@@ -586,6 +619,7 @@ impl Client {
                     url,
                     body: response.into_body(),
                     unsafe_targets,
+                    sent,
                 });
             };
             let cross_origin = !reach::same_origin(&url, &next);
@@ -612,6 +646,7 @@ impl Client {
                     url,
                     body: response.into_body(),
                     unsafe_targets,
+                    sent,
                 });
             }
             if to_get {
@@ -665,11 +700,7 @@ impl Client {
         Some(CacheKey { scope, method, key })
     }
 
-    async fn cache_get(
-        &self,
-        key: &CacheKey,
-        request_headers: &[Header],
-    ) -> Option<StoredResponse> {
+    async fn cache_get(&self, key: &CacheKey, request: &Request) -> Option<StoredResponse> {
         let lookup = key.clone();
         let stored = match self.with_store(move |store| store.get(&lookup)).await? {
             Ok(stored) => stored?,
@@ -684,8 +715,13 @@ impl Client {
             self.with_store(move |store| store.remove(&expired)).await;
             return None;
         }
-        // Override entries are stored without `Vary`, so they always match.
-        stored.matches_vary(request_headers).then_some(stored)
+        // Selected by what this request would send to the URL the response
+        // came from. Override entries are stored without `Vary`, so they
+        // always match.
+        let url = Url::parse(&stored.url).unwrap_or_else(|_| request.url.clone());
+        stored
+            .matches_vary(&selecting_headers(request, &url))
+            .then_some(stored)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -697,6 +733,7 @@ impl Client {
         response_headers: &[Header],
         body: &Bytes,
         url: &Url,
+        sent: &[Header],
         now: u64,
     ) {
         if cache::request_forbids_store(&request.headers) {
@@ -706,7 +743,7 @@ impl Client {
             CachePolicy::Bypass => return,
             CachePolicy::Http(_) => (
                 cache::http_freshness(status, response_headers, now),
-                cache::vary_of(response_headers, &selecting_headers(request)),
+                cache::vary_of(response_headers, sent),
             ),
             CachePolicy::Override(_, rule) => {
                 (cache::override_freshness(status, rule, now), Vec::new())
@@ -737,9 +774,20 @@ impl Client {
         stored: &StoredResponse,
         request: &Request,
         received: Vec<Header>,
+        sent: &[Header],
         now: u64,
     ) -> Result<Response, Error> {
         let merged = cache::merge_headers(&stored.headers, &received);
+        // Each part fits the bounds; together they must too.
+        let bytes: usize = merged
+            .iter()
+            .map(|(name, value)| name.len() + value.len())
+            .sum();
+        if merged.len() > MAX_RESPONSE_HEADERS || bytes > MAX_RESPONSE_HEADER_BYTES {
+            return Err(Error::TooLarge(format!(
+                "revalidated headers exceed {MAX_RESPONSE_HEADERS} headers or {MAX_RESPONSE_HEADER_BYTES} bytes"
+            )));
+        }
         let (freshness, vary) = match &request.cache {
             CachePolicy::Override(_, rule) => (
                 cache::override_freshness(stored.status, rule, now),
@@ -748,7 +796,7 @@ impl Client {
             _ => (
                 cache::http_freshness(stored.status, &merged, now),
                 // The 304 may have changed `Vary`; select by the new one.
-                cache::vary_of(&merged, &selecting_headers(request)),
+                cache::vary_of(&merged, sent),
             ),
         };
         let updated = StoredResponse {
@@ -871,13 +919,13 @@ fn hyper_client(tls: &rustls::ClientConfig, granted: Granted) -> Hyper {
         .build(connector)
 }
 
-/// The headers the request goes out with to its own URL, the caller's and
-/// the attached ones, which `Vary` selects by. An attached cookie that
-/// changed selects another representation.
-fn selecting_headers(request: &Request) -> Vec<Header> {
+/// The headers a request would send to `url`, the caller's and the
+/// attached ones, which a cached response's `Vary` selector is compared
+/// with. An attached cookie that changed selects another representation.
+fn selecting_headers(request: &Request, url: &Url) -> Vec<Header> {
     let mut out = request.headers.clone();
     if let Some(attach) = &request.attach {
-        out.extend(attach.headers(&request.url));
+        out.extend(attach.headers(url));
     }
     out
 }

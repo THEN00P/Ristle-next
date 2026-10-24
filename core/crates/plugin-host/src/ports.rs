@@ -50,10 +50,18 @@ pub trait PluginStore: Send + Sync {
     /// The Plugin's `storage` namespace.
     fn plugin_kv(&self, plugin: &PluginId) -> Box<dyn KvScope>;
     /// One Provider Connection's data, counted against its Plugin's quota.
-    fn connection_kv(&self, connection: &ConnectionId) -> Box<dyn KvScope>;
-    /// The next `http.response.sequence` of a connection. It grows with
-    /// every call and never repeats or goes back, across restarts too.
-    fn next_response_sequence(&self, connection: &ConnectionId) -> Result<u64, StoreError>;
+    /// Keyed by Plugin and connection: connection ids are unique within a
+    /// Plugin only, and every Plugin's anonymous connection has the empty
+    /// id.
+    fn connection_kv(&self, plugin: &PluginId, connection: &ConnectionId) -> Box<dyn KvScope>;
+    /// The next `http.response.sequence` of a connection of a Plugin. It
+    /// grows with every call and never repeats or goes back, across
+    /// restarts too.
+    fn next_response_sequence(
+        &self,
+        plugin: &PluginId,
+        connection: &ConnectionId,
+    ) -> Result<u64, StoreError>;
 }
 
 /// The platform credential store failed.

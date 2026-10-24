@@ -451,8 +451,12 @@ impl LoadedPlugin {
     /// which keeps everything stored for it.
     pub async fn set_connection(&self, info: ConnectionInfo) -> Result<(), crate::Error> {
         let connection = info.id.clone();
-        if self.inner.context.connections.set(info) == Registered::NewGeneration {
-            self.end_generation(&connection).await?;
+        let connections = &self.inner.context.connections;
+        if connections.set(info) == Registered::NewGeneration {
+            // Calls for the new generation wait until this is done.
+            let cleaned = self.end_generation(&connection).await;
+            connections.finish_cleaning(&connection);
+            cleaned?;
         }
         Ok(())
     }
@@ -493,7 +497,7 @@ impl LoadedPlugin {
         context
             .services
             .store
-            .connection_kv(connection)
+            .connection_kv(&context.id, connection)
             .clear()
             .map_err(|error| crate::Error::Store(error.to_string()))
     }
@@ -533,7 +537,8 @@ impl LoadedPlugin {
         let context = &self.inner.context;
         let generation = context
             .connections
-            .generation(connection)
+            .admit(connection)
+            .await
             .ok_or(CallError::UnknownConnection)?;
         let call = CallContext {
             connection: connection.clone(),

@@ -243,7 +243,21 @@ pub fn mock_manifest(publisher: &Publisher, version: &str, extra: &str) -> Strin
 /// The mock Plugin, signed. `permissions` is appended to its
 /// `[permissions]` table.
 pub fn mock_package(publisher: &Publisher, permissions: &str) -> crate::package::Package {
-    let mut pieces = Unsigned::new(mock_manifest(publisher, "1.0.0", permissions));
+    mock_package_as("dev.ristle.mock", publisher, permissions)
+}
+
+/// The mock Plugin under another id, as a second Plugin.
+pub fn mock_package_as(
+    id: &str,
+    publisher: &Publisher,
+    permissions: &str,
+) -> crate::package::Package {
+    let manifest = mock_manifest(publisher, "1.0.0", permissions).replacen(
+        "id = \"dev.ristle.mock\"",
+        &format!("id = \"{id}\""),
+        1,
+    );
+    let mut pieces = Unsigned::new(manifest);
     pieces.component = mock_provider_component();
     match crate::package::Package::read(pieces.signed(&[publisher])) {
         Ok(package) => package,
@@ -344,19 +358,26 @@ impl crate::PluginStore for MemoryPluginStore {
         self.scope(format!("plugin:{plugin}"))
     }
 
-    fn connection_kv(&self, connection: &ristle_domain::ConnectionId) -> Box<dyn crate::KvScope> {
-        self.scope(format!("connection:{connection}"))
+    fn connection_kv(
+        &self,
+        plugin: &PluginId,
+        connection: &ristle_domain::ConnectionId,
+    ) -> Box<dyn crate::KvScope> {
+        self.scope(format!("connection:{plugin}/{connection}"))
     }
 
     fn next_response_sequence(
         &self,
+        plugin: &PluginId,
         connection: &ristle_domain::ConnectionId,
     ) -> Result<u64, crate::StoreError> {
         let mut sequences = self
             .sequences
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next = sequences.entry(connection.to_string()).or_insert(0);
+        let next = sequences
+            .entry(format!("{plugin}/{connection}"))
+            .or_insert(0);
         *next += 1;
         Ok(*next)
     }

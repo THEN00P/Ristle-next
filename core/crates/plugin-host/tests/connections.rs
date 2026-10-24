@@ -13,7 +13,7 @@ use ristle_domain::{ConnectionId, ManualClock};
 use ristle_net::test_support::{MemoryCacheStore, TestResponse, TestServer};
 use ristle_net::{Client, ClientConfig};
 use ristle_plugin_host::test_support::{
-    MemoryPluginStore, MemoryVault, Publisher, connection_info, mock_package,
+    MemoryPluginStore, MemoryVault, Publisher, connection_info, mock_package, mock_package_as,
 };
 use ristle_plugin_host::{
     Account, Backend, ConnectionInfo, Engine, EngineConfig, HostPorts, HostSettings, LoadedPlugin,
@@ -23,6 +23,7 @@ use ristle_plugin_host::{
 const NOW: u64 = 1_800_000_000_000;
 
 struct Harness {
+    host: PluginHost,
     plugin: LoadedPlugin,
     vault: MemoryVault,
     cache: Arc<MemoryCacheStore>,
@@ -52,6 +53,7 @@ fn harness(permissions: &str) -> Harness {
         .load(&mock_package(&Publisher::new(1), permissions))
         .unwrap();
     Harness {
+        host,
         plugin,
         vault,
         cache,
@@ -478,4 +480,111 @@ async fn retiring_the_plugin_retires_running_calls() {
     assert!(call.await.unwrap().is_err());
     // Calls after it run normally.
     assert_eq!(one(&h.plugin, "c1", "count").await.unwrap(), "1");
+}
+
+#[tokio::test]
+async fn anonymous_connections_of_two_plugins_keep_their_data_apart() {
+    let h = harness("");
+    let other = h
+        .host
+        .load(&mock_package_as("dev.ristle.other", &Publisher::new(2), ""))
+        .unwrap();
+    for plugin in [&h.plugin, &other] {
+        plugin.set_connection(connection_info("", 0)).await.unwrap();
+    }
+    assert_eq!(
+        one(&h.plugin, "", "data:client=mine").await.unwrap(),
+        "stored"
+    );
+    assert_eq!(one(&other, "", "data:client").await.unwrap(), "none");
+    // Removing one Plugin's connection leaves the other's alone.
+    one(&other, "", "data:client=theirs").await.unwrap();
+    h.plugin.remove_connection(&c("")).await.unwrap();
+    assert_eq!(one(&other, "", "data:client").await.unwrap(), "theirs");
+}
+
+#[tokio::test]
+async fn a_retired_request_leaves_nothing_in_the_cache() {
+    let h = harness("servers = true");
+    let server = TestServer::start(|_| TestResponse {
+        delay: Duration::from_millis(600),
+        ..TestResponse::ok("old account").header("Cache-Control", "max-age=600")
+    })
+    .await
+    .unwrap();
+    h.plugin
+        .set_connection(granted("c1", 1, &server))
+        .await
+        .unwrap();
+    let plugin = h.plugin.clone();
+    let url = format!("fetch:{}/me", server.origin());
+    let call = tokio::spawn(async move { one(&plugin, "c1", &url).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    h.plugin
+        .set_connection(granted("c1", 2, &server))
+        .await
+        .unwrap();
+    assert!(call.await.unwrap().is_err());
+    assert!(h.cache.is_empty(), "{:?}", h.cache.keys());
+}
+
+#[tokio::test]
+async fn a_new_generations_calls_never_see_the_old_ones_data() {
+    let h = harness("");
+    h.plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    one(&h.plugin, "c1", "data:ids=old").await.unwrap();
+    // The call is admitted only once the cleanup is done.
+    let (changed, read) = tokio::join!(h.plugin.set_connection(connection_info("c1", 2)), async {
+        tokio::task::yield_now().await;
+        one(&h.plugin, "c1", "data:ids").await
+    });
+    changed.unwrap();
+    // Admitted before the change, the call read its own generation or was
+    // retired; admitted after, it found nothing.
+    assert!(
+        matches!(read.as_deref(), Ok("none" | "old") | Err(_)),
+        "{read:?}"
+    );
+    assert_eq!(one(&h.plugin, "c1", "data:ids").await.unwrap(), "none");
+}
+
+#[tokio::test]
+async fn responses_are_numbered_as_their_headers_arrive() {
+    let h = harness("servers = true");
+    let server = TestServer::start(|request| match request.path.as_str() {
+        // Headers at once, the body slowly.
+        "/first" => TestResponse {
+            chunks: Some(vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")]),
+            chunk_delay: Duration::from_millis(200),
+            ..TestResponse::ok("")
+        },
+        // Headers later, the body at once.
+        _ => TestResponse {
+            delay: Duration::from_millis(150),
+            ..TestResponse::ok("second")
+        },
+    })
+    .await
+    .unwrap();
+    h.plugin
+        .set_connection(granted("c1", 1, &server))
+        .await
+        .unwrap();
+    let origin = server.origin();
+    let titles = run_n(
+        &h.plugin,
+        "c1",
+        &format!("fetch-urls:{origin}/first|{origin}/second"),
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(titles[0], "200 abc cached=false sequence=1", "{titles:?}");
+    assert_eq!(
+        titles[1], "200 second cached=false sequence=2",
+        "{titles:?}"
+    );
 }

@@ -326,8 +326,10 @@ pub trait KvScope: Send + Sync {
 }
 pub trait PluginStore: Send + Sync {
     fn plugin_kv(&self, plugin: &PluginId) -> Box<dyn KvScope>;
-    fn connection_kv(&self, connection: &ConnectionId) -> Box<dyn KvScope>;
-    fn next_response_sequence(&self, connection: &ConnectionId) -> Result<u64, StoreError>;
+    // Connection ids are unique within a Plugin only (every anonymous one is
+    // empty), so connection-scoped keys carry the Plugin too.
+    fn connection_kv(&self, plugin: &PluginId, connection: &ConnectionId) -> Box<dyn KvScope>;
+    fn next_response_sequence(&self, plugin: &PluginId, connection: &ConnectionId) -> Result<u64, StoreError>;
 }
 // Connections, their generation, account and Server and Folder Grants reach
 // the host from ristle-app through `LoadedPlugin::set_connection(ConnectionInfo)`

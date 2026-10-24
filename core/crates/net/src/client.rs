@@ -97,6 +97,24 @@ pub trait Attach: Send + Sync {
     }
 }
 
+/// Decides whether a response may still be written to the cache. The
+/// Plugin host uses it so a request that outlived its connection's
+/// generation never stores what it received after the old generation's
+/// cache was deleted: `commit` checks the generation and runs `write` under
+/// the same lock a generation change takes.
+pub trait CacheGate: Send + Sync {
+    /// Runs `write` if the response may still be stored.
+    fn commit(&self, write: &mut dyn FnMut());
+}
+
+/// Numbers the responses that reach the Provider, in the order their headers
+/// arrive (`http.response.sequence`). It is called once per response, on a
+/// blocking thread, before the body is read.
+pub trait Sequencer: Send + Sync {
+    /// The next number.
+    fn next(&self) -> Result<u64, String>;
+}
+
 /// A byte budget several requests share, such as all bodies of one
 /// `fetch-all`. Each body, cached ones included, takes from it as it is
 /// read; a body that does not fit fails with [`Error::BudgetSpent`].
@@ -153,6 +171,10 @@ pub struct Request {
     pub max_body: u64,
     /// A budget shared with other requests, if any.
     pub budget: Option<BodyBudget>,
+    /// Decides whether the response may still be cached.
+    pub gate: Option<Arc<dyn CacheGate>>,
+    /// Numbers the response when its headers arrive.
+    pub sequencer: Option<Arc<dyn Sequencer>>,
 }
 
 impl Request {
@@ -170,6 +192,8 @@ impl Request {
             timeout: MAX_TIMEOUT,
             max_body: MAX_BODY_BYTES,
             budget: None,
+            gate: None,
+            sequencer: None,
         }
     }
 }
@@ -206,6 +230,10 @@ pub struct Response {
     /// When it was last fetched from the Provider, in Unix milliseconds. A
     /// result built from several responses is as old as its oldest.
     pub fetched_at_ms: u64,
+    /// Its number from the request's [`Sequencer`], given when its headers
+    /// arrived; `None` without a sequencer or when it did not reach the
+    /// Provider.
+    pub sequence: Option<u64>,
 }
 
 /// A response whose body is read as it arrives. Never cached.
@@ -409,6 +437,16 @@ impl Client {
             let exchange = self
                 .open(&request, &caller_headers, conditional.as_ref())
                 .await?;
+            // Numbered as the headers arrive, not when the body is read.
+            let sequence = match request.sequencer.clone() {
+                Some(sequencer) => Some(
+                    tokio::task::spawn_blocking(move || sequencer.next())
+                        .await
+                        .map_err(|error| Error::Network(format!("response sequence: {error}")))?
+                        .map_err(|error| Error::Network(format!("response sequence: {error}")))?,
+                ),
+                None => None,
+            };
             let body = read_body(
                 exchange.body,
                 &exchange.headers,
@@ -423,12 +461,13 @@ impl Client {
                 exchange.url,
                 body,
                 exchange.sent,
+                sequence,
             ))
         })
         .await
         .unwrap_or(Err(Error::Timeout));
         let now = self.inner.clock.now_ms();
-        let (status, response_headers, url, body, sent) = match result {
+        let (status, response_headers, url, body, sent, sequence) = match result {
             Ok(parts) => parts,
             Err(error) => {
                 if provider_failed(&error)
@@ -449,7 +488,15 @@ impl Client {
             && let (Some(stored), Some(key)) = (&stored, &key)
         {
             return self
-                .revalidated(key, stored, &request, response_headers, &sent, now)
+                .revalidated(
+                    key,
+                    stored,
+                    &request,
+                    response_headers,
+                    &sent,
+                    now,
+                    sequence,
+                )
                 .await;
         }
         if matches!(status, 500 | 502 | 503 | 504)
@@ -480,6 +527,7 @@ impl Client {
             cached: false,
             reached_provider: true,
             fetched_at_ms: now,
+            sequence,
         })
     }
 
@@ -811,7 +859,7 @@ impl Client {
             stale_until_ms: freshness.stale_until_ms,
             vary,
         };
-        self.put(key, stored).await;
+        self.put(key, stored, request.gate.clone()).await;
     }
 
     async fn revalidated(
@@ -822,6 +870,7 @@ impl Client {
         received: Vec<Header>,
         sent: &[Header],
         now: u64,
+        sequence: Option<u64>,
     ) -> Result<Response, Error> {
         let merged = cache::merge_headers(&stored.headers, &received);
         // Each part fits the bounds; together they must too.
@@ -854,7 +903,7 @@ impl Client {
             ..stored.clone()
         };
         if freshness.is_some() {
-            self.put(key, updated.clone()).await;
+            self.put(key, updated.clone(), request.gate.clone()).await;
         } else {
             let gone = key.clone();
             self.with_store(move |store| store.remove(&gone)).await;
@@ -869,6 +918,7 @@ impl Client {
             received,
             reached_provider: true,
             fetched_at_ms: now,
+            sequence,
         })
     }
 
@@ -897,7 +947,7 @@ impl Client {
         .await;
     }
 
-    async fn put(&self, key: &CacheKey, stored: StoredResponse) {
+    async fn put(&self, key: &CacheKey, stored: StoredResponse, gate: Option<Arc<dyn CacheGate>>) {
         let key = key.clone();
         let plugin = key.scope.plugin.clone();
         let now = self.inner.clock.now_ms();
@@ -908,16 +958,26 @@ impl Client {
         }
         let result = self
             .with_store(move |store| {
-                store.put(&key, &stored)?;
-                store.trim(
-                    &plugin,
-                    cache::PLUGIN_BUDGET_BYTES,
-                    cache::TOTAL_BUDGET_BYTES,
-                )?;
-                if purge {
-                    store.evict_older_than(expiry_cutoff(now))?;
+                let write = || {
+                    store.put(&key, &stored)?;
+                    store.trim(
+                        &plugin,
+                        cache::PLUGIN_BUDGET_BYTES,
+                        cache::TOTAL_BUDGET_BYTES,
+                    )?;
+                    if purge {
+                        store.evict_older_than(expiry_cutoff(now))?;
+                    }
+                    Ok::<_, StoreError>(())
+                };
+                match gate {
+                    Some(gate) => {
+                        let mut outcome = Ok(());
+                        gate.commit(&mut || outcome = write());
+                        outcome
+                    }
+                    None => write(),
                 }
-                Ok::<_, StoreError>(())
             })
             .await;
         if let Some(Err(error)) = result {
@@ -1022,6 +1082,7 @@ fn from_stored(stored: &StoredResponse, request_url: &Url) -> Response {
         cached: true,
         received: Vec::new(),
         reached_provider: false,
+        sequence: None,
         fetched_at_ms: stored.fetched_at_ms,
     }
 }

@@ -49,15 +49,24 @@ impl HostConnection for HostState {
             let Some(call) = state.live_call() else {
                 return Ok(None);
             };
-            let services = state.services();
-            services
-                .store
-                .connection_kv(&call.connection)
-                .get(&key, services.clock.now_ms())
-                .map_err(|error| {
-                    tracing::warn!(plugin = %state.plugin.id, %error, "connection.get-data failed");
-                    trap("connection data is unavailable")
-                })
+            let plugin = &state.plugin;
+            let services = &plugin.services;
+            let read = plugin
+                .connections
+                .commit(&call.connection, call.generation, || {
+                    services
+                        .store
+                        .connection_kv(&plugin.id, &call.connection)
+                        .get(&key, services.clock.now_ms())
+                });
+            match read {
+                None => Ok(None),
+                Some(Ok(value)) => Ok(value),
+                Some(Err(error)) => {
+                    tracing::warn!(plugin = %plugin.id, %error, "connection.get-data failed");
+                    Err(trap("connection data is unavailable"))
+                }
+            }
         })
     }
 
@@ -78,19 +87,26 @@ impl HostConnection for HostState {
             let Some(call) = state.live_call() else {
                 return Err(retired());
             };
-            let services = state.services();
+            let plugin = &state.plugin;
+            let services = &plugin.services;
             let now = services.clock.now_ms();
             let expires = ttl_seconds.map(|ttl| now.saturating_add(u64::from(ttl) * 1000));
-            match services.store.connection_kv(&call.connection).set(
-                &key,
-                &value,
-                expires,
-                state.quota(),
-                now,
-            ) {
-                Ok(Stored::Yes) => Ok(()),
-                Ok(Stored::OverQuota) => Err(Error::Internal("storage quota exceeded".to_owned())),
-                Err(error) => {
+            let quota = state.quota();
+            let written = plugin
+                .connections
+                .commit(&call.connection, call.generation, || {
+                    services
+                        .store
+                        .connection_kv(&plugin.id, &call.connection)
+                        .set(&key, &value, expires, quota, now)
+                });
+            match written {
+                None => Err(retired()),
+                Some(Ok(Stored::Yes)) => Ok(()),
+                Some(Ok(Stored::OverQuota)) => {
+                    Err(Error::Internal("storage quota exceeded".to_owned()))
+                }
+                Some(Err(error)) => {
                     tracing::warn!(plugin = %state.plugin.id, %error, "connection.set-data failed");
                     Err(Error::Transient(
                         "connection data is unavailable".to_owned(),
@@ -112,11 +128,17 @@ impl HostConnection for HostState {
             let Some(call) = state.live_call() else {
                 return Err(retired());
             };
-            state
-                .services()
-                .store
-                .connection_kv(&call.connection)
-                .delete(&key)
+            let plugin = &state.plugin;
+            plugin
+                .connections
+                .commit(&call.connection, call.generation, || {
+                    plugin
+                        .services
+                        .store
+                        .connection_kv(&plugin.id, &call.connection)
+                        .delete(&key)
+                })
+                .ok_or_else(retired)?
                 .map_err(|error| Error::Transient(format!("connection data: {error}")))
         }))
     }
@@ -264,12 +286,9 @@ impl HostConnection for HostState {
                 log_refusal(state, error);
             })?;
             let services = state.services();
-            let response = services.runtime.block_on(http::send(
-                services.net.clone(),
-                services.store.clone(),
-                call.connection.clone(),
-                prepared,
-            ));
+            let response = services
+                .runtime
+                .block_on(http::send(services.net.clone(), prepared));
             // A call retired while it waited keeps nothing it received.
             if state.retired() {
                 return Err(retired());
@@ -300,12 +319,9 @@ impl HostConnection for HostState {
                 .into_iter()
                 .map(
                     |request| match state.prepare(&call, request, Some(budget.clone())) {
-                        Ok(prepared) => Ok(services.runtime.spawn(http::send(
-                            services.net.clone(),
-                            services.store.clone(),
-                            call.connection.clone(),
-                            prepared,
-                        ))),
+                        Ok(prepared) => Ok(services
+                            .runtime
+                            .spawn(http::send(services.net.clone(), prepared))),
                         Err(error) => {
                             log_refusal(state, &error);
                             Err(error)

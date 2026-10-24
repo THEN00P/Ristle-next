@@ -13,7 +13,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use ristle_domain::ConnectionId;
 use ristle_net::{
-    Attach, BodyBudget, CacheOverride, CachePolicy, CacheScope, Header, Reach, Request,
+    Attach, BodyBudget, CacheGate, CacheOverride, CachePolicy, CacheScope, Header, Reach, Request,
+    Sequencer,
 };
 use url::Url;
 
@@ -26,6 +27,37 @@ use crate::connections::ParsedRule;
 pub(crate) const MAX_BATCH: usize = 16;
 /// Response bodies of one `fetch-all` together.
 pub(crate) const BATCH_BODY_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Lets a response into the cache only while its call's generation is
+/// current, under the lock a generation change takes.
+struct GenerationGate {
+    plugin: Arc<super::PluginContext>,
+    connection: ConnectionId,
+    generation: u64,
+}
+
+impl CacheGate for GenerationGate {
+    fn commit(&self, write: &mut dyn FnMut()) {
+        self.plugin
+            .connections
+            .commit(&self.connection, self.generation, write);
+    }
+}
+
+/// Numbers a connection's responses as their headers arrive.
+struct ResponseSequence {
+    store: Arc<dyn crate::ports::PluginStore>,
+    plugin: ristle_domain::PluginId,
+    connection: ConnectionId,
+}
+
+impl Sequencer for ResponseSequence {
+    fn next(&self) -> Result<u64, String> {
+        self.store
+            .next_response_sequence(&self.plugin, &self.connection)
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// A request ready to send, or why it is refused before anything is sent.
 pub(crate) struct Prepared {
@@ -143,6 +175,16 @@ impl HostState {
         prepared.revalidate = call.refresh;
         prepared.timeout = timeout;
         prepared.budget = budget;
+        prepared.gate = Some(Arc::new(GenerationGate {
+            plugin: self.plugin.clone(),
+            connection: call.connection.clone(),
+            generation: call.generation,
+        }));
+        prepared.sequencer = Some(Arc::new(ResponseSequence {
+            store: plugin.services.store.clone(),
+            plugin: plugin.id.clone(),
+            connection: call.connection.clone(),
+        }));
         Ok(Prepared {
             request: prepared,
             rules,
@@ -150,11 +192,9 @@ impl HostState {
     }
 }
 
-/// Sends a prepared request and numbers its response.
+/// Sends a prepared request.
 pub(crate) async fn send(
     net: ristle_net::Client,
-    store: Arc<dyn crate::ports::PluginStore>,
-    connection: ConnectionId,
     prepared: Prepared,
 ) -> Result<http::Response, Error> {
     let Prepared { request, rules } = prepared;
@@ -163,13 +203,9 @@ pub(crate) async fn send(
     if response.status == 401 && rules.iter().any(|rule| rule.covers(&host)) {
         return Err(Error::Unauthorized(format!("{host} answered 401")));
     }
-    let sequence = if response.reached_provider {
-        store
-            .next_response_sequence(&connection)
-            .map_err(|error| Error::Transient(format!("response sequence: {error}")))?
-    } else {
-        0
-    };
+    // Numbered when its headers arrived; a response served from the cache
+    // did not reach the Provider and has none.
+    let sequence = response.sequence.unwrap_or(0);
     Ok(http::Response {
         status: response.status,
         headers: response.headers,

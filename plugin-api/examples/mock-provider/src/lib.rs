@@ -24,7 +24,7 @@
 //! | `set-credential:<scheme>[:<host>:<authorization>]` | stores a credential, attaching `Authorization` to `<host>` |
 //! | `data:<key>=<value>`, `data:<key>` | `connection.set-data`; `get-data` as a title |
 //! | `fetch:<url>`, `fetch-bypass:<url>` | one GET, cached by HTTP rules or not, described as a title |
-//! | `fetch-all:<n>:<url>` | `<n>` GETs at once, one title per outcome |
+//! | `fetch-all:<n>:<url>`, `fetch-urls:<url>\|<url>…` | GETs at once, one title per outcome |
 //! | `slow-write:<scheme>:<url>` | reads the credential, fetches `<url>`, then writes |
 //! | anything else | a Track per id; ids starting `gone` are unavailable |
 //!
@@ -324,6 +324,26 @@ fn connection_script(conn: &Connection, command: &str) -> Option<Tracks> {
             let (count, url) = argument.split_once(':').unwrap_or(("0", ""));
             let count: usize = count.parse().unwrap_or(0);
             let requests = vec![get(url, http::Cache::Bypass); count];
+            conn.fetch_all(&requests).map(|results| {
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(index, result)| {
+                        let title = match result {
+                            Ok(response) => describe(response),
+                            Err(error) => format!("error {error:?}"),
+                        };
+                        Ok(track(&format!("t{index}"), &title))
+                    })
+                    .collect()
+            })
+        }
+        // `fetch-urls:<url>|<url>|…`: GETs at once, one title per outcome.
+        "fetch-urls" => {
+            let requests: Vec<_> = argument
+                .split('|')
+                .map(|url| get(url, http::Cache::Bypass))
+                .collect();
             conn.fetch_all(&requests).map(|results| {
                 results
                     .iter()

@@ -10,7 +10,7 @@
 //! instance.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError, RwLock};
 
 use ristle_domain::{Artwork, ConnectionId, PluginId};
 use ristle_net::{GrantedOrigin, Header, HostPattern};
@@ -160,6 +160,9 @@ struct Slot {
 struct Entry {
     info: ConnectionInfo,
     credential: Slot,
+    /// Its previous generation is being cleaned up; no call is admitted
+    /// and nothing stored for it is read or written until that is done.
+    cleaning: bool,
 }
 
 /// What registering a connection did.
@@ -188,6 +191,13 @@ pub(crate) enum WriteRefused {
 pub(crate) struct Connections {
     plugin: PluginId,
     entries: Mutex<HashMap<ConnectionId, Entry>>,
+    /// Every read and write of a connection's stored state (data,
+    /// credential, cache) holds this for reading and checks the generation;
+    /// a generation change or removal holds it for writing. So once a new
+    /// generation is published, nothing of the old one is written or read.
+    commits: RwLock<()>,
+    /// Woken when a connection's cleanup ends.
+    ready: tokio::sync::Notify,
 }
 
 impl Connections {
@@ -195,6 +205,48 @@ impl Connections {
         Self {
             plugin,
             entries: Mutex::new(HashMap::new()),
+            commits: RwLock::new(()),
+            ready: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Runs `f` if `generation` is still the connection's current one and
+    /// not being cleaned up, with no generation change able to happen
+    /// meanwhile.
+    pub(crate) fn commit<R>(
+        &self,
+        connection: &ConnectionId,
+        generation: u64,
+        f: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
+        let current = lock(&self.entries)
+            .get(connection)
+            .is_some_and(|entry| entry.info.generation == generation && !entry.cleaning);
+        current.then(f)
+    }
+
+    /// Ends the cleanup of a connection's previous generation.
+    pub(crate) fn finish_cleaning(&self, connection: &ConnectionId) {
+        if let Some(entry) = lock(&self.entries).get_mut(connection) {
+            entry.cleaning = false;
+        }
+        self.ready.notify_waiters();
+    }
+
+    /// The generation a new call runs under, once the connection is not
+    /// being cleaned up; `None` for a connection the host does not know.
+    pub(crate) async fn admit(&self, connection: &ConnectionId) -> Option<u64> {
+        loop {
+            let notified = self.ready.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match lock(&self.entries).get(connection) {
+                None => return None,
+                Some(entry) if !entry.cleaning => return Some(entry.info.generation),
+                Some(_) => {}
+            }
+            notified.await;
         }
     }
 
@@ -205,6 +257,7 @@ impl Connections {
 
     /// Registers or updates a connection.
     pub(crate) fn set(&self, info: ConnectionInfo) -> Registered {
+        let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
         let mut entries = lock(&self.entries);
         match entries.get_mut(&info.id) {
             Some(entry) if entry.info.generation == info.generation => {
@@ -213,8 +266,10 @@ impl Connections {
             }
             Some(entry) => {
                 entry.info = info;
-                // A new generation reads its record afresh.
+                // A new generation reads its record afresh, once the old
+                // one is cleaned up.
                 entry.credential = Slot::default();
+                entry.cleaning = true;
                 Registered::NewGeneration
             }
             None => {
@@ -223,6 +278,7 @@ impl Connections {
                     Entry {
                         info,
                         credential: Slot::default(),
+                        cleaning: false,
                     },
                 );
                 Registered::New
@@ -239,6 +295,7 @@ impl Connections {
 
     /// Ends a connection's generation for good.
     pub(crate) fn remove(&self, connection: &ConnectionId) -> bool {
+        let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
         lock(&self.entries).remove(connection).is_some()
     }
 
@@ -265,11 +322,12 @@ impl Connections {
         generation: u64,
     ) -> Result<Option<(Option<CredentialRecord>, u64)>, VaultError> {
         let key = self.vault_key(connection);
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
         let mut entries = lock(&self.entries);
         let Some(entry) = entries.get_mut(connection) else {
             return Ok(None);
         };
-        if entry.info.generation != generation {
+        if entry.info.generation != generation || entry.cleaning {
             return Ok(None);
         }
         if !entry.credential.loaded {
@@ -297,11 +355,12 @@ impl Connections {
         encoded: &[u8],
     ) -> Result<u64, WriteRefused> {
         let key = self.vault_key(connection);
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
         let mut entries = lock(&self.entries);
         let Some(entry) = entries.get_mut(connection) else {
             return Err(WriteRefused::Retired);
         };
-        if entry.info.generation != generation {
+        if entry.info.generation != generation || entry.cleaning {
             return Err(WriteRefused::Retired);
         }
         if entry.credential.version != base {

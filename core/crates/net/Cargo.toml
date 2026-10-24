@@ -8,8 +8,36 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# A local HTTP server and an in-memory cache store for other crates' tests.
+test-support = ["dep:httparse", "tokio/io-util"]
+
 [dependencies]
 ristle-domain.workspace = true
+bytes.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+httpdate.workspace = true
+# hyper-util's client rather than reqwest: the response header bounds of
+# host.wit (200 headers, 64 KiB) are enforced while parsing, and the
+# connector checks every address it connects to.
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper-rustls = { workspace = true, features = ["http1", "http2", "ring", "tls12"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+tower-service.workspace = true
+tracing.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
+httparse = { workspace = true, optional = true }
+
+[dev-dependencies]
+ristle-domain = { workspace = true, features = ["test-support"] }
+ristle-net = { path = ".", features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
 
 [lints]
 workspace = true

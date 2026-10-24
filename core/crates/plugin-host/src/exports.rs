@@ -49,9 +49,21 @@ pub enum PluginError {
     Internal(String),
 }
 
-impl From<wit::Error> for PluginError {
-    fn from(error: wit::Error) -> Self {
-        match error {
+impl PluginError {
+    /// A Plugin's error, its text counted against the result's bounds like
+    /// any other string it returns.
+    fn checked(error: wit::Error, budget: &mut Budget) -> Result<Self, PluginError> {
+        let text = match &error {
+            wit::Error::Unauthorized(text)
+            | wit::Error::Unavailable(text)
+            | wit::Error::Transient(text)
+            | wit::Error::Conflict(text)
+            | wit::Error::Unsupported(text)
+            | wit::Error::Internal(text) => text.as_str(),
+            wit::Error::RateLimited(_) => "",
+        };
+        budget.text(text)?;
+        Ok(match error {
             wit::Error::Unauthorized(text) => PluginError::Unauthorized(text),
             wit::Error::Unavailable(text) => PluginError::Unavailable(text),
             wit::Error::RateLimited(wait) => PluginError::RateLimited(wait),
@@ -59,7 +71,13 @@ impl From<wit::Error> for PluginError {
             wit::Error::Conflict(text) => PluginError::Conflict(text),
             wit::Error::Unsupported(text) => PluginError::Unsupported(text),
             wit::Error::Internal(text) => PluginError::Internal(text),
-        }
+        })
+    }
+
+    /// A whole call's error result: the Plugin's error, or `internal` when
+    /// its text breaks the bounds.
+    fn of_call(error: wit::Error) -> Self {
+        Self::checked(error, &mut Budget::new()).unwrap_or_else(|bounds| bounds)
     }
 }
 
@@ -120,7 +138,8 @@ impl LoadedPlugin {
                 .call(connection, CallKind::Normal, move |store, guests, conn| {
                     guests.catalog.call_tracks(store, conn, &chunk)
                 })
-                .await??;
+                .await?
+                .map_err(PluginError::of_call)?;
             if results.len() != requested {
                 return Err(PluginError::Internal(format!(
                     "asked for {requested} tracks, got {}",
@@ -131,7 +150,7 @@ impl LoadedPlugin {
             for result in results {
                 out.push(match result {
                     Ok(track) => Ok(self.track(connection, track, &mut budget)?),
-                    Err(error) => Err(PluginError::from(error)),
+                    Err(error) => Err(PluginError::checked(error, &mut budget)?),
                 });
             }
         }
@@ -159,7 +178,8 @@ impl LoadedPlugin {
                 },
             )
             .await?
-            .ok_or(CallError::NotExported("byte-source"))??;
+            .ok_or(CallError::NotExported("byte-source"))?
+            .map_err(PluginError::of_call)?;
         if bytes.len() > length as usize {
             return Err(PluginError::Internal(format!(
                 "asked for {length} bytes, got {}",

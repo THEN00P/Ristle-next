@@ -16,7 +16,8 @@
 //! | `random`, `too-random` | 16 random bytes as hex; asks for 4096 |
 //! | `store:<key>=<value>`, `store:<key>` | `storage.set`; `storage.get` as a title |
 //! | `fill:<n>` | stores `<n>` values of 1 MiB |
-//! | `huge-title` | a title over 64 KiB |
+//! | `huge-title`, `huge-error`, `huge-item-error` | a title, a call's error or an item's error over 64 KiB |
+//! | `errors:<n>` | `<n>` unavailable Tracks with 60 KiB reasons |
 //! | `many:<n>` | `<n>` Tracks with 60 KiB titles and album names |
 //! | `rich` | Tracks with every field set, some of them invalid |
 //! | anything else | a Track per id; ids starting `gone` are unavailable |
@@ -159,6 +160,15 @@ fn script(command: &str, calls: u64) -> Option<Tracks> {
         }),
         "too-random" => Some(crypto::random(4096).map(|_| Vec::new())),
         "huge-title" => Some(titled(vec!["x".repeat(64 * 1024 + 1)])),
+        "huge-error" => Some(Err(Error::Transient("e".repeat(64 * 1024 + 1)))),
+        "huge-item-error" => Some(Ok(vec![Err(Error::Unavailable("e".repeat(64 * 1024 + 1)))])),
+        command if command.starts_with("errors:") => {
+            // `<n>` unavailable Tracks whose reasons are 60 KiB each.
+            let count: usize = command["errors:".len()..].parse().unwrap_or(0);
+            Some(Ok((0..count)
+                .map(|_| Err(Error::Unavailable("r".repeat(60 * 1024))))
+                .collect()))
+        }
         command if command.starts_with("many:") => {
             let count: usize = command["many:".len()..].parse().unwrap_or(0);
             let name = "y".repeat(60 * 1024);

@@ -174,6 +174,36 @@ async fn results_over_the_bounds_fail_the_call() {
 }
 
 #[tokio::test]
+async fn error_texts_count_against_the_result_bounds() {
+    let plugin = plugin(Backend::Cranelift);
+    // A whole-call error with an oversized text becomes `internal`.
+    let error = titles(&plugin, &connection("c1"), &["huge-error"])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("64 KiB")),
+        "{error:?}"
+    );
+    // Fifty per-item errors of 60 KiB are 3 MiB: within the bounds.
+    let mut ids = vec!["errors:50".to_owned()];
+    ids.extend((1..50).map(|index| format!("id{index}")));
+    let tracks = plugin.tracks(&connection("c1"), ids).await.unwrap();
+    assert!(
+        tracks
+            .iter()
+            .all(|track| matches!(track, Err(PluginError::Unavailable(_))))
+    );
+    // A per-item error text over 64 KiB fails the whole call.
+    let error = titles(&plugin, &connection("c1"), &["huge-item-error"])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("64 KiB")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn copying_a_result_is_bounded_before_it_happens() {
     let plugin = plugin(Backend::Cranelift);
     // 150 Tracks with 120 KiB of names are 18 MiB: over the hostcall fuel, so wasmtime

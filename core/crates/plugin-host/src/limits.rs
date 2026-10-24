@@ -67,6 +67,8 @@ pub const LOG_MESSAGE_BYTES: usize = 4 * 1024;
 pub(crate) struct Limiter {
     /// Linear memory now, in bytes, over every memory of the instance.
     pub(crate) memory_bytes: usize,
+    /// Table elements now, over every table of the instance.
+    pub(crate) table_elements: usize,
 }
 
 impl wasmtime::ResourceLimiter for Limiter {
@@ -86,10 +88,38 @@ impl wasmtime::ResourceLimiter for Limiter {
 
     fn table_growing(
         &mut self,
-        _current: usize,
+        current: usize,
         desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        Ok(desired <= MAX_TABLE_ELEMENTS)
+        let total = self.table_elements - current.min(self.table_elements) + desired;
+        if total > MAX_TABLE_ELEMENTS {
+            return Ok(false);
+        }
+        self.table_elements = total;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasmtime::ResourceLimiter;
+
+    use super::*;
+
+    #[test]
+    fn limits_count_every_memory_and_table_of_an_instance() {
+        let mut limiter = Limiter::default();
+        // Two tables of 6 000 elements are 12 000 in the instance.
+        assert!(limiter.table_growing(0, 6_000, None).unwrap());
+        assert!(!limiter.table_growing(0, 6_000, None).unwrap());
+        assert!(limiter.table_growing(0, 4_000, None).unwrap());
+        assert!(!limiter.table_growing(4_000, 4_001, None).unwrap());
+        assert_eq!(limiter.table_elements, MAX_TABLE_ELEMENTS);
+        // Memories likewise.
+        let half = MAX_MEMORY_BYTES / 2;
+        assert!(limiter.memory_growing(0, half, None).unwrap());
+        assert!(limiter.memory_growing(0, half, None).unwrap());
+        assert!(!limiter.memory_growing(0, 1, None).unwrap());
     }
 }

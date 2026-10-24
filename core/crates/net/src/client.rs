@@ -862,6 +862,7 @@ impl Client {
         self.put(key, stored, request.gate.clone()).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn revalidated(
         &self,
         key: &CacheKey,

@@ -135,9 +135,12 @@ impl LoadedPlugin {
             let chunk = chunk.to_vec();
             let requested = chunk.len();
             let results = self
-                .call(connection, CallKind::Normal, move |store, guests, conn| {
-                    guests.catalog.call_tracks(store, conn, &chunk)
-                })
+                .call(
+                    connection,
+                    CallKind::Normal,
+                    false,
+                    move |store, guests, conn| guests.catalog.call_tracks(store, conn, &chunk),
+                )
                 .await?
                 .map_err(PluginError::of_call)?;
             if results.len() != requested {
@@ -170,6 +173,7 @@ impl LoadedPlugin {
             .call(
                 connection,
                 CallKind::ByteSource,
+                false,
                 move |store, guests, conn| match &guests.byte_source {
                     Some(source) => source
                         .call_read(store, conn, &handle, offset, length)

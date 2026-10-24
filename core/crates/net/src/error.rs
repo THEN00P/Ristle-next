@@ -39,6 +39,10 @@ pub enum Error {
     /// The response's headers or body exceed the host's bounds.
     #[error("response too large: {0}")]
     TooLarge(String),
+    /// The body does not fit the budget the request shares with others
+    /// ([`BodyBudget`](crate::BodyBudget)).
+    #[error("the shared body budget is spent")]
+    BudgetSpent,
     /// The connection failed or broke off, or the response was malformed.
     #[error("network: {0}")]
     Network(String),

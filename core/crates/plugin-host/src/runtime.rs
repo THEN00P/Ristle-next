@@ -26,11 +26,14 @@ use wasmtime::{Store, UpdateDeadline};
 use crate::Error;
 use crate::bindings::FullProvider;
 use crate::bindings::exports::ristle::plugin as guest;
+use crate::connections::{ConnectionInfo, Registered};
 use crate::engine::{Backend, Engine};
-use crate::host::{ConnectionHandle, Exceeded, HostState, PluginContext, Services, lock};
+use crate::host::{
+    CallContext, ConnectionHandle, Exceeded, HostState, PluginContext, Services, lock,
+};
 use crate::limits;
 use crate::package::{Exports, Package, PackageError};
-use crate::ports::PluginStore;
+use crate::ports::{PluginStore, SecretVault};
 
 /// What the Plugin host needs from the rest of the core.
 pub struct HostPorts {
@@ -38,6 +41,8 @@ pub struct HostPorts {
     pub clock: Arc<dyn Clock>,
     /// Plugin state.
     pub store: Arc<dyn PluginStore>,
+    /// The platform credential store, for Credential Records.
+    pub vault: Arc<dyn SecretVault>,
     /// The core's one HTTP client.
     pub net: ristle_net::Client,
 }
@@ -85,6 +90,14 @@ pub enum CallError {
     /// The Plugin does not export the interface the call needs.
     #[error("the plugin does not export {0}")]
     NotExported(&'static str),
+    /// The connection is not registered with the host.
+    #[error("unknown provider connection")]
+    UnknownConnection,
+    /// The call was retired while it ran: its connection's generation
+    /// moved or ended, or the Plugin was replaced or disabled. Its result
+    /// is discarded.
+    #[error("the call was retired")]
+    Retired,
     /// The call's thread ended abnormally.
     #[error("the plugin call was lost: {0}")]
     Lost(String),
@@ -137,8 +150,10 @@ impl PluginHost {
             services: Arc::new(Services {
                 clock: ports.clock,
                 store: ports.store,
+                vault: ports.vault,
                 net: ports.net,
                 locale: Mutex::new(settings.locale),
+                runtime: runtime.clone(),
             }),
             calls: Arc::new(tokio::sync::Semaphore::new(
                 settings.concurrent_calls.max(1),
@@ -422,10 +437,65 @@ impl LoadedPlugin {
         self.inner.exports
     }
 
-    /// Discards every idle instance: the Plugin was disabled or replaced,
-    /// or a connection's generation changed.
+    /// Discards every idle instance.
     pub fn discard_instances(&self) {
         lock(&self.inner.pools).clear();
+    }
+
+    /// Registers a Provider Connection or updates its account and grants.
+    ///
+    /// When its generation moved, the old generation ends first: every
+    /// running call for it is retired, its idle instances are discarded,
+    /// and its cached responses and connection data are deleted. At app
+    /// start the host learns each connection with its current generation,
+    /// which keeps everything stored for it.
+    pub async fn set_connection(&self, info: ConnectionInfo) -> Result<(), crate::Error> {
+        let connection = info.id.clone();
+        if self.inner.context.connections.set(info) == Registered::NewGeneration {
+            self.end_generation(&connection).await?;
+        }
+        Ok(())
+    }
+
+    /// Ends a connection for good: the user signed out or removed it. Its
+    /// running calls are retired, and its instances, cached responses,
+    /// connection data and Credential Record are deleted.
+    pub async fn remove_connection(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
+        let context = &self.inner.context;
+        context.connections.remove(connection);
+        self.end_generation(connection).await?;
+        context
+            .services
+            .vault
+            .delete(&context.connections.vault_key(connection))
+            .map_err(|error| crate::Error::Store(error.to_string()))
+    }
+
+    /// Retires every running call and discards every instance: a version of
+    /// the Plugin was installed, or it was disabled.
+    pub fn retire_calls(&self) {
+        self.inner
+            .context
+            .retirements
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.discard_instances();
+    }
+
+    async fn end_generation(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
+        let context = &self.inner.context;
+        self.discard_connection_instances(connection);
+        context
+            .services
+            .net
+            .remove_cached_connection(&context.id, connection)
+            .await
+            .map_err(|error| crate::Error::Store(error.to_string()))?;
+        context
+            .services
+            .store
+            .connection_kv(connection)
+            .clear()
+            .map_err(|error| crate::Error::Store(error.to_string()))
     }
 
     /// Discards the idle instances of one connection.
@@ -444,6 +514,7 @@ impl LoadedPlugin {
         &self,
         connection: &ConnectionId,
         kind: CallKind,
+        refresh: bool,
         body: impl FnOnce(
             &mut Store<HostState>,
             &Guests,
@@ -459,6 +530,18 @@ impl LoadedPlugin {
             .acquire_owned()
             .await
             .map_err(|_| CallError::Lost("the host is shutting down".to_owned()))?;
+        let context = &self.inner.context;
+        let generation = context
+            .connections
+            .generation(connection)
+            .ok_or(CallError::UnknownConnection)?;
+        let call = CallContext {
+            connection: connection.clone(),
+            generation,
+            retirements: context.retirements(),
+            credential_base: context.connections.version(connection).unwrap_or(0),
+            refresh,
+        };
         let inner = self.inner.clone();
         let connection = connection.clone();
         let joined = tokio::task::spawn_blocking(move || {
@@ -468,7 +551,7 @@ impl LoadedPlugin {
                 None => inner.instantiate()?,
             };
             instance.store.data_mut().clock = inner.clock(kind);
-            instance.store.data_mut().in_call = true;
+            instance.store.data_mut().call = Some(call);
             instance.store.set_epoch_deadline(1);
             let handle = instance
                 .store
@@ -489,8 +572,14 @@ impl LoadedPlugin {
                 .data_mut()
                 .table
                 .delete::<ConnectionHandle>(Resource::new_own(rep));
-            instance.store.data_mut().in_call = false;
             let exceeded = instance.store.data().clock.exceeded;
+            let retired = instance.store.data().retired();
+            instance.store.data_mut().call = None;
+            // An instance that served a retired call never serves another:
+            // nothing it kept for the old generation may reach the next.
+            if retired {
+                return Err(CallError::Retired);
+            }
             match result {
                 Ok(value) => {
                     let grown = instance

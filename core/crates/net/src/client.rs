@@ -87,6 +87,41 @@ impl Method {
 pub trait Attach: Send + Sync {
     /// The headers for a request to `url`.
     fn headers(&self, url: &Url) -> Vec<Header>;
+
+    /// Query parameters appended to a request to `url`. They are added to
+    /// the hop sent, never to the URL redirects are resolved against or the
+    /// cache key.
+    fn query(&self, url: &Url) -> Vec<(String, String)> {
+        let _ = url;
+        Vec::new()
+    }
+}
+
+/// A byte budget several requests share, such as all bodies of one
+/// `fetch-all`. Each body, cached ones included, takes from it as it is
+/// read; a body that does not fit fails with [`Error::BudgetSpent`].
+#[derive(Clone, Debug)]
+pub struct BodyBudget(Arc<AtomicU64>);
+
+impl BodyBudget {
+    /// A budget of `bytes`.
+    pub fn new(bytes: u64) -> Self {
+        Self(Arc::new(AtomicU64::new(bytes)))
+    }
+
+    /// What is left.
+    pub fn remaining(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Takes `bytes`, if that many are left.
+    fn take(&self, bytes: u64) -> bool {
+        self.0
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(bytes)
+            })
+            .is_ok()
+    }
 }
 
 /// One request.
@@ -116,6 +151,8 @@ pub struct Request {
     pub timeout: Duration,
     /// The largest body accepted.
     pub max_body: u64,
+    /// A budget shared with other requests, if any.
+    pub budget: Option<BodyBudget>,
 }
 
 impl Request {
@@ -132,6 +169,7 @@ impl Request {
             revalidate: false,
             timeout: MAX_TIMEOUT,
             max_body: MAX_BODY_BYTES,
+            budget: None,
         }
     }
 }
@@ -376,6 +414,7 @@ impl Client {
                 &exchange.headers,
                 bodiless(request.method, exchange.status),
                 max_body,
+                request.budget.as_ref(),
             )
             .await?;
             Ok::<_, Error>((
@@ -553,7 +592,14 @@ impl Client {
                 Vec::new()
             };
             sent.extend(attached_text);
-            let uri: Uri = url
+            let mut outgoing_url = url.clone();
+            if let Some(attach) = &request.attach {
+                let query = attach.query(&url);
+                if !query.is_empty() {
+                    outgoing_url.query_pairs_mut().extend_pairs(query);
+                }
+            }
+            let uri: Uri = outgoing_url
                 .as_str()
                 .parse()
                 .map_err(|_| Error::NotAllowed("URL is not a valid URI".to_owned()))?;
@@ -813,7 +859,7 @@ impl Client {
             let gone = key.clone();
             self.with_store(move |store| store.remove(&gone)).await;
         }
-        check_body(updated.body.len(), request.max_body)?;
+        charge(updated.body.len(), request)?;
         Ok(Response {
             status: updated.status,
             headers: updated.headers,
@@ -938,8 +984,20 @@ fn expiry_cutoff(now_ms: u64) -> u64 {
 /// A cached response as the caller sees it, within the request's body
 /// bound like a fetched one.
 fn served(stored: &StoredResponse, request: &Request) -> Result<Response, Error> {
-    check_body(stored.body.len(), request.max_body)?;
+    charge(stored.body.len(), request)?;
     Ok(from_stored(stored, &request.url))
+}
+
+/// Checks a cached body against the request's bounds and takes it from
+/// the shared budget.
+fn charge(length: usize, request: &Request) -> Result<(), Error> {
+    check_body(length, request.max_body)?;
+    if let Some(budget) = &request.budget
+        && !budget.take(length as u64)
+    {
+        return Err(Error::BudgetSpent);
+    }
+    Ok(())
 }
 
 fn check_body(length: usize, max: u64) -> Result<(), Error> {
@@ -994,15 +1052,29 @@ async fn read_body(
     response_headers: &[Header],
     bodiless: bool,
     max: u64,
+    budget: Option<&BodyBudget>,
 ) -> Result<Bytes, Error> {
-    if !bodiless
-        && let Some(length) = headers::get(response_headers, "content-length")
-            .and_then(|length| length.trim().parse::<u64>().ok())
+    let declared = (!bodiless)
+        .then(|| headers::get(response_headers, "content-length"))
+        .flatten()
+        .and_then(|length| length.trim().parse::<u64>().ok());
+    if let Some(length) = declared
         && length > max
     {
         return Err(Error::TooLarge(format!(
             "body of {length} bytes exceeds {max}"
         )));
+    }
+    // A declared length is reserved from a shared budget at once, so
+    // concurrent bodies are kept in the order they announce themselves
+    // instead of all running out together. Undeclared ones take as they
+    // arrive.
+    let mut reserved = 0u64;
+    if let (Some(budget), Some(length)) = (budget, declared) {
+        if !budget.take(length) {
+            return Err(Error::BudgetSpent);
+        }
+        reserved = length;
     }
     let mut out = BytesMut::new();
     while let Some(frame) = body.frame().await {
@@ -1010,6 +1082,14 @@ async fn read_body(
         if let Ok(data) = frame.into_data() {
             if (out.len() + data.len()) as u64 > max {
                 return Err(Error::TooLarge(format!("body exceeds {max} bytes")));
+            }
+            let beyond =
+                ((out.len() + data.len()) as u64).saturating_sub(reserved.max(out.len() as u64));
+            if let Some(budget) = budget
+                && beyond > 0
+                && !budget.take(beyond)
+            {
+                return Err(Error::BudgetSpent);
             }
             out.extend_from_slice(&data);
         }

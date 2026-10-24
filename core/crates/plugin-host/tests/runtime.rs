@@ -14,7 +14,8 @@ use ristle_domain::{
 use ristle_net::{Client, ClientConfig};
 use ristle_plugin_host::package::PackageError;
 use ristle_plugin_host::test_support::{
-    MemoryPluginStore, Publisher, Unsigned, mock_manifest, mock_package, mock_provider_component,
+    MemoryPluginStore, MemoryVault, Publisher, Unsigned, connection_info, mock_manifest,
+    mock_package, mock_provider_component,
 };
 use ristle_plugin_host::{
     Backend, Engine, EngineConfig, Error, HostPorts, HostSettings, LoadedPlugin, PluginError,
@@ -42,6 +43,7 @@ fn host_on(
         HostPorts {
             clock,
             store: Arc::new(MemoryPluginStore::new()),
+            vault: Arc::new(MemoryVault::new()),
             net,
         },
         HostSettings {
@@ -69,12 +71,21 @@ fn connection(id: &str) -> ConnectionId {
     ConnectionId::new(id)
 }
 
+/// The plugin with the test connections registered.
+async fn registered(plugin: &LoadedPlugin) -> &LoadedPlugin {
+    for id in ["c1", "c2"] {
+        plugin.set_connection(connection_info(id, 1)).await.unwrap();
+    }
+    plugin
+}
+
 async fn titles(
     plugin: &LoadedPlugin,
     connection: &ConnectionId,
     ids: &[&str],
 ) -> Result<Vec<String>, PluginError> {
-    let tracks = plugin
+    let tracks = registered(plugin)
+        .await
         .tracks(connection, ids.iter().map(|id| (*id).to_owned()).collect())
         .await?;
     tracks
@@ -89,7 +100,8 @@ const BACKENDS: [Backend; 2] = [Backend::Cranelift, Backend::Pulley];
 async fn tracks_come_back_as_domain_tracks() {
     for backend in BACKENDS {
         let plugin = plugin(backend);
-        let tracks = plugin
+        let tracks = registered(&plugin)
+            .await
             .tracks(
                 &connection("c1"),
                 vec!["a".into(), "gone-1".into(), "b".into()],
@@ -113,7 +125,11 @@ async fn tracks_come_back_as_domain_tracks() {
 async fn the_host_batches_by_the_manifests_limit() {
     let plugin = plugin(Backend::Cranelift);
     let ids: Vec<String> = (0..120).map(|index| format!("id{index}")).collect();
-    let tracks = plugin.tracks(&connection("c1"), ids.clone()).await.unwrap();
+    let tracks = registered(&plugin)
+        .await
+        .tracks(&connection("c1"), ids.clone())
+        .await
+        .unwrap();
     assert_eq!(tracks.len(), 120);
     assert_eq!(tracks[119].as_ref().unwrap().title, "Track id119");
     // Three batches of at most 50 ran on the same instance.
@@ -128,7 +144,8 @@ async fn the_host_batches_by_the_manifests_limit() {
 #[tokio::test]
 async fn fields_are_checked_on_the_way_in() {
     let plugin = plugin(Backend::Cranelift);
-    let tracks = plugin
+    let tracks = registered(&plugin)
+        .await
         .tracks(&connection("c1"), vec!["rich".into(), "link".into()])
         .await
         .unwrap();
@@ -187,7 +204,11 @@ async fn error_texts_count_against_the_result_bounds() {
     // Fifty per-item errors of 60 KiB are 3 MiB: within the bounds.
     let mut ids = vec!["errors:50".to_owned()];
     ids.extend((1..50).map(|index| format!("id{index}")));
-    let tracks = plugin.tracks(&connection("c1"), ids).await.unwrap();
+    let tracks = registered(&plugin)
+        .await
+        .tracks(&connection("c1"), ids)
+        .await
+        .unwrap();
     assert!(
         tracks
             .iter()
@@ -219,7 +240,11 @@ async fn copying_a_result_is_bounded_before_it_happens() {
     // 50 of them (one batch) are 6 MiB.
     let mut ids = vec!["many:50".to_owned()];
     ids.extend((1..50).map(|index| format!("id{index}")));
-    let error = plugin.tracks(&connection("c1"), ids).await.unwrap_err();
+    let error = registered(&plugin)
+        .await
+        .tracks(&connection("c1"), ids)
+        .await
+        .unwrap_err();
     assert!(
         matches!(error, PluginError::Internal(ref text) if text.contains("4 MiB")),
         "{error:?}"
@@ -232,7 +257,8 @@ async fn grant_holding_plugins_scope_their_tracks_to_the_connection() {
     let plugin = host
         .load(&mock_package(&Publisher::new(1), "servers = true"))
         .unwrap();
-    let tracks = plugin
+    let tracks = registered(&plugin)
+        .await
         .tracks(&connection("c1"), vec!["a".into()])
         .await
         .unwrap();
@@ -428,18 +454,10 @@ async fn storage_outlives_instances_and_honours_the_quota() {
 }
 
 #[tokio::test]
-async fn imports_still_to_come_fail_the_call_without_pretending() {
-    let plugin = plugin(Backend::Cranelift);
-    assert!(matches!(
-        titles(&plugin, &connection("c1"), &["fetch"]).await,
-        Err(PluginError::Internal(_))
-    ));
-}
-
-#[tokio::test]
 async fn byte_sources_are_read_under_their_budget() {
     let plugin = plugin(Backend::Cranelift);
-    let bytes = plugin
+    let bytes = registered(&plugin)
+        .await
         .read_bytes(&connection("c1"), "t1".into(), 1000, 100)
         .await
         .unwrap();
@@ -561,6 +579,7 @@ async fn idle_instances_are_released_without_further_calls() {
         HostPorts {
             clock: clock.clone(),
             store: Arc::new(MemoryPluginStore::new()),
+            vault: Arc::new(MemoryVault::new()),
             net: Client::new(ClientConfig::default(), clock, None).unwrap(),
         },
         HostSettings {
@@ -586,6 +605,7 @@ fn a_host_needs_the_runtime() {
         HostPorts {
             clock: clock.clone(),
             store: Arc::new(MemoryPluginStore::new()),
+            vault: Arc::new(MemoryVault::new()),
             net: Client::new(ClientConfig::default(), clock, None).unwrap(),
         },
         HostSettings::default(),

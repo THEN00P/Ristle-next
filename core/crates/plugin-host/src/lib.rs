@@ -20,6 +20,7 @@
 //! Persistence and secrets are ports this crate declares and `ristle-app`
 //! implements. Milestone M5 (`docs/plan/phase-2.md`).
 
+mod connections;
 mod engine;
 mod exports;
 mod inspect;
@@ -30,10 +31,14 @@ mod runtime;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use connections::{
+    Account, AttachRule, ConnectionInfo, CredentialRecord, MAX_CREDENTIAL_BYTES, MusicFolder,
+    ServerGrant,
+};
 pub use engine::{Backend, Engine, EngineConfig, TICK};
 pub use exports::{MAX_RESULT_BYTES, MAX_RESULT_STRING, PluginError};
 pub use inspect::{API, API_VERSION};
-pub use ports::{KvScope, PluginStore, StoreError, Stored};
+pub use ports::{KvScope, PluginStore, SecretVault, StoreError, Stored, VaultError};
 pub use runtime::{CallError, HostPorts, HostSettings, LoadedPlugin, PluginHost};
 
 /// Every error this crate returns.
@@ -49,6 +54,9 @@ pub enum Error {
     /// A call failed before the Plugin could answer.
     #[error(transparent)]
     Call(#[from] CallError),
+    /// Plugin state or credentials could not be stored or removed.
+    #[error("plugin store: {0}")]
+    Store(String),
 }
 
 mod bindings;

@@ -361,3 +361,54 @@ impl crate::PluginStore for MemoryPluginStore {
         Ok(*next)
     }
 }
+
+/// A [`SecretVault`](crate::SecretVault) in memory.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryVault {
+    secrets: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+}
+
+impl MemoryVault {
+    /// An empty vault.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every key it holds.
+    pub fn keys(&self) -> Vec<String> {
+        self.lock().keys().cloned().collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Vec<u8>>> {
+        self.secrets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl crate::SecretVault for MemoryVault {
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>, crate::VaultError> {
+        Ok(self.lock().get(key).cloned())
+    }
+
+    fn write(&self, key: &str, value: &[u8]) -> Result<(), crate::VaultError> {
+        self.lock().insert(key.to_owned(), value.to_vec());
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<(), crate::VaultError> {
+        self.lock().remove(key);
+        Ok(())
+    }
+}
+
+/// A connection with only an id and a generation.
+pub fn connection_info(id: &str, generation: u64) -> crate::ConnectionInfo {
+    crate::ConnectionInfo {
+        id: ristle_domain::ConnectionId::new(id),
+        generation,
+        account: None,
+        server: None,
+        folders: Vec::new(),
+    }
+}

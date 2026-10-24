@@ -1935,6 +1935,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "base64",
+ "bytes",
  "cbc",
  "ctr",
  "ed25519-dalek",

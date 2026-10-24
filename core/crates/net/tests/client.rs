@@ -1505,3 +1505,94 @@ async fn a_mutation_that_redirects_to_a_failure_still_invalidates() {
     assert_eq!(h.client.send(post).await.unwrap().status, 500);
     assert!(h.store.is_empty());
 }
+
+// Attach query and shared budgets ------------------------------------------
+
+#[tokio::test]
+async fn attached_query_parameters_go_to_each_hop_but_not_the_cache_key() {
+    struct Token;
+    impl Attach for Token {
+        fn headers(&self, _: &Url) -> Vec<(String, String)> {
+            Vec::new()
+        }
+        fn query(&self, _: &Url) -> Vec<(String, String)> {
+            vec![("client_id".into(), "secret id".into())]
+        }
+    }
+    let h = harness();
+    let server = TestServer::start(|request| match request.path.split('?').next() {
+        Some("/old") => TestResponse::status(302).header("Location", "/new?page=2"),
+        _ => TestResponse::ok("x").header("Cache-Control", "max-age=60"),
+    })
+    .await
+    .unwrap();
+    let request = Request {
+        attach: Some(Arc::new(Token)),
+        ..cached_get(&server, "/old?q=1")
+    };
+    let response = h.client.send(request).await.unwrap();
+    assert_eq!(response.url.as_str(), server.url("/new?page=2").as_str());
+    let seen = server.requests();
+    assert_eq!(seen[0].path, "/old?q=1&client_id=secret+id");
+    assert_eq!(seen[1].path, "/new?page=2&client_id=secret+id");
+    assert!(
+        h.store
+            .keys()
+            .iter()
+            .all(|key| !key.key.contains("client_id"))
+    );
+}
+
+#[tokio::test]
+async fn a_shared_budget_bounds_every_body_of_a_call() {
+    let h = harness();
+    let server =
+        serving(TestResponse::ok(vec![1u8; 600]).header("Cache-Control", "max-age=60")).await;
+    let budget = ristle_net::BodyBudget::new(1_000);
+    let with_budget = |path: &str| Request {
+        budget: Some(budget.clone()),
+        ..cached_get(&server, path)
+    };
+    assert_eq!(
+        h.client.send(with_budget("/a")).await.unwrap().body.len(),
+        600
+    );
+    assert_eq!(budget.remaining(), 400);
+    assert!(matches!(
+        h.client.send(with_budget("/b")).await,
+        Err(Error::BudgetSpent)
+    ));
+    // A cached body counts too.
+    let fresh = ristle_net::BodyBudget::new(500);
+    let cached = Request {
+        budget: Some(fresh.clone()),
+        ..cached_get(&server, "/a")
+    };
+    assert!(matches!(
+        h.client.send(cached).await,
+        Err(Error::BudgetSpent)
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_bodies_reserve_their_declared_length() {
+    let h = harness();
+    let server = serving(TestResponse {
+        delay: Duration::from_millis(50),
+        ..TestResponse::ok(vec![1u8; 600])
+    })
+    .await;
+    let budget = ristle_net::BodyBudget::new(1_000);
+    let request = |path: &str| Request {
+        budget: Some(budget.clone()),
+        ..get(&server, path)
+    };
+    let (a, b) = tokio::join!(h.client.send(request("/a")), h.client.send(request("/b")));
+    let kept = [&a, &b].iter().filter(|result| result.is_ok()).count();
+    assert_eq!(kept, 1, "{a:?} {b:?}");
+    assert!(
+        [a, b]
+            .into_iter()
+            .any(|result| result == Err(Error::BudgetSpent))
+    );
+}

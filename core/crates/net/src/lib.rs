@@ -39,8 +39,8 @@ pub use cache::{
     StoredResponse,
 };
 pub use client::{
-    Attach, Client, ClientConfig, MAX_BODY_BYTES, MAX_REDIRECTS, MAX_TIMEOUT, Method, Request,
-    Response, STREAM_IDLE_TIMEOUT, StreamResponse,
+    Attach, BodyBudget, Client, ClientConfig, MAX_BODY_BYTES, MAX_REDIRECTS, MAX_TIMEOUT, Method,
+    Request, Response, STREAM_IDLE_TIMEOUT, StreamResponse,
 };
 pub use error::Error;
 pub use headers::Header;

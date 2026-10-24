@@ -26,7 +26,7 @@ use wasmtime::{Store, UpdateDeadline};
 use crate::Error;
 use crate::bindings::FullProvider;
 use crate::bindings::exports::ristle::plugin as guest;
-use crate::connections::{ConnectionInfo, Registered};
+use crate::connections::{Admission, ConnectionInfo, Registered};
 use crate::engine::{Backend, Engine};
 use crate::host::{
     CallContext, ConnectionHandle, Exceeded, HostState, PluginContext, Services, lock,
@@ -93,6 +93,10 @@ pub enum CallError {
     /// The connection is not registered with the host.
     #[error("unknown provider connection")]
     UnknownConnection,
+    /// The connection's previous generation could not be cleaned up; it is
+    /// unavailable until registering it again succeeds.
+    #[error("the provider connection is unavailable until it is cleaned up")]
+    ConnectionUnavailable,
     /// The call was retired while it ran: its connection's generation
     /// moved or ended, or the Plugin was replaced or disabled. Its result
     /// is discarded.
@@ -453,9 +457,11 @@ impl LoadedPlugin {
         let connection = info.id.clone();
         let connections = &self.inner.context.connections;
         if connections.set(info) == Registered::NewGeneration {
-            // Calls for the new generation wait until this is done.
+            // Calls for the new generation wait until this is done; if it
+            // fails, the connection stays unavailable until registering it
+            // again cleans up.
             let cleaned = self.end_generation(&connection).await;
-            connections.finish_cleaning(&connection);
+            connections.finish_cleaning(&connection, cleaned.is_ok());
             cleaned?;
         }
         Ok(())
@@ -485,21 +491,25 @@ impl LoadedPlugin {
         self.discard_instances();
     }
 
+    /// Deletes what the old generation left: every step is tried, and the
+    /// first failure is reported.
     async fn end_generation(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
         let context = &self.inner.context;
         self.discard_connection_instances(connection);
-        context
+        let cache = context
             .services
             .net
             .remove_cached_connection(&context.id, connection)
             .await
-            .map_err(|error| crate::Error::Store(error.to_string()))?;
-        context
+            .map(|_| ())
+            .map_err(|error| crate::Error::Store(error.to_string()));
+        let data = context
             .services
             .store
             .connection_kv(&context.id, connection)
             .clear()
-            .map_err(|error| crate::Error::Store(error.to_string()))
+            .map_err(|error| crate::Error::Store(error.to_string()));
+        cache.and(data)
     }
 
     /// Discards the idle instances of one connection.
@@ -535,11 +545,11 @@ impl LoadedPlugin {
             .await
             .map_err(|_| CallError::Lost("the host is shutting down".to_owned()))?;
         let context = &self.inner.context;
-        let generation = context
-            .connections
-            .admit(connection)
-            .await
-            .ok_or(CallError::UnknownConnection)?;
+        let generation = match context.connections.admit(connection).await {
+            Admission::Ready(generation) => generation,
+            Admission::Unknown => return Err(CallError::UnknownConnection),
+            Admission::Unavailable => return Err(CallError::ConnectionUnavailable),
+        };
         let call = CallContext {
             connection: connection.clone(),
             generation,

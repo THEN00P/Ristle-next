@@ -210,7 +210,7 @@ async fn credentials_live_in_the_vault_and_writes_compare_and_set() {
     assert_eq!(one(&h.plugin, "c1", "credential").await.unwrap(), "v1");
     assert_eq!(
         h.vault.keys(),
-        vec!["ristle.credential.dev.ristle.mock.c1".to_owned()]
+        vec!["ristle.credential.dev.ristle.mock.6331".to_owned()]
     );
     // Signing out deletes it, with the connection's data.
     h.plugin.remove_connection(&c("c1")).await.unwrap();
@@ -587,4 +587,143 @@ async fn responses_are_numbered_as_their_headers_arrive() {
         titles[1], "200 second cached=false sequence=2",
         "{titles:?}"
     );
+}
+
+#[tokio::test]
+async fn credential_keys_never_collide_across_plugins() {
+    let h = harness("");
+    // `dev.ristle` + `mock.c1` and `dev.ristle.mock` + `c1` once shared a key.
+    let other = h
+        .host
+        .load(&mock_package_as("dev.ristle", &Publisher::new(2), ""))
+        .unwrap();
+    h.plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    other
+        .set_connection(connection_info("mock.c1", 1))
+        .await
+        .unwrap();
+    one(&h.plugin, "c1", "set-credential:mine").await.unwrap();
+    assert_eq!(one(&other, "mock.c1", "credential").await.unwrap(), "none");
+    one(&other, "mock.c1", "set-credential:theirs")
+        .await
+        .unwrap();
+    assert_eq!(one(&h.plugin, "c1", "credential").await.unwrap(), "mine");
+    assert_eq!(h.vault.keys().len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_cleanup_keeps_the_connection_unavailable_until_it_succeeds() {
+    use ristle_plugin_host::{KvScope, PluginStore, StoreError, Stored};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A store whose `clear` fails while `failing` is set.
+    struct Flaky {
+        inner: MemoryPluginStore,
+        failing: Arc<AtomicBool>,
+    }
+    struct FlakyScope {
+        inner: Box<dyn KvScope>,
+        failing: Arc<AtomicBool>,
+    }
+    impl KvScope for FlakyScope {
+        fn get(&self, key: &str, now_ms: u64) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.get(key, now_ms)
+        }
+        fn set(
+            &self,
+            key: &str,
+            value: &[u8],
+            expires: Option<u64>,
+            quota: u64,
+            now: u64,
+        ) -> Result<Stored, StoreError> {
+            self.inner.set(key, value, expires, quota, now)
+        }
+        fn delete(&self, key: &str) -> Result<(), StoreError> {
+            self.inner.delete(key)
+        }
+        fn clear(&self) -> Result<(), StoreError> {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(StoreError("disk full".into()));
+            }
+            self.inner.clear()
+        }
+    }
+    impl PluginStore for Flaky {
+        fn plugin_kv(&self, plugin: &ristle_domain::PluginId) -> Box<dyn KvScope> {
+            self.inner.plugin_kv(plugin)
+        }
+        fn connection_kv(
+            &self,
+            plugin: &ristle_domain::PluginId,
+            connection: &ConnectionId,
+        ) -> Box<dyn KvScope> {
+            Box::new(FlakyScope {
+                inner: self.inner.connection_kv(plugin, connection),
+                failing: self.failing.clone(),
+            })
+        }
+        fn next_response_sequence(
+            &self,
+            plugin: &ristle_domain::PluginId,
+            connection: &ConnectionId,
+        ) -> Result<u64, StoreError> {
+            self.inner.next_response_sequence(plugin, connection)
+        }
+    }
+
+    let failing = Arc::new(AtomicBool::new(false));
+    let clock = Arc::new(ManualClock::new(NOW));
+    let host = PluginHost::new(
+        Engine::new(EngineConfig {
+            backend: Backend::Cranelift,
+            artifacts: None,
+        })
+        .unwrap(),
+        HostPorts {
+            clock: clock.clone(),
+            store: Arc::new(Flaky {
+                inner: MemoryPluginStore::new(),
+                failing: failing.clone(),
+            }),
+            vault: Arc::new(MemoryVault::new()),
+            net: Client::new(ClientConfig::default(), clock, None).unwrap(),
+        },
+        HostSettings::default(),
+    )
+    .unwrap();
+    let plugin = host.load(&mock_package(&Publisher::new(1), "")).unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    one(&plugin, "c1", "data:ids=old").await.unwrap();
+    failing.store(true, Ordering::SeqCst);
+    assert!(
+        plugin
+            .set_connection(connection_info("c1", 2))
+            .await
+            .is_err()
+    );
+    let error = one(&plugin, "c1", "data:ids").await.unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("unavailable")),
+        "{error:?}"
+    );
+    // Registering the same generation again retries the cleanup.
+    assert!(
+        plugin
+            .set_connection(connection_info("c1", 2))
+            .await
+            .is_err()
+    );
+    failing.store(false, Ordering::SeqCst);
+    plugin
+        .set_connection(connection_info("c1", 2))
+        .await
+        .unwrap();
+    assert_eq!(one(&plugin, "c1", "data:ids").await.unwrap(), "none");
 }

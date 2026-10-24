@@ -160,9 +160,30 @@ struct Slot {
 struct Entry {
     info: ConnectionInfo,
     credential: Slot,
-    /// Its previous generation is being cleaned up; no call is admitted
-    /// and nothing stored for it is read or written until that is done.
-    cleaning: bool,
+    /// Whether its previous generation is cleaned up. Until it is, no call
+    /// is admitted and nothing stored for it is read or written.
+    cleanup: Cleanup,
+}
+
+/// The cleanup of a connection's previous generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cleanup {
+    Done,
+    Running,
+    /// It failed; the connection stays unavailable until registering it
+    /// again succeeds in cleaning up.
+    Failed,
+}
+
+/// Whether a call may run for a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Under this generation.
+    Ready(u64),
+    /// The host does not know the connection.
+    Unknown,
+    /// Its previous generation could not be cleaned up.
+    Unavailable,
 }
 
 /// What registering a connection did.
@@ -220,39 +241,55 @@ impl Connections {
         f: impl FnOnce() -> R,
     ) -> Option<R> {
         let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
-        let current = lock(&self.entries)
-            .get(connection)
-            .is_some_and(|entry| entry.info.generation == generation && !entry.cleaning);
+        let current = lock(&self.entries).get(connection).is_some_and(|entry| {
+            entry.info.generation == generation && entry.cleanup == Cleanup::Done
+        });
         current.then(f)
     }
 
-    /// Ends the cleanup of a connection's previous generation.
-    pub(crate) fn finish_cleaning(&self, connection: &ConnectionId) {
+    /// Ends the cleanup of a connection's previous generation. A failed one
+    /// leaves the connection unavailable.
+    pub(crate) fn finish_cleaning(&self, connection: &ConnectionId, succeeded: bool) {
         if let Some(entry) = lock(&self.entries).get_mut(connection) {
-            entry.cleaning = false;
+            entry.cleanup = if succeeded {
+                Cleanup::Done
+            } else {
+                Cleanup::Failed
+            };
         }
         self.ready.notify_waiters();
     }
 
-    /// The generation a new call runs under, once the connection is not
-    /// being cleaned up; `None` for a connection the host does not know.
-    pub(crate) async fn admit(&self, connection: &ConnectionId) -> Option<u64> {
+    /// Whether a new call may run, once any cleanup running for the
+    /// connection has ended.
+    pub(crate) async fn admit(&self, connection: &ConnectionId) -> Admission {
         loop {
             let notified = self.ready.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             match lock(&self.entries).get(connection) {
-                None => return None,
-                Some(entry) if !entry.cleaning => return Some(entry.info.generation),
-                Some(_) => {}
+                None => return Admission::Unknown,
+                Some(entry) => match entry.cleanup {
+                    Cleanup::Done => return Admission::Ready(entry.info.generation),
+                    Cleanup::Failed => return Admission::Unavailable,
+                    Cleanup::Running => {}
+                },
             }
             notified.await;
         }
     }
 
     /// The vault key of a connection's Credential Record.
+    /// The vault key of a connection's Credential Record. Plugin ids are
+    /// reverse DNS and may contain dots; the connection id is hex after the
+    /// last dot, so no two Plugin and connection pairs share a key.
     pub(crate) fn vault_key(&self, connection: &ConnectionId) -> String {
-        format!("ristle.credential.{}.{}", self.plugin, connection)
+        let hex: String = connection
+            .as_str()
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("ristle.credential.{}.{hex}", self.plugin)
     }
 
     /// Registers or updates a connection.
@@ -260,16 +297,24 @@ impl Connections {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
         let mut entries = lock(&self.entries);
         match entries.get_mut(&info.id) {
-            Some(entry) if entry.info.generation == info.generation => {
+            Some(entry)
+                if entry.info.generation == info.generation && entry.cleanup == Cleanup::Done =>
+            {
                 entry.info = info;
                 Registered::Unchanged
+            }
+            // A cleanup that failed is retried.
+            Some(entry) if entry.info.generation == info.generation => {
+                entry.info = info;
+                entry.cleanup = Cleanup::Running;
+                Registered::NewGeneration
             }
             Some(entry) => {
                 entry.info = info;
                 // A new generation reads its record afresh, once the old
                 // one is cleaned up.
                 entry.credential = Slot::default();
-                entry.cleaning = true;
+                entry.cleanup = Cleanup::Running;
                 Registered::NewGeneration
             }
             None => {
@@ -278,7 +323,7 @@ impl Connections {
                     Entry {
                         info,
                         credential: Slot::default(),
-                        cleaning: false,
+                        cleanup: Cleanup::Done,
                     },
                 );
                 Registered::New
@@ -327,7 +372,7 @@ impl Connections {
         let Some(entry) = entries.get_mut(connection) else {
             return Ok(None);
         };
-        if entry.info.generation != generation || entry.cleaning {
+        if entry.info.generation != generation || entry.cleanup != Cleanup::Done {
             return Ok(None);
         }
         if !entry.credential.loaded {
@@ -360,7 +405,7 @@ impl Connections {
         let Some(entry) = entries.get_mut(connection) else {
             return Err(WriteRefused::Retired);
         };
-        if entry.info.generation != generation || entry.cleaning {
+        if entry.info.generation != generation || entry.cleanup != Cleanup::Done {
             return Err(WriteRefused::Retired);
         }
         if entry.credential.version != base {

@@ -330,7 +330,7 @@ impl Client {
         let timeout = request.timeout.min(MAX_TIMEOUT);
         let key = self.cache_key(&request);
         let stored = match &key {
-            Some(key) => self.cache_get(key, &request.headers).await,
+            Some(key) => self.cache_get(key, &selecting_headers(&request)).await,
             None => None,
         };
         let now = self.inner.clock.now_ms();
@@ -665,7 +665,7 @@ impl Client {
             CachePolicy::Bypass => return,
             CachePolicy::Http(_) => (
                 cache::http_freshness(status, response_headers, now),
-                cache::vary_of(response_headers, &request.headers),
+                cache::vary_of(response_headers, &selecting_headers(request)),
             ),
             CachePolicy::Override(_, rule) => {
                 (cache::override_freshness(status, rule, now), Vec::new())
@@ -707,7 +707,7 @@ impl Client {
             _ => (
                 cache::http_freshness(stored.status, &merged, now),
                 // The 304 may have changed `Vary`; select by the new one.
-                cache::vary_of(&merged, &request.headers),
+                cache::vary_of(&merged, &selecting_headers(request)),
             ),
         };
         let updated = StoredResponse {
@@ -825,6 +825,17 @@ fn hyper_client(tls: &rustls::ClientConfig, granted: Granted) -> Hyper {
                 .unwrap_or(u32::MAX),
         )
         .build(connector)
+}
+
+/// The headers the request goes out with to its own URL, the caller's and
+/// the attached ones, which `Vary` selects by. An attached cookie that
+/// changed selects another representation.
+fn selecting_headers(request: &Request) -> Vec<Header> {
+    let mut out = request.headers.clone();
+    if let Some(attach) = &request.attach {
+        out.extend(attach.headers(&request.url));
+    }
+    out
 }
 
 /// Responses fetched before this are [`cache::MAX_AGE_MS`] old or older,

@@ -943,6 +943,38 @@ async fn vary_selects_the_cached_response() {
 }
 
 #[tokio::test]
+async fn vary_selects_by_attached_headers_too() {
+    struct Cookie(Mutex<String>);
+    impl Attach for Cookie {
+        fn headers(&self, _: &Url) -> Vec<(String, String)> {
+            vec![("Cookie".into(), self.0.lock().unwrap().clone())]
+        }
+    }
+    let h = harness();
+    let server = TestServer::start(|request: &RecordedRequest| {
+        TestResponse::ok(request.header("cookie").unwrap_or("none").to_owned())
+            .header("Cache-Control", "max-age=60")
+            .header("Vary", "Cookie")
+    })
+    .await
+    .unwrap();
+    let cookie = Arc::new(Cookie(Mutex::new("session=a".into())));
+    let request = Request {
+        attach: Some(cookie.clone()),
+        ..cached_get(&server, "/me")
+    };
+    assert_eq!(
+        h.client.send(request.clone()).await.unwrap().body,
+        Bytes::from("session=a")
+    );
+    assert!(h.client.send(request.clone()).await.unwrap().cached);
+    *cookie.0.lock().unwrap() = "session=b".into();
+    let rotated = h.client.send(request).await.unwrap();
+    assert!(!rotated.cached);
+    assert_eq!(rotated.body, Bytes::from("session=b"));
+}
+
+#[tokio::test]
 async fn range_requests_bypass_the_cache() {
     let h = harness();
     let server = serving(TestResponse::ok("x").header("Cache-Control", "max-age=60")).await;

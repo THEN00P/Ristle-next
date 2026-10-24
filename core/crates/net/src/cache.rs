@@ -351,11 +351,11 @@ pub(crate) fn http_freshness(
         0
     };
     let has_validator = headers::has(response, "etag") || headers::has(response, "last-modified");
-    let freshness = Freshness::capped(
-        fetched_at_ms,
-        fresh_until_ms,
-        fresh_until_ms.saturating_add(stale_ms),
-    );
+    // A response that arrives already stale has used up part of its
+    // stale-if-error window too.
+    let stale_until_ms =
+        fetched_at_ms.saturating_add(lifetime_ms.saturating_add(stale_ms).saturating_sub(age_ms));
+    let freshness = Freshness::capped(fetched_at_ms, fresh_until_ms, stale_until_ms);
     let useful = freshness.stale_until_ms > fetched_at_ms || has_validator;
     useful.then_some(freshness)
 }
@@ -527,6 +527,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(strict.stale_until_ms, NOW + 60_000);
+    }
+
+    #[test]
+    fn age_counts_against_the_stale_window_too() {
+        let used_up = http_freshness(
+            200,
+            &h(&[
+                ("Cache-Control", "max-age=60, stale-if-error=30"),
+                ("Age", "120"),
+            ]),
+            NOW,
+        );
+        // Stale beyond its error window and without a validator: not kept.
+        assert_eq!(used_up, None);
+        let partly = http_freshness(
+            200,
+            &h(&[
+                ("Cache-Control", "max-age=60, stale-if-error=30"),
+                ("Age", "70"),
+                ("ETag", "\"e\""),
+            ]),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(partly.fresh_until_ms, NOW);
+        assert_eq!(partly.stale_until_ms, NOW + 20_000);
     }
 
     #[test]

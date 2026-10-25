@@ -105,6 +105,8 @@ mod tests {
             net: ristle_net::Client::new(ristle_net::ClientConfig::default(), clock, None).unwrap(),
             locale: Mutex::new("en".to_owned()),
             runtime: tokio::runtime::Handle::current(),
+            folders: None,
+            socket_origins: Vec::new(),
         });
         let manifest = mock_package(&Publisher::new(1), "").manifest().clone();
         let context = Arc::new(PluginContext::new(manifest, services));

@@ -809,6 +809,7 @@ fn unreliable_host(store: Unreliable, vault: MemoryVault) -> PluginHost {
             clock: clock.clone(),
             store: Arc::new(store),
             vault: Arc::new(vault),
+            folders: None,
             net: Client::new(ClientConfig::default(), clock, None).unwrap(),
         },
         HostSettings::default(),

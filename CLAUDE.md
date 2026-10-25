@@ -136,3 +136,15 @@ before relying on it, and update it when you learn something new.
   give CI jobs workstream prefixes. For stacked PRs, merge bottom-up with
   merge commits and retarget the next PR to `main` before deleting its base
   branch.
+- **Editing files from Python on this checkout:** working copies are CRLF
+  (autocrlf), so a `str.replace` with `\n` silently matches nothing and
+  `open(..., 'w')` without `newline=''` rewrites LF files as CRLF. Normalize
+  to `\n`, edit, and restore the original endings. rustfmt reflows long calls,
+  so match edits against the formatted text.
+- **Codex reviews every push, stacked branches included.** Rebasing a stack
+  after a fix at the bottom starts a fresh review round on every layer.
+  Batch fixes per layer before pushing, and rebase the stack once.
+- **wasmtime lifting is bounded by hostcall fuel** (`Store::set_hostcall_fuel`),
+  charged before each string or list is copied. Lazy `WasmStr`/`WasmList`
+  results are useless here: post-return runs inside `TypedFunc::call`, so the
+  guest has freed them before the host reads them.

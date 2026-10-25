@@ -25,7 +25,7 @@ getrandom.workspace = true
 hmac.workspace = true
 md-5.workspace = true
 sha1.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["io-util", "rt", "sync", "time"] }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

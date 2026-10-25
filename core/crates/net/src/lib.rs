@@ -40,7 +40,7 @@ pub use cache::{
 };
 pub use client::{
     Attach, BodyBudget, CacheGate, Client, ClientConfig, MAX_BODY_BYTES, MAX_REDIRECTS,
-    MAX_TIMEOUT, Method, Request, Response, STREAM_IDLE_TIMEOUT, Sequencer, StreamResponse,
+    MAX_TIMEOUT, Method, Request, Response, STREAM_IDLE_TIMEOUT, Sequencer, Socket, StreamResponse,
 };
 pub use error::Error;
 pub use headers::Header;

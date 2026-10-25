@@ -80,3 +80,60 @@ pub trait SecretVault: Send + Sync {
     /// Removes the secret under `key`, if any.
     fn delete(&self, key: &str) -> Result<(), VaultError>;
 }
+
+/// One entry of a granted folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileEntry {
+    /// Its name within its folder.
+    pub name: String,
+    /// It is a folder.
+    pub folder: bool,
+    /// Its size in bytes; 0 for folders.
+    pub size: u64,
+    /// When it was last modified, in Unix milliseconds.
+    pub modified_ms: Option<u64>,
+}
+
+/// Why folder access failed.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum FolderError {
+    /// No such file or folder, or it lies outside the granted folder (a
+    /// link leading out of it included).
+    #[error("not found")]
+    NotFound,
+    /// The system no longer lets Ristle read the granted folder; the user
+    /// must choose it again.
+    #[error("access to the folder was lost")]
+    AccessLost,
+    /// Reading failed.
+    #[error("reading failed: {0}")]
+    Io(String),
+}
+
+/// Reading the folders users granted (Folder Grants), implemented per
+/// platform over its own access: an Android Storage Access Framework tree,
+/// an iOS security-scoped bookmark, a desktop path. The host has already
+/// checked that `folder` is granted to the connection and that `path` is a
+/// relative path without `.` or `..` components; the implementation must
+/// never leave the folder, links included.
+pub trait FolderAccess: Send + Sync {
+    /// Up to `limit` entries of the folder at `path` (`""` is the granted
+    /// folder itself), sorted by name, after the name `after`.
+    fn list(
+        &self,
+        folder: &str,
+        path: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<FileEntry>, FolderError>;
+    /// Up to `length` bytes of the file at `path` from `offset`; fewer at
+    /// its end.
+    fn read(
+        &self,
+        folder: &str,
+        path: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, FolderError>;
+}

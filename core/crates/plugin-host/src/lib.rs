@@ -38,7 +38,10 @@ pub use connections::{
 pub use engine::{Backend, Engine, EngineConfig, TICK};
 pub use exports::{MAX_RESULT_BYTES, MAX_RESULT_STRING, PluginError};
 pub use inspect::{API, API_VERSION};
-pub use ports::{KvScope, PluginStore, SecretVault, StoreError, Stored, VaultError};
+pub use ports::{
+    FileEntry, FolderAccess, FolderError, KvScope, PluginStore, SecretVault, StoreError, Stored,
+    VaultError,
+};
 pub use runtime::{CallError, HostPorts, HostSettings, LoadedPlugin, PluginHost};
 
 /// Every error this crate returns.

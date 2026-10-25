@@ -1,14 +1,13 @@
-//! `types`, `http.rate-limit`, and the imports that arrive in M5 part 4b:
-//! `files`, `socket` and `live`. Until then they trap, so a call that uses
-//! one fails with `error.internal` and nothing pretends to work.
+//! `types`, `http.rate-limit`, and `live`, which arrives with the
+//! `queue-projection` export (M5, part 5). Until then `live` traps, so a
+//! call that uses it fails with `error.internal` and nothing pretends to
+//! work.
 
 use std::time::Duration;
 
-use wasmtime::component::Resource;
-
-use super::{ConnectionHandle, HostState, TcpHandle, strings_fit, trap};
-use crate::bindings::ristle::plugin::types::{Error, FilePath};
-use crate::bindings::ristle::plugin::{connection, files, http, live, socket, types};
+use super::{HostState, strings_fit, trap};
+use crate::bindings::ristle::plugin::types::Error;
+use crate::bindings::ristle::plugin::{connection, http, live, types};
 
 fn not_yet(import: &str) -> wasmtime::Error {
     trap(&format!(
@@ -51,59 +50,6 @@ impl http::Host for HostState {
 }
 
 impl connection::Host for HostState {}
-
-impl files::Host for HostState {
-    fn list(
-        &mut self,
-        _: Resource<ConnectionHandle>,
-        _: FilePath,
-        _: Option<String>,
-    ) -> wasmtime::Result<Result<Vec<files::Entry>, Error>> {
-        Err(not_yet("files.list"))
-    }
-
-    fn read(
-        &mut self,
-        _: Resource<ConnectionHandle>,
-        _: FilePath,
-        _: u64,
-        _: u32,
-    ) -> wasmtime::Result<Result<Vec<u8>, Error>> {
-        Err(not_yet("files.read"))
-    }
-}
-
-impl socket::Host for HostState {}
-
-impl socket::HostTcp for HostState {
-    fn connect(
-        &mut self,
-        _: Resource<ConnectionHandle>,
-        _: String,
-        _: u16,
-        _: bool,
-    ) -> wasmtime::Result<Result<Resource<TcpHandle>, Error>> {
-        Err(not_yet("socket.connect"))
-    }
-
-    fn send(&mut self, _: Resource<TcpHandle>, _: Vec<u8>) -> wasmtime::Result<Result<(), Error>> {
-        Err(not_yet("socket.send"))
-    }
-
-    fn receive(
-        &mut self,
-        _: Resource<TcpHandle>,
-        _: u32,
-        _: u32,
-    ) -> wasmtime::Result<Result<Vec<u8>, Error>> {
-        Err(not_yet("socket.receive"))
-    }
-
-    fn drop(&mut self, rep: Resource<TcpHandle>) -> wasmtime::Result<()> {
-        self.table.delete(rep)?;
-        Ok(())
-    }
-}
 
 impl live::Host for HostState {
     fn open(&mut self, _: live::ChannelRequest) -> wasmtime::Result<Result<String, Error>> {

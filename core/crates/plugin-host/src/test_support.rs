@@ -433,3 +433,96 @@ pub fn connection_info(id: &str, generation: u64) -> crate::ConnectionInfo {
         folders: Vec::new(),
     }
 }
+
+/// Files by folder id and path.
+type Files = std::collections::BTreeMap<(String, String), Vec<u8>>;
+
+/// A [`FolderAccess`](crate::FolderAccess) in memory: files by folder id and
+/// `/`-separated path; folders are implied by the paths.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryFolders {
+    files: std::sync::Arc<std::sync::Mutex<Files>>,
+}
+
+impl MemoryFolders {
+    /// No files.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a file.
+    pub fn add(&self, folder: &str, path: &str, bytes: &[u8]) {
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((folder.to_owned(), path.to_owned()), bytes.to_vec());
+    }
+}
+
+impl crate::FolderAccess for MemoryFolders {
+    fn list(
+        &self,
+        folder: &str,
+        path: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::FileEntry>, crate::FolderError> {
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prefix = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{path}/")
+        };
+        let mut entries: std::collections::BTreeMap<String, crate::FileEntry> = Default::default();
+        for ((owner, file), bytes) in files.iter() {
+            let Some(rest) = file.strip_prefix(&prefix) else {
+                continue;
+            };
+            if owner != folder {
+                continue;
+            }
+            let (name, folder_entry) = match rest.split_once('/') {
+                Some((name, _)) => (name, true),
+                None => (rest, false),
+            };
+            entries.entry(name.to_owned()).or_insert(crate::FileEntry {
+                name: name.to_owned(),
+                folder: folder_entry,
+                size: if folder_entry { 0 } else { bytes.len() as u64 },
+                modified_ms: None,
+            });
+        }
+        if entries.is_empty() && !path.is_empty() {
+            return Err(crate::FolderError::NotFound);
+        }
+        Ok(entries
+            .into_values()
+            .filter(|entry| after.is_none_or(|after| entry.name.as_str() > after))
+            .take(limit)
+            .collect())
+    }
+
+    fn read(
+        &self,
+        folder: &str,
+        path: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, crate::FolderError> {
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = files
+            .get(&(folder.to_owned(), path.to_owned()))
+            .ok_or(crate::FolderError::NotFound)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(length as usize).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
+    }
+}

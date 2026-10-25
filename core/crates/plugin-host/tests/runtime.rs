@@ -44,6 +44,7 @@ fn host_on(
             clock,
             store: Arc::new(MemoryPluginStore::new()),
             vault: Arc::new(MemoryVault::new()),
+            folders: None,
             net,
         },
         HostSettings {
@@ -580,6 +581,7 @@ async fn idle_instances_are_released_without_further_calls() {
             clock: clock.clone(),
             store: Arc::new(MemoryPluginStore::new()),
             vault: Arc::new(MemoryVault::new()),
+            folders: None,
             net: Client::new(ClientConfig::default(), clock, None).unwrap(),
         },
         HostSettings {
@@ -606,6 +608,7 @@ fn a_host_needs_the_runtime() {
             clock: clock.clone(),
             store: Arc::new(MemoryPluginStore::new()),
             vault: Arc::new(MemoryVault::new()),
+            folders: None,
             net: Client::new(ClientConfig::default(), clock, None).unwrap(),
         },
         HostSettings::default(),

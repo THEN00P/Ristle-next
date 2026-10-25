@@ -1596,3 +1596,48 @@ async fn concurrent_bodies_reserve_their_declared_length() {
             .any(|result| result == Err(Error::BudgetSpent))
     );
 }
+
+#[tokio::test]
+async fn sockets_reach_public_addresses_or_what_a_grant_confirms() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = harness();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 64];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let _ = stream.write_all(&buffer[..read]).await;
+            });
+        }
+    });
+    assert!(matches!(
+        h.client
+            .connect_socket("127.0.0.1", port, false, None)
+            .await,
+        Err(Error::AddressRefused { granted: false, .. })
+    ));
+    assert!(matches!(
+        h.client
+            .connect_socket("localhost", port, false, None)
+            .await,
+        Err(Error::AddressRefused { .. })
+    ));
+    let origin = GrantedOrigin {
+        scheme: ristle_net::Scheme::Http,
+        host: "127.0.0.1".into(),
+        port,
+        public: false,
+        confirmed: vec!["127.0.0.1".parse().unwrap()],
+    };
+    let mut socket = h
+        .client
+        .connect_socket("127.0.0.1", port, false, Some(&origin))
+        .await
+        .unwrap();
+    socket.write_all(b"ping").await.unwrap();
+    let mut echoed = [0u8; 4];
+    socket.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(&echoed, b"ping");
+}

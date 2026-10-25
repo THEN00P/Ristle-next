@@ -143,6 +143,10 @@ pub(crate) struct HostState {
     pub(crate) table: ResourceTable,
     pub(crate) clock: CallClock,
     pub(crate) plugin: Arc<PluginContext>,
+    /// A host call is running. Guest code that runs outside one, such as
+    /// start functions during instantiation (install's trial included),
+    /// reaches no Plugin state.
+    pub(crate) in_call: bool,
 }
 
 impl HostState {
@@ -152,6 +156,7 @@ impl HostState {
             table: ResourceTable::new(),
             clock: CallClock::idle(),
             plugin,
+            in_call: false,
         }
     }
 

@@ -260,6 +260,36 @@ struct Indices {
 
 impl Indices {
     fn new(pre: &InstancePre<HostState>, exports: &Exports) -> wasmtime::Result<Self> {
+        // Every export the component advertises must have its interface's
+        // exact type, since the advertised ones decide consent and
+        // permission differences, whether or not the host calls them yet.
+        if exports.accounts {
+            guest::accounts::GuestIndices::new(pre)?;
+        }
+        if exports.likes {
+            guest::likes::GuestIndices::new(pre)?;
+        }
+        if exports.like_lookup {
+            guest::like_lookup::GuestIndices::new(pre)?;
+        }
+        if exports.playlist_editing {
+            guest::playlist_editing::GuestIndices::new(pre)?;
+        }
+        if exports.reposts {
+            guest::reposts::GuestIndices::new(pre)?;
+        }
+        if exports.feed {
+            guest::feed::GuestIndices::new(pre)?;
+        }
+        if exports.comments {
+            guest::comments::GuestIndices::new(pre)?;
+        }
+        if exports.settings {
+            guest::settings::GuestIndices::new(pre)?;
+        }
+        if exports.queue_projection {
+            guest::queue_projection::GuestIndices::new(pre)?;
+        }
         Ok(Self {
             catalog: guest::catalog::GuestIndices::new(pre)?,
             byte_source: exports
@@ -438,6 +468,7 @@ impl LoadedPlugin {
                 None => inner.instantiate()?,
             };
             instance.store.data_mut().clock = inner.clock(kind);
+            instance.store.data_mut().in_call = true;
             instance.store.set_epoch_deadline(1);
             let handle = instance
                 .store
@@ -458,6 +489,7 @@ impl LoadedPlugin {
                 .data_mut()
                 .table
                 .delete::<ConnectionHandle>(Resource::new_own(rep));
+            instance.store.data_mut().in_call = false;
             let exceeded = instance.store.data().clock.exceeded;
             match result {
                 Ok(value) => {

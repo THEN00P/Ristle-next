@@ -131,7 +131,14 @@ impl LoadedPlugin {
     ) -> Result<Vec<Result<Track, PluginError>>, PluginError> {
         let batch = self.manifest().limits.tracks.unwrap_or(1).max(1) as usize;
         let mut out = Vec::with_capacity(ids.len());
+        // Every batch must run for the same account: if the generation or
+        // the Plugin changes between them, the whole request is retired.
+        let pin = self.pin(connection);
+        let unpinned = || PluginError::from(CallError::Retired);
         for chunk in ids.chunks(batch) {
+            if self.pin(connection) != pin {
+                return Err(unpinned());
+            }
             let chunk = chunk.to_vec();
             let requested = chunk.len();
             let results = self
@@ -156,6 +163,9 @@ impl LoadedPlugin {
                     Err(error) => Err(PluginError::checked(error, &mut budget)?),
                 });
             }
+        }
+        if self.pin(connection) != pin {
+            return Err(unpinned());
         }
         Ok(out)
     }

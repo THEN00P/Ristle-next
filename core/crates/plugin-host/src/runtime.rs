@@ -455,14 +455,24 @@ impl LoadedPlugin {
     /// which keeps everything stored for it.
     pub async fn set_connection(&self, info: ConnectionInfo) -> Result<(), crate::Error> {
         let connection = info.id.clone();
-        let connections = &self.inner.context.connections;
-        if connections.set(info) == Registered::NewGeneration {
+        if self.inner.context.connections.set(info) == Registered::NewGeneration {
             // Calls for the new generation wait until this is done; if it
             // fails, the connection stays unavailable until registering it
-            // again cleans up.
-            let cleaned = self.end_generation(&connection).await;
-            connections.finish_cleaning(&connection, cleaned.is_ok());
-            cleaned?;
+            // again cleans up. It runs on its own, so dropping this future
+            // cannot leave the connection waiting forever.
+            let plugin = self.clone();
+            let cleanup = tokio::spawn(async move {
+                let cleaned = plugin.end_generation(&connection).await;
+                plugin
+                    .inner
+                    .context
+                    .connections
+                    .finish_cleaning(&connection, cleaned.is_ok());
+                cleaned
+            });
+            cleanup
+                .await
+                .map_err(|error| crate::Error::Store(format!("cleanup lost: {error}")))??;
         }
         Ok(())
     }
@@ -473,12 +483,24 @@ impl LoadedPlugin {
     pub async fn remove_connection(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
         let context = &self.inner.context;
         context.connections.remove(connection);
-        self.end_generation(connection).await?;
-        context
+        let cleaned = self.end_generation(connection).await;
+        // The credential goes whatever else failed: signing out revokes it.
+        let revoked = context
             .services
             .vault
             .delete(&context.connections.vault_key(connection))
-            .map_err(|error| crate::Error::Store(error.to_string()))
+            .map_err(|error| crate::Error::Store(error.to_string()));
+        cleaned.and(revoked)
+    }
+
+    /// The generation and retirement count a call for the connection would
+    /// run under now, to pin an operation of several calls to one account.
+    pub(crate) fn pin(&self, connection: &ConnectionId) -> Option<(u64, u64)> {
+        let context = &self.inner.context;
+        Some((
+            context.connections.generation(connection)?,
+            context.retirements(),
+        ))
     }
 
     /// Retires every running call and discards every instance: a version of

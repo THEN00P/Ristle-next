@@ -727,3 +727,136 @@ async fn a_failed_cleanup_keeps_the_connection_unavailable_until_it_succeeds() {
         .unwrap();
     assert_eq!(one(&plugin, "c1", "data:ids").await.unwrap(), "none");
 }
+
+/// A store whose connection `clear` fails or stalls on request.
+struct Unreliable {
+    inner: MemoryPluginStore,
+    failing: Arc<std::sync::atomic::AtomicBool>,
+    stall: Duration,
+}
+
+struct UnreliableScope {
+    inner: Box<dyn ristle_plugin_host::KvScope>,
+    failing: Arc<std::sync::atomic::AtomicBool>,
+    stall: Duration,
+}
+
+impl ristle_plugin_host::KvScope for UnreliableScope {
+    fn get(
+        &self,
+        key: &str,
+        now_ms: u64,
+    ) -> Result<Option<Vec<u8>>, ristle_plugin_host::StoreError> {
+        self.inner.get(key, now_ms)
+    }
+    fn set(
+        &self,
+        key: &str,
+        value: &[u8],
+        expires: Option<u64>,
+        quota: u64,
+        now: u64,
+    ) -> Result<ristle_plugin_host::Stored, ristle_plugin_host::StoreError> {
+        self.inner.set(key, value, expires, quota, now)
+    }
+    fn delete(&self, key: &str) -> Result<(), ristle_plugin_host::StoreError> {
+        self.inner.delete(key)
+    }
+    fn clear(&self) -> Result<(), ristle_plugin_host::StoreError> {
+        std::thread::sleep(self.stall);
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ristle_plugin_host::StoreError("disk full".into()));
+        }
+        self.inner.clear()
+    }
+}
+
+impl ristle_plugin_host::PluginStore for Unreliable {
+    fn plugin_kv(&self, plugin: &ristle_domain::PluginId) -> Box<dyn ristle_plugin_host::KvScope> {
+        self.inner.plugin_kv(plugin)
+    }
+    fn connection_kv(
+        &self,
+        plugin: &ristle_domain::PluginId,
+        connection: &ConnectionId,
+    ) -> Box<dyn ristle_plugin_host::KvScope> {
+        Box::new(UnreliableScope {
+            inner: self.inner.connection_kv(plugin, connection),
+            failing: self.failing.clone(),
+            stall: self.stall,
+        })
+    }
+    fn next_response_sequence(
+        &self,
+        plugin: &ristle_domain::PluginId,
+        connection: &ConnectionId,
+    ) -> Result<u64, ristle_plugin_host::StoreError> {
+        self.inner.next_response_sequence(plugin, connection)
+    }
+}
+
+fn unreliable_host(store: Unreliable, vault: MemoryVault) -> PluginHost {
+    let clock = Arc::new(ManualClock::new(NOW));
+    PluginHost::new(
+        Engine::new(EngineConfig {
+            backend: Backend::Cranelift,
+            artifacts: None,
+        })
+        .unwrap(),
+        HostPorts {
+            clock: clock.clone(),
+            store: Arc::new(store),
+            vault: Arc::new(vault),
+            net: Client::new(ClientConfig::default(), clock, None).unwrap(),
+        },
+        HostSettings::default(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cleanup_finishes_even_when_its_caller_gives_up() {
+    let store = Unreliable {
+        inner: MemoryPluginStore::new(),
+        failing: Arc::default(),
+        stall: Duration::from_millis(400),
+    };
+    let plugin = unreliable_host(store, MemoryVault::new())
+        .load(&mock_package(&Publisher::new(1), ""))
+        .unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    let changing = plugin.clone();
+    let change =
+        tokio::spawn(async move { changing.set_connection(connection_info("c1", 2)).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    change.abort();
+    // The cleanup still ends, and calls are admitted again.
+    let call = tokio::time::timeout(Duration::from_secs(5), one(&plugin, "c1", "count")).await;
+    assert_eq!(call.unwrap().unwrap(), "1");
+}
+
+#[tokio::test]
+async fn signing_out_revokes_the_credential_whatever_else_fails() {
+    let vault = MemoryVault::new();
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = Unreliable {
+        inner: MemoryPluginStore::new(),
+        failing: failing.clone(),
+        stall: Duration::ZERO,
+    };
+    let plugin = unreliable_host(store, vault.clone())
+        .load(&mock_package(&Publisher::new(1), ""))
+        .unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    one(&plugin, "c1", "set-credential:token").await.unwrap();
+    assert_eq!(vault.keys().len(), 1);
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(plugin.remove_connection(&c("c1")).await.is_err());
+    assert!(vault.keys().is_empty());
+}

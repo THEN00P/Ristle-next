@@ -271,9 +271,6 @@ struct Exchange {
     headers: Vec<Header>,
     url: Url,
     body: Incoming,
-    /// Every URL that received the request with a method that changes
-    /// state, for invalidation.
-    unsafe_targets: Vec<Url>,
     /// The headers the final hop was sent, the caller's (where kept) and
     /// the attached ones, which a `Vary` selector is built from.
     sent: Vec<Header>,
@@ -374,13 +371,6 @@ impl Client {
             let exchange = self
                 .open(&request, &caller_headers, conditional.as_ref())
                 .await?;
-            // A successful mutation is known from its status: the cache
-            // forgets the URLs it changed before the body is read, which
-            // may still fail.
-            if request.method.cache_method().is_none() && (200..400).contains(&exchange.status) {
-                self.invalidate(&request, exchange.unsafe_targets.clone())
-                    .await;
-            }
             let body = read_body(
                 exchange.body,
                 &exchange.headers,
@@ -529,7 +519,6 @@ impl Client {
             Some(validators) => headers::checked(&validators.headers)?,
             None => Vec::new(),
         };
-        let mut unsafe_targets = Vec::new();
         let mut url = without_fragment(&request.url);
         let mut method = request.method.as_http();
         let mut body = request.body.clone();
@@ -590,11 +579,14 @@ impl Client {
             let outgoing = builder
                 .body(Full::new(body.clone()))
                 .map_err(|error| Error::NotAllowed(format!("request: {error}")))?;
-            if !matches!(method, http::Method::GET | http::Method::HEAD) {
-                unsafe_targets.push(url.clone());
-            }
+            let unsafe_hop = !matches!(method, http::Method::GET | http::Method::HEAD);
             let response = client.request(outgoing).await.map_err(map_hyper_error)?;
             let status = response.status().as_u16();
+            // A successful mutation is known from its status: the cache
+            // forgets this URL at once, whatever later hops or the body do.
+            if unsafe_hop && (200..400).contains(&status) {
+                self.invalidate(request, vec![url.clone()]).await;
+            }
             let response_headers = headers::from_response(response.headers())?;
 
             let now = self.inner.clock.now_ms();
@@ -618,7 +610,6 @@ impl Client {
                     headers: response_headers,
                     url,
                     body: response.into_body(),
-                    unsafe_targets,
                     sent,
                 });
             };
@@ -645,7 +636,6 @@ impl Client {
                     headers: response_headers,
                     url,
                     body: response.into_body(),
-                    unsafe_targets,
                     sent,
                 });
             }
@@ -739,6 +729,16 @@ impl Client {
         if cache::request_forbids_store(&request.headers) {
             return;
         }
+        // Under HTTP rules a redirect's own cacheability decides whether
+        // the URL may be answered from the cache, and the client keeps only
+        // the final response: so a response reached through redirects is
+        // not stored for the URL that redirected. An override is the
+        // Plugin's own choice.
+        if matches!(request.cache, CachePolicy::Http(_)) && *url != without_fragment(&request.url) {
+            let stale = key.clone();
+            self.with_store(move |store| store.remove(&stale)).await;
+            return;
+        }
         let (freshness, vary) = match &request.cache {
             CachePolicy::Bypass => return,
             CachePolicy::Http(_) => (
@@ -826,9 +826,8 @@ impl Client {
         })
     }
 
-    /// A successful unsafe request invalidates what the cache holds for
-    /// every URL it reached, redirect targets included (RFC 9111, section
-    /// 4.4).
+    /// A successful unsafe hop invalidates what the cache holds for its URL
+    /// (RFC 9111, section 4.4); redirect targets each in turn.
     async fn invalidate(&self, request: &Request, targets: Vec<Url>) {
         let Some(scope) = request.cache.scope().cloned() else {
             return;

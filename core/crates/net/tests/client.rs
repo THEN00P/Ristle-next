@@ -1302,8 +1302,15 @@ async fn validators_go_only_to_the_resource_that_supplied_them() {
     })
     .await
     .unwrap();
-    h.client.send(cached_get(&server, "/a")).await.unwrap();
-    let response = h.client.send(cached_get(&server, "/a")).await.unwrap();
+    h.client
+        .send(overridden_get(&server, "/a", 0, 0, None))
+        .await
+        .unwrap();
+    let response = h
+        .client
+        .send(overridden_get(&server, "/a", 0, 0, None))
+        .await
+        .unwrap();
     assert_eq!(response.body, Bytes::from("b"));
     assert!(response.cached);
     let seen = server.requests();
@@ -1394,7 +1401,8 @@ async fn vary_through_a_redirect_selects_by_the_final_hops_headers() {
         h.client.send(request.clone()).await.unwrap().body,
         Bytes::from("b=1")
     );
-    assert!(h.client.send(request.clone()).await.unwrap().cached);
+    // Reached through a redirect, it is not stored under HTTP rules.
+    assert!(!h.client.send(request.clone()).await.unwrap().cached);
     *cookie.0.lock().unwrap() = "b=2".into();
     let rotated = h.client.send(request).await.unwrap();
     assert!(!rotated.cached);
@@ -1446,4 +1454,54 @@ async fn a_304_cannot_grow_the_headers_past_their_bounds() {
         h.client.send(cached_get(&scripted.server, "/a")).await,
         Err(Error::TooLarge(_))
     ));
+}
+
+#[tokio::test]
+async fn a_redirect_is_not_answered_from_the_cache_by_its_target_freshness() {
+    let h = harness();
+    let target = Arc::new(Mutex::new("/item-a"));
+    let current = target.clone();
+    let server = TestServer::start(move |request| match request.path.as_str() {
+        "/current" => TestResponse::status(302).header("Location", *current.lock().unwrap()),
+        path => TestResponse::ok(path.to_owned()).header("Cache-Control", "max-age=3600"),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        h.client
+            .send(cached_get(&server, "/current"))
+            .await
+            .unwrap()
+            .body,
+        Bytes::from("/item-a")
+    );
+    *target.lock().unwrap() = "/item-b";
+    let again = h
+        .client
+        .send(cached_get(&server, "/current"))
+        .await
+        .unwrap();
+    assert_eq!(again.body, Bytes::from("/item-b"));
+    assert!(!again.cached);
+}
+
+#[tokio::test]
+async fn a_mutation_that_redirects_to_a_failure_still_invalidates() {
+    let h = harness();
+    let server =
+        TestServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/item") => TestResponse::status(303).header("Location", "/result"),
+                (_, "/result") => TestResponse::status(500),
+                _ => TestResponse::ok("item").header("Cache-Control", "max-age=600"),
+            },
+        )
+        .await
+        .unwrap();
+    h.client.send(cached_get(&server, "/item")).await.unwrap();
+    assert_eq!(h.store.len(), 1);
+    let mut post = cached_get(&server, "/item");
+    post.method = Method::Post;
+    assert_eq!(h.client.send(post).await.unwrap().status, 500);
+    assert!(h.store.is_empty());
 }

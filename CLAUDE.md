@@ -141,6 +141,26 @@ before relying on it, and update it when you learn something new.
   give CI jobs workstream prefixes. For stacked PRs, merge bottom-up with
   merge commits and retarget the next PR to `main` before deleting its base
   branch.
+  Merging many PRs at once is cheapest locally. Merge them `--no-ff` in order
+  on a branch off `main`, run CI on the result, and fast-forward `main`.
+  GitHub marks a PR merged once its head is in its base. For a stacked PR
+  whose base can't be retargeted ("no new commits"), fast-forward that base
+  branch to `main`.
+  `core.yml` conflicts happen whenever two branches append a job in the same
+  place. Resolve them by hand: a regex union of the hunks cut one job's header
+  off. Check the job list (`grep -E '^  [a-z-]+:$'`).
+  Branches that merge cleanly can still conflict in meaning. A's follow-ups
+  added a field to `QueueState` that storage didn't persist, so only the
+  merged state failed to compile. Always build the merged state.
+- **When GitHub Actions starts no jobs** (annotation: "recent account payments
+  have failed or your spending limit needs to be increased", every job
+  failing in 2 s with zero steps): the private repo's minutes are used up.
+  Run the `core.yml` steps locally on Windows instead. The NDK builds
+  (opusic-sys) need Visual Studio's cmake on PATH (see
+  `../Ristle/CLAUDE.local.md`), and `ANDROID_NDK_HOME` points at
+  `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`. cargo-deny takes
+  `--all-features` before `check`. The `bindings` job (Kotlin/Swift) only
+  runs on Linux, so skip it only when `crates/ffi` is untouched.
 - **`ristle-storage` fixture and SQLite quirks.** `crates/storage/tests/fixtures/schema-v1.sql`
   stands for users' databases: never regenerate it; a schema change is a new
   migration plus a test against it (`src/fixture.rs`). rusqlite's bundled

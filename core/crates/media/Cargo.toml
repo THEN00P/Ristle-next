@@ -45,6 +45,10 @@ ctr.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 url.workspace = true
 
+# MediaCodec, the platform HE-AAC decoder on Android (ADR 0004).
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { workspace = true, features = ["media", "api-level-28"] }
+
 [dev-dependencies]
 aes.workspace = true
 async-trait.workspace = true

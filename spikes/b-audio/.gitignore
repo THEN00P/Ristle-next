@@ -1,8 +1,0 @@
-target/
-media/
-results/raw/
-android/.gradle/
-android/app/build/
-android/build/
-android/local.properties
-android/.kotlin/

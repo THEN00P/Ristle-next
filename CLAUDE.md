@@ -62,7 +62,7 @@ before relying on it, and update it when you learn something new.
   not the global Java 25.
 - **Git Bash rewrites `/data/...` and `/sdcard/...` in adb arguments** into
   Windows paths, so pushes and shell commands fail or land in the wrong place.
-  Prefix adb calls with `MSYS_NO_PATHCONV=1` (the `spikes/b-audio` scripts do).
+  Prefix adb calls with `MSYS_NO_PATHCONV=1`.
   Files adb pushes into a directory it created belong to `shell`, so the app
   can't read them: push into the app's own `files/` directory.
 - **C code in Android Rust builds:** cargo-ndk sets the hyphenated

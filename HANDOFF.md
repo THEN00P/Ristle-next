@@ -97,7 +97,8 @@ waits for the user's Mac (see `docs/research/apple-without-hardware.md`).
 ## Spike B: audio pipeline
 
 **Status 2026-10-17: go, with design changes** (ADR 0004 amendment). Results:
-`docs/research/audio-pipeline.md` (Spike B results), code in `spikes/b-audio/`.
+`docs/research/audio-pipeline.md` (Spike B results). The spike code was deleted
+at M6a; it is in commit `818eac8` (`git show 818eac8:spikes/b-audio/...`).
 Ran on Windows, the Android emulator, a Pixel 8 and a Xiaomi Mi 9T. Decode
 CPU, gapless, the 30-minute screen-off soak and the lock-screen controls passed
 on the Pixel 8. The Mi 9T found a Media3 crash on shell media-button events

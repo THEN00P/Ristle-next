@@ -13,7 +13,8 @@ use std::sync::Arc;
 use common::{CUTS_44, fixture, left, read_to_end, reference};
 use ristle_media::{
     Codec, CodecDescription, ContainerStream, Decoder, DecoderProvider, DecoderRegistry, Error,
-    HeAac, MediaHint, MediaStream, Packet, Read, StreamFormat, Support, SymphoniaProvider,
+    HeAac, LibopusProvider, MediaHint, MediaStream, Packet, Read, StreamFormat, Support,
+    SymphoniaProvider,
 };
 
 /// Decodes with Symphonia, then behaves like a platform decoder: it holds
@@ -180,7 +181,11 @@ fn he_aac_routing_prefers_a_platform_decoder_over_degraded_symphonia() {
     let mut implicit = CodecDescription::new(Codec::Aac);
     implicit.extra_data = Some([0x13, 0x90].into()); // AAC-LC at 22.05 kHz
     assert_eq!(implicit.he_aac(), HeAac::LikelyImplicit);
-    let mut registry = DecoderRegistry::with_defaults();
+    // The providers on every platform; on Android `with_defaults` already
+    // includes MediaCodec.
+    let mut registry = DecoderRegistry::empty();
+    registry.register(Arc::new(SymphoniaProvider::new()));
+    registry.register(Arc::new(LibopusProvider::new()));
     assert_eq!(
         registry.select(&implicit),
         Some(("symphonia", Support::Degraded))

@@ -863,3 +863,66 @@ async fn signing_out_revokes_the_credential_whatever_else_fails() {
     assert!(plugin.remove_connection(&c("c1")).await.is_err());
     assert!(vault.keys().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_transitions_admit_calls_only_after_the_last_cleanup() {
+    let store = Unreliable {
+        inner: MemoryPluginStore::new(),
+        failing: Arc::default(),
+        stall: Duration::from_millis(600),
+    };
+    let plugin = unreliable_host(store, MemoryVault::new())
+        .load(&mock_package(&Publisher::new(1), ""))
+        .unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    let first = plugin.clone();
+    let second = plugin.clone();
+    let changes = tokio::spawn(async move {
+        tokio::join!(first.set_connection(connection_info("c1", 2)), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            second.set_connection(connection_info("c1", 3)).await
+        })
+    });
+    // After the first cleanup ended, while the second runs: the first must
+    // not have let this call in, or the second cleanup wipes what it wrote.
+    // Run side by side, the cleanups would end at 600 and 900 ms.
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    assert_eq!(one(&plugin, "c1", "data:ids=new").await.unwrap(), "stored");
+    let (first, second) = changes.await.unwrap();
+    first.unwrap();
+    second.unwrap();
+    assert_eq!(one(&plugin, "c1", "data:ids").await.unwrap(), "new");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_out_finishes_even_when_its_caller_gives_up() {
+    let vault = MemoryVault::new();
+    let store = Unreliable {
+        inner: MemoryPluginStore::new(),
+        failing: Arc::default(),
+        stall: Duration::from_millis(400),
+    };
+    let plugin = unreliable_host(store, vault.clone())
+        .load(&mock_package(&Publisher::new(1), ""))
+        .unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    one(&plugin, "c1", "set-credential:token").await.unwrap();
+    let removing = plugin.clone();
+    let removal = tokio::spawn(async move { removing.remove_connection(&c("c1")).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    removal.abort();
+    // The credential is still revoked once the cleanup ends.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !vault.keys().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}

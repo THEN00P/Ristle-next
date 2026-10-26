@@ -57,15 +57,6 @@ impl HostState {
                 "the manifest does not ask for folders".to_owned(),
             ));
         }
-        let granted = plugin
-            .connections
-            .info(&call.connection)
-            .is_some_and(|info| info.folders.iter().any(|folder| folder.id == path.folder));
-        if !granted {
-            return Err(Error::Unavailable(
-                "the folder is not granted to this connection".to_owned(),
-            ));
-        }
         let relative = normalized(&path.path)
             .ok_or_else(|| Error::Unavailable("the path leaves the granted folder".to_owned()))?;
         let Some(access) = plugin.services.folders.as_deref() else {
@@ -73,11 +64,24 @@ impl HostState {
                 "this platform offers no folder access".to_owned(),
             ));
         };
+        // The grant is checked under the same gate as the access, so a
+        // grant changed by a new generation is never read through.
         plugin
             .connections
-            .commit(&call.connection, call.generation, || f(access, &relative))
+            .commit_with(
+                &call.connection,
+                call.generation,
+                call.retirements,
+                |info| {
+                    if !info.folders.iter().any(|folder| folder.id == path.folder) {
+                        return Err(Error::Unavailable(
+                            "the folder is not granted to this connection".to_owned(),
+                        ));
+                    }
+                    f(access, &relative).map_err(folder_error)
+                },
+            )
             .ok_or_else(|| Error::Unauthorized("this call was retired".to_owned()))?
-            .map_err(folder_error)
     }
 }
 

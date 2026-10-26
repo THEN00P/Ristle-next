@@ -43,32 +43,13 @@ pub enum Location {
     },
 }
 
-/// A URL without its query and fragment, which may carry signatures or
-/// tokens (signed CDN URLs).
-fn redact_url(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(mut parsed) => {
-            let had_secret = parsed.query().is_some() || parsed.fragment().is_some();
-            parsed.set_query(None);
-            parsed.set_fragment(None);
-            let _ = parsed.set_password(None);
-            if had_secret {
-                format!("{parsed}?<redacted>")
-            } else {
-                parsed.to_string()
-            }
-        }
-        Err(_) => "<unparsable URL>".to_owned(),
-    }
-}
-
 impl std::fmt::Debug for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             // Header values may be credentials.
             Self::Http { url, headers } => f
                 .debug_struct("Http")
-                .field("url", &redact_url(url))
+                .field("url", &crate::fetch::redact_url(url))
                 .field(
                     "headers",
                     &headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),
@@ -98,8 +79,21 @@ pub struct ProgressiveSource {
 /// A [`MediaStream`] over a progressive resource.
 pub struct ProgressiveStream {
     inner: DecodedStream<ProgressiveDemuxer>,
+    _fetching: FetchGuard,
+}
+
+/// Stops the fetch task when dropped: when the stream goes away, and when
+/// `open` fails or its future is dropped before the stream exists.
+struct FetchGuard {
     remote: Arc<Remote>,
     task: JoinHandle<()>,
+}
+
+impl Drop for FetchGuard {
+    fn drop(&mut self) {
+        self.remote.close();
+        self.task.abort();
+    }
 }
 
 impl std::fmt::Debug for ProgressiveStream {
@@ -107,13 +101,6 @@ impl std::fmt::Debug for ProgressiveStream {
         f.debug_struct("ProgressiveStream")
             .field("decoder", &self.inner.decoder_name())
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for ProgressiveStream {
-    fn drop(&mut self) {
-        self.remote.close();
-        self.task.abort();
     }
 }
 
@@ -148,6 +135,10 @@ impl ProgressiveStream {
         let remote = Remote::new();
         let skip = source.decrypt.as_ref().map_or(0, |d| u64::from(d.skip));
         let task = runtime.spawn(remote.clone().run(feed, source.decrypt.clone()));
+        let guard = FetchGuard {
+            remote: remote.clone(),
+            task,
+        };
         let registry = registry.clone();
         let hint = source.hint;
         let probing = remote.clone();
@@ -177,22 +168,13 @@ impl ProgressiveStream {
             .await;
         let inner = match opened {
             Ok(Ok(inner)) => inner,
-            Ok(Err(error)) => {
-                let error = remote.take_error().unwrap_or(error);
-                remote.close();
-                task.abort();
-                return Err(error);
-            }
-            Err(join) => {
-                remote.close();
-                task.abort();
-                return Err(Error::malformed("progressive stream", join.to_string()));
-            }
+            // Dropping the guard stops the fetch.
+            Ok(Err(error)) => return Err(remote.take_error().unwrap_or(error)),
+            Err(join) => return Err(Error::malformed("progressive stream", join.to_string())),
         };
         Ok(Self {
             inner,
-            remote,
-            task,
+            _fetching: guard,
         })
     }
 

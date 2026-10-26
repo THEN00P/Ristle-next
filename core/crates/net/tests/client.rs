@@ -911,6 +911,66 @@ async fn no_store_and_no_cache_are_honored() {
 }
 
 #[tokio::test]
+async fn conditional_requests_go_to_the_provider() {
+    let h = harness();
+    let scripted = Scripted::new(
+        TestResponse::ok("v1")
+            .header("Cache-Control", "max-age=600")
+            .header("ETag", "\"v1\""),
+    )
+    .await;
+    let server = &scripted.server;
+    h.client.send(cached_get(server, "/a")).await.unwrap();
+    scripted.answer(TestResponse::status(304));
+    let mut conditional = cached_get(server, "/a");
+    conditional
+        .headers
+        .push(("If-None-Match".into(), "\"v1\"".into()));
+    let response = h.client.send(conditional).await.unwrap();
+    assert_eq!(response.status, 304);
+    assert!(!response.cached);
+    scripted.answer(TestResponse::status(412));
+    let mut precondition = cached_get(server, "/a");
+    precondition
+        .headers
+        .push(("If-Match".into(), "\"v0\"".into()));
+    assert_eq!(h.client.send(precondition).await.unwrap().status, 412);
+    assert_eq!(server.requests().len(), 3);
+    // Neither answer replaced the stored response.
+    let response = h.client.send(cached_get(server, "/a")).await.unwrap();
+    assert!(response.cached);
+    assert_eq!(response.body, Bytes::from("v1"));
+}
+
+#[tokio::test]
+async fn a_request_asking_for_validation_gets_no_stored_stand_in() {
+    let h = harness();
+    let scripted = Scripted::new(
+        TestResponse::ok("cached").header("Cache-Control", "max-age=600, stale-if-error=600"),
+    )
+    .await;
+    let server = &scripted.server;
+    h.client.send(cached_get(server, "/a")).await.unwrap();
+    for directive in ["no-cache", "max-age=0"] {
+        scripted.answer(TestResponse::status(503));
+        let mut request = cached_get(server, "/a");
+        request
+            .headers
+            .push(("Cache-Control".into(), directive.into()));
+        let response = h.client.send(request).await.unwrap();
+        assert_eq!(response.status, 503, "{directive}");
+        assert!(!response.cached, "{directive}");
+    }
+    let request = cached_get(server, "/a");
+    drop(scripted);
+    let mut request = request;
+    request
+        .headers
+        .push(("Cache-Control".into(), "no-cache".into()));
+    assert!(h.client.send(request).await.is_err());
+}
+
+#[tokio::test]
 async fn vary_selects_the_cached_response() {
     let h = harness();
     let server = TestServer::start(|request: &RecordedRequest| {

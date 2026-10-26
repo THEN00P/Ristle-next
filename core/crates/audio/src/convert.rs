@@ -9,7 +9,7 @@
 
 use rubato::{FftFixedIn, Resampler};
 
-use crate::stream::StreamFormat;
+use ristle_media::StreamFormat;
 
 /// Input frames per resampler chunk.
 const CHUNK_FRAMES: usize = 1024;

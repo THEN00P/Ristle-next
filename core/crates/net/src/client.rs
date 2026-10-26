@@ -354,6 +354,16 @@ struct Validators {
     headers: Vec<Header>,
 }
 
+/// Request headers that keep a request out of the cache.
+const PASSED_THROUGH: [&str; 6] = [
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "if-match",
+    "if-unmodified-since",
+    "if-range",
+];
+
 impl Client {
     /// A client. `cache` is where cached responses live; without one,
     /// every request bypasses the cache.
@@ -441,26 +451,24 @@ impl Client {
             None => None,
         };
         let now = self.inner.clock.now_ms();
+        // A request that asks for validation is never answered from the
+        // cache unvalidated, not even when the Provider fails.
+        let must_validate = cache::request_wants_revalidation(&request.headers);
         if let Some(stored) = &stored
             && stored.is_fresh(now)
             && !request.revalidate
-            && !cache::request_wants_revalidation(&request.headers)
+            && !must_validate
         {
             return served(stored, &request);
         }
         let conditional = match &stored {
-            Some(stored)
-                if !headers::has(&request.headers, "if-none-match")
-                    && !headers::has(&request.headers, "if-modified-since") =>
-            {
-                Url::parse(&stored.url)
-                    .ok()
-                    .map(|url| Validators {
-                        url,
-                        headers: stored.validators(),
-                    })
-                    .filter(|validators| !validators.headers.is_empty())
-            }
+            Some(stored) => Url::parse(&stored.url)
+                .ok()
+                .map(|url| Validators {
+                    url,
+                    headers: stored.validators(),
+                })
+                .filter(|validators| !validators.headers.is_empty()),
             _ => None,
         };
         let max_body = request.max_body;
@@ -502,6 +510,7 @@ impl Client {
             Ok(parts) => parts,
             Err(error) => {
                 if provider_failed(&error)
+                    && !must_validate
                     && let Some(stored) = &stored
                     && stored.usable_on_error(now)
                 {
@@ -531,6 +540,7 @@ impl Client {
                 .await;
         }
         if matches!(status, 500 | 502 | 503 | 504)
+            && !must_validate
             && let Some(stored) = &stored
             && stored.usable_on_error(now)
         {
@@ -804,7 +814,12 @@ impl Client {
         self.inner.cache.as_ref()?;
         let scope = request.cache.scope()?.clone();
         let method = request.method.cache_method()?;
-        if headers::has(&request.headers, "range") {
+        // The caller's own ranges and preconditions are the Provider's to
+        // evaluate: neither is answered from, nor stored in, the cache.
+        if PASSED_THROUGH
+            .iter()
+            .any(|name| headers::has(&request.headers, name))
+        {
             return None;
         }
         let key = match &request.cache {

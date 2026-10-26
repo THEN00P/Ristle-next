@@ -1,8 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["lab", "player", "uniffi-bindgen"]
-
-[profile.release]
-debug = 1
-# Keep symbols: uniffi-bindgen reads its metadata from them. AGP strips when packaging.
-strip = false

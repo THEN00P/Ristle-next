@@ -288,15 +288,11 @@ impl TsDemuxer {
                     scheme: "scrambled MPEG-TS".into(),
                 });
             }
-            if lost {
-                tracing::debug!(pid, "lost TS packets; dropping the damaged frame");
-                if let Some(framer) = &mut self.framer {
-                    // Frames completed before the gap are intact.
-                    while let Some(packet) = framer.next_packet(false)? {
-                        self.ready.push_back(packet);
-                    }
-                    framer.discontinuity();
-                }
+            // A declared discontinuity breaks the stream just like a lost
+            // packet: what follows does not continue the partial frame.
+            if lost || discontinuity {
+                tracing::debug!(pid, lost, "TS discontinuity; dropping the partial frame");
+                self.reset_framer()?;
                 if let Some(audio) = &mut self.audio {
                     audio.in_payload = false;
                     audio.header.clear();
@@ -366,12 +362,17 @@ impl TsDemuxer {
             self.unplayable = Some(Error::NoAudioTrack);
             return Ok(());
         };
-        if self.audio.as_ref().is_some_and(|audio| audio.pid == pid) {
+        let same_kind = self.framer.as_ref().is_none_or(|f| f.kind() == kind);
+        if self.audio.as_ref().is_some_and(|audio| audio.pid == pid) && same_kind {
             return Ok(());
         }
-        // First PMT, or a new version that moved the audio.
+        // First PMT, or a new version that moved the audio or changed its
+        // stream type.
+        if same_kind {
+            self.reset_framer()?;
+        }
         match &mut self.framer {
-            Some(framer) if framer.kind() == kind => framer.discontinuity(),
+            Some(framer) if framer.kind() == kind => {}
             // The decoder was opened for the first codec and is not reopened.
             Some(framer) if framer.codec().is_some() => {
                 return Err(Error::UnsupportedCodec(format!(
@@ -387,6 +388,17 @@ impl TsDemuxer {
             in_payload: false,
             pts: None,
         });
+        Ok(())
+    }
+
+    /// Keeps the frames completed so far and drops the partial one.
+    fn reset_framer(&mut self) -> Result<(), Error> {
+        if let Some(framer) = &mut self.framer {
+            while let Some(packet) = framer.next_packet(false)? {
+                self.ready.push_back(packet);
+            }
+            framer.discontinuity();
+        }
         Ok(())
     }
 
@@ -799,6 +811,64 @@ pub(crate) mod tests {
             &mut counter,
         ));
         ts
+    }
+
+    fn push_all(ts: &[u8]) -> Result<Vec<DemuxedPacket>, Error> {
+        let mut demuxer = TsDemuxer::new();
+        demuxer.push(ts)?;
+        demuxer.finish()?;
+        let mut packets = Vec::new();
+        while let Some(packet) = demuxer.next_packet()? {
+            packets.push(packet);
+        }
+        Ok(packets)
+    }
+
+    #[test]
+    fn a_stream_type_change_on_the_same_pid_is_refused() {
+        // stream() puts ADTS on PID 0x101; the new PMT keeps the PID but
+        // says MPEG audio.
+        let ts = with_new_pmt(&[(0x03, 0x101)]);
+        let mut demuxer = TsDemuxer::new();
+        let mut result = Ok(());
+        for piece in ts.chunks(188) {
+            result = demuxer.push(piece);
+            while let Ok(Some(_)) = demuxer.next_packet() {}
+            if result.is_err() {
+                break;
+            }
+        }
+        assert!(
+            matches!(result, Err(Error::UnsupportedCodec(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn frames_completed_before_a_pid_switch_are_kept() {
+        // Everything arrives in one chunk, so the old PID's frames are still
+        // buffered when the new PMT moves the audio.
+        let ts = with_new_pmt(&[(0x0f, 0x102)]);
+        assert_eq!(push_all(&ts).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_declared_discontinuity_drops_the_partial_frame() {
+        let mut ts = stream(3, 4);
+        // The last packet of the third PES carries the end of its third
+        // frame and has an adaptation field: mark it discontinuous.
+        let starts: Vec<usize> = ts
+            .chunks(PACKET)
+            .enumerate()
+            .filter(|(_, p)| p[1] & 0x40 != 0 && p[2] == 0x01)
+            .map(|(i, _)| i)
+            .collect();
+        let last = starts[3] - 1;
+        let packet = &mut ts[last * PACKET..(last + 1) * PACKET];
+        assert!(packet[3] & 0x20 != 0 && packet[4] > 0);
+        packet[5] |= 0x80;
+        let firsts: Vec<u8> = push_all(&ts).unwrap().iter().map(|p| p.data[0]).collect();
+        assert_eq!(firsts, vec![0, 1, 2, 10, 11, 12, 20, 21, 30, 31, 32]);
     }
 
     #[test]

@@ -24,9 +24,15 @@
 mod entry;
 mod error;
 mod queue;
+mod random;
 pub mod sequence;
 
 pub use entry::{Advance, CollectionPosition, EntryId, Origin, QueueEntry, RepeatMode, Submitter};
-pub use error::{CorruptState, Error};
-pub use queue::{CanonicalQueue, Current, QueueState};
-pub use sequence::{Sequence, SequenceState};
+pub use error::{CorruptState, Error, InvalidSequence};
+pub use queue::{
+    AddOutcome, CanonicalQueue, CollectionEntry, Current, Lane, QueueState, Rejection, Removed,
+    StartOutcome,
+};
+pub use sequence::{
+    ChangeOutcome, CollectionChange, ObservedPage, RebaseOutcome, Sequence, SequenceState, StartAt,
+};

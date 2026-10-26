@@ -15,11 +15,11 @@
 
 use std::hint;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::thread::Thread;
 
 use crate::TrackToken;
-use crate::output::OutputInfo;
+use crate::output::{OutputInfo, OutputLatency};
 use crate::ring::Ring;
 
 /// What a slot holds.
@@ -42,8 +42,11 @@ pub(crate) struct Record {
 }
 
 const NONE: u64 = u64::MAX;
-const SLOT: usize = 1;
-const HELD: usize = 2;
+/// The `current` word: bit 0 is the slot, bit 1 is `HELD`, and the bits
+/// above are the generation (`GENERATION` per step).
+const SLOT: u64 = 1;
+const HELD: u64 = 2;
+const GENERATION: u64 = 4;
 const FLAG_OCCUPIED: u64 = 1;
 const FLAG_FAILED: u64 = 2;
 
@@ -152,16 +155,27 @@ impl Hold<'_> {
     /// Makes the other slot current (promoting the prepared next Track).
     pub(crate) fn switch(&mut self) {
         self.slot = 1 - self.slot;
-        self.shared
-            .current
-            .store(self.slot | HELD, Ordering::Release);
+        self.shared.current.fetch_xor(SLOT, Ordering::AcqRel);
     }
 }
 
 impl Drop for Hold<'_> {
+    /// Releases the slot and starts a new generation, so a callback that
+    /// read the records before or during the hold cannot switch on them.
     fn drop(&mut self) {
-        self.shared.current.fetch_and(!HELD, Ordering::AcqRel);
+        // HELD is set, so adding HELD clears it and carries one generation.
+        self.shared.current.fetch_add(HELD, Ordering::AcqRel);
     }
+}
+
+/// The slot in a `current` word.
+pub(crate) fn slot_of(word: u64) -> usize {
+    usize::from(word & SLOT == 1)
+}
+
+/// The generation in a `current` word.
+pub(crate) fn generation_of(word: u64) -> u64 {
+    word / GENERATION
 }
 
 pub(crate) struct Slot {
@@ -173,10 +187,13 @@ pub(crate) struct Shared {
     pub(crate) info: OutputInfo,
     pub(crate) slots: [Slot; 2],
     /// Bit 0: the slot the render callback reads. Bit 1 (`HELD`): the
-    /// control side has pinned it. The callback switches slots at a Gapless
-    /// Transition by compare-exchange from an unheld value, so it cannot
-    /// switch while the control side works on the slots.
-    current: AtomicUsize,
+    /// control side has pinned it. Above: a generation, advanced by every
+    /// control command (when its hold is released), every Gapless Transition
+    /// and every end of playback. The callback switches slots by
+    /// compare-exchange from the unheld word it read before its record
+    /// views, so it never switches on views a command has since replaced,
+    /// and the generation is the state's sequence number.
+    current: AtomicU64,
     /// Per slot, the `seq` of the record the callback finished there, so
     /// the control side never treats a finished Track as the next one.
     played: [AtomicU64; 2],
@@ -186,15 +203,25 @@ pub(crate) struct Shared {
     /// `seq` of the record whose Track ended (playback reached its end with
     /// nothing to follow), 0 when none.
     pub(crate) ended: AtomicU64,
-    /// Bumped on every discontinuity, so a reader can tell a position from
-    /// before a seek or Track change from one after it.
-    pub(crate) sequence: AtomicU64,
+    /// `seq` of the failed record whose audio has played out, 0 when none.
+    pub(crate) stopped: AtomicU64,
+    /// Frames the render callback has handed to the output, silence
+    /// included: the clock the output latency is measured on.
+    pub(crate) rendered: AtomicU64,
+    /// The `rendered` count at the end of the last frame of Track audio,
+    /// so silence after it is known to push that audio out.
+    pub(crate) audio_until: AtomicU64,
+    /// `seq` of the record whose end (or failure point) has been reported
+    /// as heard. All of its audio counts as heard from then on, whatever
+    /// the latency estimate has drifted to.
+    pub(crate) heard_end: AtomicU64,
+    pub(crate) latency: OutputLatency,
     wake_requested: AtomicBool,
     pub(crate) decoder: OnceLock<Thread>,
 }
 
 impl Shared {
-    pub(crate) fn new(info: OutputInfo, ring_frames: usize) -> Self {
+    pub(crate) fn new(info: OutputInfo, ring_frames: usize, latency: OutputLatency) -> Self {
         let channels = usize::from(info.channels);
         let slot = || Slot {
             ring: Ring::new(ring_frames, channels),
@@ -203,35 +230,57 @@ impl Shared {
         Self {
             info,
             slots: [slot(), slot()],
-            current: AtomicUsize::new(0),
+            current: AtomicU64::new(0),
             played: [AtomicU64::new(0), AtomicU64::new(0)],
             playing: AtomicBool::new(false),
             volume: AtomicU32::new(1.0_f32.to_bits()),
             ended: AtomicU64::new(0),
-            sequence: AtomicU64::new(0),
+            stopped: AtomicU64::new(0),
+            rendered: AtomicU64::new(0),
+            audio_until: AtomicU64::new(0),
+            heard_end: AtomicU64::new(0),
+            latency,
             wake_requested: AtomicBool::new(false),
             decoder: OnceLock::new(),
         }
     }
 
+    /// The `current` word; see [`slot_of`] and [`generation_of`].
+    pub(crate) fn word(&self) -> u64 {
+        self.current.load(Ordering::Acquire)
+    }
+
     /// The slot the render callback reads.
     pub(crate) fn current(&self) -> usize {
-        self.current.load(Ordering::Acquire) & SLOT
+        slot_of(self.word())
     }
 
     /// Pins the current slot until the returned guard drops. Call with the
     /// feed lock held, so there is one holder at a time.
     pub(crate) fn hold(&self) -> Hold<'_> {
-        let slot = self.current.fetch_or(HELD, Ordering::AcqRel) & SLOT;
+        let slot = slot_of(self.current.fetch_or(HELD, Ordering::AcqRel));
         Hold { shared: self, slot }
     }
 
-    /// The callback's Gapless Transition: switches from `from` to the other
-    /// slot, unless the slot is held or was already switched.
-    pub(crate) fn try_switch(&self, from: usize) -> bool {
-        self.current
-            .compare_exchange(from, 1 - from, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    /// The callback's Gapless Transition: switches to the other slot if the
+    /// word is still `seen`, unheld. Fails when a command held or released
+    /// the slot since, or the slot was already switched.
+    pub(crate) fn try_switch(&self, seen: u64) -> bool {
+        seen & HELD == 0
+            && self
+                .current
+                .compare_exchange(
+                    seen,
+                    (seen ^ SLOT) + GENERATION,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    /// Starts a new generation without a command (the end of playback).
+    pub(crate) fn advance_generation(&self) {
+        self.current.fetch_add(GENERATION, Ordering::AcqRel);
     }
 
     /// Records that the callback finished `seq` in `slot`. The callback
@@ -261,8 +310,16 @@ impl Shared {
         self.wake_requested.store(false, Ordering::Release);
     }
 
-    pub(crate) fn bump_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::AcqRel) + 1
+    /// Frames of Track audio rendered but not yet heard: the output latency,
+    /// less the silence rendered since the last frame of audio.
+    pub(crate) fn in_flight(&self) -> u64 {
+        // The clock first: the callback publishes the boundary before it,
+        // so the boundary read next is at least as new as the clock.
+        let rendered = self.rendered.load(Ordering::Acquire);
+        let audio_until = self.audio_until.load(Ordering::Acquire);
+        self.latency
+            .frames()
+            .saturating_sub(rendered.saturating_sub(audio_until))
     }
 
     pub(crate) fn frames_to_ms(&self, frames: u64) -> u64 {
@@ -279,23 +336,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_held_slot_cannot_be_switched_by_the_callback() {
+    fn a_switch_needs_an_unheld_word_from_before_every_command() {
         let shared = Shared::new(
             OutputInfo {
                 sample_rate: 100,
                 channels: 1,
             },
             4,
+            OutputLatency::default(),
         );
+        let seen = shared.word();
         {
             let mut slots = shared.hold();
-            assert!(!shared.try_switch(0));
+            assert!(!shared.try_switch(seen));
+            assert!(!shared.try_switch(shared.word()));
             slots.switch();
             assert_eq!(shared.current(), 1);
-            assert!(!shared.try_switch(1));
         }
-        assert!(shared.try_switch(1));
+        // The callback's views from before the command are stale.
+        assert!(!shared.try_switch(seen));
+        let now = shared.word();
+        assert_eq!(generation_of(now), generation_of(seen) + 1);
+        assert!(shared.try_switch(now));
         assert_eq!(shared.current(), 0);
+        assert_eq!(generation_of(shared.word()), generation_of(seen) + 2);
+        shared.advance_generation();
+        assert_eq!(slot_of(shared.word()), 0);
+        assert_eq!(generation_of(shared.word()), generation_of(seen) + 3);
     }
 
     #[test]

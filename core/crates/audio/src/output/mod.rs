@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "android")]
 pub mod aaudio;
@@ -24,6 +25,8 @@ pub struct OutputRequest {
     /// How the output reports failures after `open`, from any thread. The
     /// engine turns them into an `EngineEvent::OutputFailed`.
     pub errors: OutputErrors,
+    /// Where the output keeps its current latency up to date.
+    pub latency: OutputLatency,
 }
 
 impl fmt::Debug for OutputRequest {
@@ -48,6 +51,30 @@ impl OutputErrors {
     /// Reports one failure. Not real-time safe: call it off the render thread.
     pub fn report(&self, error: OutputError) {
         (self.0)(error);
+    }
+}
+
+/// How far the listener is behind the render callback: frames rendered but
+/// not yet heard (the device's buffers and the path to the speaker). The
+/// output updates it as it learns; the engine subtracts it from positions
+/// and waits it out before it reports a Track change or stops output.
+#[derive(Clone, Debug, Default)]
+pub struct OutputLatency(Arc<AtomicU64>);
+
+impl OutputLatency {
+    /// A latency of zero, until the output sets one.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the latency. Real-time safe: one atomic store.
+    pub fn set_frames(&self, frames: u64) {
+        self.0.store(frames, Ordering::Relaxed);
+    }
+
+    /// The latest latency.
+    pub fn frames(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
     }
 }
 

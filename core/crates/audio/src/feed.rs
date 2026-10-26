@@ -22,7 +22,7 @@ use crate::engine::{EngineEvent, EngineObserver};
 use crate::output::{AudioOutput, OutputError};
 use crate::render::Note;
 use crate::shared::{Record, Shared};
-use crate::stream::{MediaStream, Read};
+use ristle_media::{MediaStream, Read};
 
 /// Most frames one read asks a stream for.
 const READ_FRAMES: u64 = 4096;

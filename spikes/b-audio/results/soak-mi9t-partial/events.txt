@@ -1,5 +1,0 @@
-16:04:33 started pid=21758 audioserver=855 device=Mi 9T
-16:05:47 home + screen off (mWakefulness=Dozing)
-Now forced in to deep idle mode
-16:16:01 dispatch pause (screen off)
-16:16:06 dispatch play

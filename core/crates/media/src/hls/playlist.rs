@@ -197,20 +197,30 @@ fn parse_range(value: &str) -> Result<(u64, Option<u64>), Error> {
     }
 }
 
-/// The key one `EXT-X-KEY` tag describes: `Ok(None)` for `METHOD=NONE`.
+/// What one `EXT-X-KEY` tag says.
 fn parse_key(attributes: &str, url: &Url) -> Result<KeyTag, Error> {
     let method = attribute_value(attributes, "METHOD").unwrap_or_else(|| "unknown".into());
     if method == "NONE" {
         return Ok(KeyTag::None);
     }
     let format = attribute_value(attributes, "KEYFORMAT").unwrap_or_else(|| "identity".into());
+    let tag = key_for_format(&method, &format, attributes, url)?;
+    Ok(KeyTag::Format(format, tag))
+}
+
+fn key_for_format(
+    method: &str,
+    format: &str,
+    attributes: &str,
+    url: &Url,
+) -> Result<FormatKey, Error> {
     if method == "AES-128" && format == "identity" {
         let uri = attribute_value(attributes, "URI")
             .ok_or_else(|| malformed("an AES-128 key without a URI"))?;
         let iv = attribute_value(attributes, "IV")
             .map(|iv| parse_iv(&iv))
             .transpose()?;
-        return Ok(KeyTag::Aes128(Key {
+        return Ok(FormatKey::Aes128(Key {
             url: resolve(url, &uri)?,
             iv,
         }));
@@ -221,13 +231,53 @@ fn parse_key(attributes: &str, url: &Url) -> Result<KeyTag, Error> {
         "com.apple.streamingkeydelivery" => "FairPlay DRM",
         _ => "encrypted HLS",
     };
-    Ok(KeyTag::Unsupported(format!("{system} ({method})")))
+    Ok(FormatKey::Unsupported(format!("{system} ({method})")))
 }
 
 enum KeyTag {
+    /// `METHOD=NONE`: no key system applies any more.
     None,
+    /// A key for one KEYFORMAT.
+    Format(String, FormatKey),
+}
+
+enum FormatKey {
     Aes128(Key),
     Unsupported(String),
+}
+
+/// The keys in effect, one per KEYFORMAT: a tag replaces only the key of its
+/// own format (RFC 8216bis, 4.4.4.4), so a later DRM-only tag leaves an
+/// active identity key in place.
+#[derive(Default)]
+struct KeyState {
+    by_format: std::collections::BTreeMap<String, FormatKey>,
+}
+
+impl KeyState {
+    fn apply(&mut self, tag: KeyTag) {
+        match tag {
+            KeyTag::None => self.by_format.clear(),
+            KeyTag::Format(format, key) => {
+                self.by_format.insert(format, key);
+            }
+        }
+    }
+
+    /// The identity AES-128 key, if one is in effect. Encryption the host
+    /// cannot decrypt, with no identity key beside it, fails.
+    fn effective(&self) -> Result<Option<Key>, Error> {
+        if let Some(FormatKey::Aes128(key)) = self.by_format.get("identity") {
+            return Ok(Some(key.clone()));
+        }
+        match self.by_format.values().find_map(|k| match k {
+            FormatKey::Unsupported(scheme) => Some(scheme.clone()),
+            FormatKey::Aes128(_) => None,
+        }) {
+            Some(scheme) => Err(Error::UnsupportedEncryption { scheme }),
+            None => Ok(None),
+        }
+    }
 }
 
 fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
@@ -237,10 +287,7 @@ fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
     let mut sequence = 0u64;
     let mut duration_us: Option<u64> = None;
     let mut start_us = 0u64;
-    let mut key: Option<Key> = None;
-    // Consecutive EXT-X-KEY tags offer the same segments in several key
-    // systems. The identity one wins; DRM-only fails.
-    let mut key_group: Vec<KeyTag> = Vec::new();
+    let mut keys = KeyState::default();
     let mut map: Option<Arc<Map>> = None;
     let mut map_pending: Option<(Url, Option<ByteRange>, Option<Key>)> = None;
     let mut range: Option<(u64, Option<u64>)> = None;
@@ -251,9 +298,7 @@ fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
 
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if !line.starts_with('#') {
-            if !key_group.is_empty() {
-                key = resolve_key_group(std::mem::take(&mut key_group))?;
-            }
+            let key = keys.effective()?;
             let segment_url = resolve(url, line)?;
             if let Some((map_url, map_range, map_key)) = map_pending.take() {
                 map = Some(Arc::new(Map {
@@ -321,7 +366,7 @@ fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
                     .parse()
                     .map_err(|_| malformed(format!("media sequence {value:?}")))?;
             }
-            "#EXT-X-KEY" => key_group.push(parse_key(value, url)?),
+            "#EXT-X-KEY" => keys.apply(parse_key(value, url)?),
             "#EXT-X-MAP" => {
                 let uri = attribute_value(value, "URI")
                     .ok_or_else(|| malformed("EXT-X-MAP without a URI"))?;
@@ -332,11 +377,8 @@ fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
                         start: offset.unwrap_or(0),
                         length: Some(length),
                     });
-                // A key tag right before the map applies to it too.
-                if !key_group.is_empty() {
-                    key = resolve_key_group(std::mem::take(&mut key_group))?;
-                }
-                map_pending = Some((resolve(url, &uri)?, map_range, key.clone()));
+                // The key in effect here encrypts the init section.
+                map_pending = Some((resolve(url, &uri)?, map_range, keys.effective()?));
             }
             "#EXT-X-BYTERANGE" => range = Some(parse_range(value)?),
             "#EXT-X-DISCONTINUITY" => discontinuity = true,
@@ -354,22 +396,6 @@ fn parse_media(text: &str, url: &Url) -> Result<MediaPlaylist, Error> {
         segments,
         ended,
     })
-}
-
-fn resolve_key_group(group: Vec<KeyTag>) -> Result<Option<Key>, Error> {
-    let mut unsupported = None;
-    let mut none = false;
-    for tag in group {
-        match tag {
-            KeyTag::Aes128(key) => return Ok(Some(key)),
-            KeyTag::None => none = true,
-            KeyTag::Unsupported(scheme) => unsupported = Some(scheme),
-        }
-    }
-    match unsupported {
-        Some(scheme) if !none => Err(Error::UnsupportedEncryption { scheme }),
-        _ => Ok(None),
-    }
 }
 
 fn parse_master(text: &str, url: &Url) -> Result<MasterPlaylist, Error> {
@@ -590,6 +616,36 @@ mod tests {
         let text = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"skd://x\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:4,\ns.ts\n#EXT-X-ENDLIST\n";
         let playlist = media(text).unwrap();
         assert!(playlist.segments[0].key.is_some());
+    }
+
+    #[test]
+    fn a_later_drm_tag_leaves_the_identity_key_in_effect() {
+        let text = "#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI=\"k1\"
+#EXTINF:4,
+a.ts
+#EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"skd://x\"
+#EXTINF:4,
+b.ts
+#EXT-X-KEY:METHOD=AES-128,URI=\"k2\"
+#EXTINF:4,
+c.ts
+#EXT-X-KEY:METHOD=NONE
+#EXTINF:4,
+d.ts
+#EXT-X-ENDLIST
+";
+        let playlist = media(text).unwrap();
+        let key = |i: usize| {
+            playlist.segments[i]
+                .key
+                .as_ref()
+                .map(|k| k.url.path().to_owned())
+        };
+        assert_eq!(key(0).as_deref(), Some("/audio/k1"));
+        assert_eq!(key(1).as_deref(), Some("/audio/k1"));
+        assert_eq!(key(2).as_deref(), Some("/audio/k2"));
+        assert_eq!(key(3), None);
     }
 
     #[test]

@@ -51,14 +51,17 @@ impl HostConnection for HostState {
             };
             let plugin = &state.plugin;
             let services = &plugin.services;
-            let read = plugin
-                .connections
-                .commit(&call.connection, call.generation, || {
+            let read = plugin.connections.commit(
+                &call.connection,
+                call.generation,
+                call.retirements,
+                || {
                     services
                         .store
                         .connection_kv(&plugin.id, &call.connection)
                         .get(&key, services.clock.now_ms())
-                });
+                },
+            );
             match read {
                 None => Ok(None),
                 Some(Ok(value)) => Ok(value),
@@ -92,14 +95,17 @@ impl HostConnection for HostState {
             let now = services.clock.now_ms();
             let expires = ttl_seconds.map(|ttl| now.saturating_add(u64::from(ttl) * 1000));
             let quota = state.quota();
-            let written = plugin
-                .connections
-                .commit(&call.connection, call.generation, || {
+            let written = plugin.connections.commit(
+                &call.connection,
+                call.generation,
+                call.retirements,
+                || {
                     services
                         .store
                         .connection_kv(&plugin.id, &call.connection)
                         .set(&key, &value, expires, quota, now)
-                });
+                },
+            );
             match written {
                 None => Err(retired()),
                 Some(Ok(Stored::Yes)) => Ok(()),
@@ -131,7 +137,7 @@ impl HostConnection for HostState {
             let plugin = &state.plugin;
             plugin
                 .connections
-                .commit(&call.connection, call.generation, || {
+                .commit(&call.connection, call.generation, call.retirements, || {
                     plugin
                         .services
                         .store
@@ -146,7 +152,11 @@ impl HostConnection for HostState {
     fn account(&mut self, _: Resource<ConnectionHandle>) -> wasmtime::Result<Option<Account>> {
         Ok(self.timed(|state| {
             let call = state.live_call()?;
-            let account = state.plugin.connections.info(&call.connection)?.account?;
+            let account = state
+                .plugin
+                .connections
+                .info_at(&call.connection, call.generation, call.retirements)?
+                .account?;
             Some(Account {
                 id: account.id,
                 name: account.name,
@@ -166,7 +176,11 @@ impl HostConnection for HostState {
     fn server(&mut self, _: Resource<ConnectionHandle>) -> wasmtime::Result<Option<MediaServer>> {
         Ok(self.timed(|state| {
             let call = state.live_call()?;
-            let server = state.plugin.connections.info(&call.connection)?.server?;
+            let server = state
+                .plugin
+                .connections
+                .info_at(&call.connection, call.generation, call.retirements)?
+                .server?;
             Some(MediaServer {
                 name: server.name,
                 urls: server.urls,
@@ -182,7 +196,7 @@ impl HostConnection for HostState {
             state
                 .plugin
                 .connections
-                .info(&call.connection)
+                .info_at(&call.connection, call.generation, call.retirements)
                 .map(|info| {
                     info.folders
                         .into_iter()
@@ -211,6 +225,7 @@ impl HostConnection for HostState {
                     plugin.services.vault.as_ref(),
                     &call.connection,
                     call.generation,
+                    call.retirements,
                 )
                 .map_err(|error| {
                     tracing::warn!(plugin = %plugin.id, %error, "reading a credential failed");
@@ -248,7 +263,7 @@ impl HostConnection for HostState {
             match plugin.connections.write_credential(
                 plugin.services.vault.as_ref(),
                 &call.connection,
-                call.generation,
+                (call.generation, call.retirements),
                 call.credential_base,
                 record,
                 &encoded,

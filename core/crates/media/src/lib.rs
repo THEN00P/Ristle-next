@@ -34,6 +34,8 @@ mod stream;
 
 pub use codec::{Codec, CodecDescription, HeAac};
 pub use container::ContainerStream;
+#[cfg(target_os = "android")]
+pub use decode::MediaCodecProvider;
 pub use decode::{
     Decoder, DecoderProvider, DecoderRegistry, LibopusProvider, OpenedDecoder, Packet, Support,
     SymphoniaProvider,

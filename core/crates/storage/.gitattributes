@@ -1,0 +1,3 @@
+# The schema text is stored verbatim in every database (sqlite_master), and
+# the fixture is compared against it, so both keep LF on every platform.
+*.sql text eol=lf

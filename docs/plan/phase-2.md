@@ -309,6 +309,21 @@ which must never go back, so it is not cache), `command_receipts`,
 Compiled Plugin artifacts are files in the cache directory keyed by package
 hash and engine configuration.
 
+As built in M3: `cache.sqlite` is attached to the same connections as schema
+`cache`, so one `Tx` reaches both; it is never migrated, and a cache database
+of another version is recreated. WAL does not commit the two atomically, so
+cache keys carry the Provider Connection's generation and are read with the
+current one: an old account's rows that survive a crash are never served. Tracks are stored as `ristle_domain::Track`
+JSON, and a sequence's `Opened` as JSON, so **the serde shape of `Track`,
+`TrackRef`, `MediaDate`, `Artwork`, `Named`, `MetadataAttribute` and
+`Opened` is part of schema v1.** Adding an optional field with
+`#[serde(default)]` is fine; renaming or removing one needs a storage
+migration. `crates/storage/tests/fixtures/schema-v1.sql` is the committed v1
+database, and its test fails when a domain change stops it from decoding.
+Besides the fixed signatures, `Storage` has `write_blocking` and
+`read_blocking` for the synchronous ports, and `set_aside` to move a
+database in recovery mode out of the way.
+
 ### Ports
 
 ```rust

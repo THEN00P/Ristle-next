@@ -47,6 +47,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 # ristle-queue (M2): seeded shuffles.
 rand_chacha = { version = "0.9", default-features = false }
+# ristle-storage (M3). SQLite is compiled in, so every platform runs the
+# same version.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 missing_docs = "warn"

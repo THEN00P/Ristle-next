@@ -217,6 +217,8 @@ pub struct QueueState { pub collection: Vec<QueueEntry>, pub cursor: Option<usiz
 /// taken from the lane, which then lives nowhere else.
 pub enum Current { AtCursor, Detached(Box<QueueEntry>) }
 
+/// A collection entry to start, append or reconcile, with its position.
+pub struct CollectionEntry { pub track: Track, pub position: CollectionPosition, pub slot: Option<SlotId> }
 impl CanonicalQueue {
     pub fn start_collection(&mut self, entries: Vec<CollectionEntry>, start: usize) -> StartOutcome;
     pub fn add_to_queue(&mut self, track: Track, by: Option<Submitter>) -> Result<EntryId, Rejection>;
@@ -253,6 +255,8 @@ pub struct SequenceState { pub descriptor: SequenceDescriptor, pub slots: Vec<Sl
                            pub order: Vec<SlotId>, pub cursor: Option<usize>, pub materialized_end: usize,
                            pub shuffle: Option<u64>,  // order[..=cursor] is what played this pass
                            pub revision: u64, pub next_slot: SlotId }
+/// `Beginning` with a seed is Shuffle Play; `Slot` with a seed plays that slot, then all others shuffled.
+pub enum StartAt { Beginning, Slot(SlotId) }
 impl Sequence {
     pub fn start(descriptor: SequenceDescriptor, slots: Vec<Slot>, at: StartAt, shuffle: Option<u64>) -> Result<Self, InvalidSequence>;
     pub fn set_shuffle(&mut self, seed: Option<u64>);   // keeps current and consumed prefix
@@ -262,9 +266,15 @@ impl Sequence {
     pub fn restart(&mut self);
     pub fn window(&self, history: usize, lookahead: usize) -> Vec<SlotId>;
     pub fn hydration_plan(&self, max: usize) -> Vec<SlotId>;     // only unresolved lookahead
-    pub fn resolve(&mut self, resolved: Vec<(SlotId, TrackRef)>);
-    pub fn apply_local_change(&mut self, change: CollectionChange); // like/unlike made in Ristle
+    pub fn resolve(&mut self, resolved: Vec<(SlotId, TrackRef)>) -> usize;  // how many were unresolved
+    pub fn seek_to(&mut self, slot: SlotId) -> bool;               // anywhere, for queue navigation
+    pub fn refill_batch(&self, max: usize) -> Vec<SlotId>;         // after materialized_end, whatever the cursor
+    pub fn set_materialized_end(&mut self, end: usize) -> bool;
+    pub fn apply_local_change(&mut self, change: CollectionChange) -> ChangeOutcome; // like/unlike made in Ristle; slots inserted/removed
     pub fn rebase(&mut self, page: ObservedPage) -> RebaseOutcome;  // drift found on re-read
+    // CollectionChange { Added { source, at, track }, Removed { source, track, at: Option<u64> } }
+    // ObservedPage { source, offset, tracks: Vec<TrackRef>, revision, total }
+    // RebaseOutcome { shift: i64, resolved, dropped, inserted: Vec<SlotId> }
     pub fn state(&self) -> &SequenceState;
     pub fn restore(state: SequenceState) -> Result<Self, CorruptState>;
 }
@@ -298,6 +308,21 @@ which must never go back, so it is not cache), `command_receipts`,
 `local_files`, `local_tracks`. `cache.sqlite`: `http_cache`, `page_cache`.
 Compiled Plugin artifacts are files in the cache directory keyed by package
 hash and engine configuration.
+
+As built in M3: `cache.sqlite` is attached to the same connections as schema
+`cache`, so one `Tx` reaches both; it is never migrated, and a cache database
+of another version is recreated. WAL does not commit the two atomically, so
+cache keys carry the Provider Connection's generation and are read with the
+current one: an old account's rows that survive a crash are never served. Tracks are stored as `ristle_domain::Track`
+JSON, and a sequence's `Opened` as JSON, so **the serde shape of `Track`,
+`TrackRef`, `MediaDate`, `Artwork`, `Named`, `MetadataAttribute` and
+`Opened` is part of schema v1.** Adding an optional field with
+`#[serde(default)]` is fine; renaming or removing one needs a storage
+migration. `crates/storage/tests/fixtures/schema-v1.sql` is the committed v1
+database, and its test fails when a domain change stops it from decoding.
+Besides the fixed signatures, `Storage` has `write_blocking` and
+`read_blocking` for the synchronous ports, and `set_aside` to move a
+database in recovery mode out of the way.
 
 ### Ports
 

@@ -105,7 +105,8 @@ the decoder. *(spike B: verify per format)*
 
 ## Spike B results (2026-10-13 to 2026-10-17)
 
-Code: `spikes/b-audio/` (deleted after review). Criterion 2 was measured in spike
+Code: `spikes/b-audio/`, deleted at M6a; the paths below are in commit `818eac8`
+(`git show 818eac8:spikes/b-audio/<path>`). Criterion 2 was measured in spike
 C (about 1.4 % of one core on an iPhone 8) and was not repeated.
 
 **Verdict: go, with five design changes** (summarized at the end and carried

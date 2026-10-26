@@ -244,6 +244,9 @@ impl Framer {
                 break header;
             }
             tracing::warn!("skipping an ADTS frame with several raw data blocks");
+            // It still takes its place on the timeline and its mark.
+            let pts = self.frame_pts(header.rate);
+            self.next_pts = Some(pts + i64::from(header.samples));
             self.drop_front(header.len);
         };
 
@@ -338,18 +341,16 @@ impl Framer {
             Some(codec)
                 if codec.codec != header.codec
                     || codec.sample_rate != Some(header.rate)
-                    || codec.channels != Some(header.channels) =>
+                    || codec.channels != Some(header.channels)
+                    || codec.extra_data.as_deref() != header.asc.as_ref().map(|a| &a[..]) =>
             {
-                // A decoder cannot follow a mid-stream change of rate or
-                // layout; HLS signals such a change with a discontinuity, which
-                // starts a new stream.
-                Err(Error::malformed(
-                    "elementary stream",
-                    format!(
-                        "changed from {:?} {:?} Hz to {:?} {} Hz",
-                        codec.codec, codec.sample_rate, header.codec, header.rate
-                    ),
-                ))
+                // The decoder was opened for the first configuration and is
+                // not reopened, also not across an HLS discontinuity: a
+                // change of rate, layout or AAC profile ends the stream.
+                Err(Error::UnsupportedCodec(format!(
+                    "a change from {:?} {:?} Hz to {:?} {} Hz mid-stream",
+                    codec.codec, codec.sample_rate, header.codec, header.rate
+                )))
             }
             Some(_) => Ok(()),
         }
@@ -495,6 +496,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn skipped_frames_keep_their_place_on_the_timeline() {
+        let mut multi = adts_frame(&[9; 30]);
+        multi[6] |= 0x01; // two raw data blocks: 2048 frames
+        let mut framer = Framer::new(EsKind::Adts);
+        framer.push(&adts_frame(&[1; 30]), Some(0));
+        framer.push(&multi, Some(90_000));
+        framer.push(&adts_frame(&[2; 30]), None);
+        let packets = drain(&mut framer, true);
+        assert_eq!(packets[1].pts, 44_100 + 2048);
+        // A run of skipped frames leaves no marks behind.
+        let mut framer = Framer::new(EsKind::Adts);
+        for i in 0..100 {
+            framer.push(&multi, Some(i * 4000));
+        }
+        assert!(drain(&mut framer, true).is_empty());
+        assert!(framer.marks.is_empty());
+    }
+
+    #[test]
     fn frames_with_several_raw_data_blocks_are_skipped() {
         let mut multi = adts_frame(&[9; 30]);
         multi[6] |= 0x01; // two raw data blocks
@@ -518,6 +538,22 @@ pub(crate) mod tests {
         framer.push(&adts_frame(&[4; 10]), None);
         let packets = drain(&mut framer, true);
         assert_eq!(packets.len(), 1);
+    }
+
+    #[test]
+    fn a_profile_change_after_a_discontinuity_is_refused() {
+        let mut main = adts_frame(&[0; 20]);
+        main[2] &= 0x3f; // object type 1 (AAC Main), same rate and layout
+        let mut framer = Framer::new(EsKind::Adts);
+        framer.push(&adts_frame(&[0; 20]), None);
+        assert!(framer.next_packet(true).unwrap().is_some());
+        framer.discontinuity();
+        framer.push(&main, None);
+        framer.push(&main, None);
+        assert!(matches!(
+            framer.next_packet(true),
+            Err(Error::UnsupportedCodec(_))
+        ));
     }
 
     #[test]

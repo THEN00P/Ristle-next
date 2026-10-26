@@ -368,3 +368,49 @@ fn a_missing_resource_fails_to_open() {
         other => panic!("expected a typed 404: {:?}", other.map(|_| ())),
     }
 }
+
+#[test]
+fn a_cancelled_open_stops_fetching() {
+    let harness = Harness::new(4096);
+    harness
+        .fetch
+        .put(URL, std::fs::read(fixture("album-1.flac")).unwrap());
+    // The server stalls after the first chunk, so probing waits.
+    let _gate = harness.fetch.gate(URL);
+    let source = ProgressiveSource {
+        location: harness.http(Vec::new()),
+        hint: MediaHint::default(),
+        decrypt: None,
+    };
+    let fetch: Arc<dyn Fetch> = harness.fetch.clone();
+    let registry = DecoderRegistry::with_defaults();
+    let open = ProgressiveStream::open(source, fetch, harness.runtime.handle().clone(), &registry);
+    let cancelled = harness
+        .runtime
+        .block_on(async { tokio::time::timeout(Duration::from_millis(200), open).await });
+    assert!(cancelled.is_err(), "open should still be waiting");
+    // The fetch task held the only other reference to the fetcher.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(&harness.fetch) > 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the fetch task outlived the cancelled open"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn fetch_errors_do_not_carry_url_secrets() {
+    let harness = Harness::new(4096);
+    let location = Location::Http {
+        url: "https://TOKEN@media.example/track?sig=SECRET".into(),
+        headers: Vec::new(),
+    };
+    match harness.open(location, None) {
+        Err(Error::Fetch { url, .. }) => {
+            assert_eq!(url, "https://media.example/track?<redacted>");
+        }
+        other => panic!("expected a fetch error: {:?}", other.map(|_| ())),
+    }
+}

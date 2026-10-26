@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::feed::{self, Control, ErrorInbox, Feed, lock};
-use crate::output::{AudioOutput, OutputError, OutputErrors, OutputRequest};
+use crate::output::{AudioOutput, OutputError, OutputErrors, OutputLatency, OutputRequest};
 use crate::render::{NOTE_CAPACITY, RenderState, Renderer};
-use crate::shared::Shared;
-use crate::stream::MediaStream;
+use crate::shared::{Shared, generation_of, slot_of};
+use ristle_media::MediaStream;
 
 /// Identifies a Track to the engine. The session passes its queue entry id,
 /// and the engine reports it back in state and events.
@@ -149,7 +149,9 @@ impl Engine {
                 let errors = Arc::clone(&errors);
                 OutputErrors::new(move |error| errors.report(error))
             },
+            latency: OutputLatency::new(),
         };
+        let latency = request.latency.clone();
         let info = output.open(request, Box::new(Renderer::new(installed)))?;
         if info.sample_rate == 0 || info.channels == 0 {
             output.close();
@@ -157,7 +159,7 @@ impl Engine {
         }
         let ring_frames =
             (u64::from(info.sample_rate) * u64::from(config.buffer_ms.max(1)) / 1000).max(1);
-        let shared = Arc::new(Shared::new(info, ring_frames as usize));
+        let shared = Arc::new(Shared::new(info, ring_frames as usize, latency));
         let (notes, notes_out) = rtrb::RingBuffer::new(NOTE_CAPACITY);
         if install
             .push(RenderState::new(Arc::clone(&shared), notes))
@@ -207,7 +209,6 @@ impl Engine {
         let slots = shared.hold();
         feed.clear(shared, slots.other());
         feed.restart(shared, slots.current(), Some(track), Some(stream), start_ms);
-        shared.bump_sequence();
     }
 
     /// Prepares `stream` to follow the current Track gaplessly. Its audio is
@@ -241,7 +242,6 @@ impl Engine {
         let slots = shared.hold();
         feed.clear(shared, slots.other());
         feed.clear(shared, slots.current());
-        shared.bump_sequence();
     }
 
     /// Makes the prepared next Track current now, using the audio already
@@ -266,12 +266,11 @@ impl Engine {
         let previous = slots.current();
         slots.switch();
         feed.clear(shared, previous);
-        shared.bump_sequence();
         true
     }
 
-    /// Starts output. A Track that has ended stays ended until it is
-    /// replaced or sought.
+    /// Starts output. A Track that has ended, or whose failed stream has
+    /// played out, stays stopped until it is replaced or sought.
     pub fn play(&self) -> Result<(), Error> {
         let shared = self.shared();
         let feed = lock(&self.control.feed);
@@ -279,7 +278,12 @@ impl Engine {
         if record.token.is_none() {
             return Err(Error::NoCurrent);
         }
-        if shared.ended.load(Ordering::Acquire) == record.seq {
+        // An ended Track, or a failed one whose audio has played out, stays
+        // stopped until it is replaced or sought, once its end has been
+        // heard. Before that, output still has its last frames to play.
+        let finished = shared.ended.load(Ordering::Acquire) == record.seq
+            || shared.stopped.load(Ordering::Acquire) == record.seq;
+        if finished && shared.heard_end.load(Ordering::Acquire) == record.seq {
             return Ok(());
         }
         shared.playing.store(true, Ordering::Release);
@@ -307,7 +311,8 @@ impl Engine {
             return Err(Error::NoCurrent);
         };
         feed.restart(shared, current, Some(track), None, position_ms);
-        Ok(shared.bump_sequence())
+        drop(slots);
+        Ok(generation_of(shared.word()))
     }
 
     /// Sets the one core-owned gain, 0 to 1. Changes during playback ramp
@@ -322,17 +327,36 @@ impl Engine {
         Ok(())
     }
 
-    /// The engine's state now.
+    /// The engine's state now, consistent with its `sequence`.
     pub fn state(&self) -> EngineState {
         let shared = self.shared();
         let feed = lock(&self.control.feed);
-        let sequence = shared.sequence.load(Ordering::Acquire);
-        let current = shared.current();
+        // Commands are excluded by the feed lock; the render callback can
+        // still switch slots or end playback, which changes the word.
+        loop {
+            let word = shared.word();
+            let state = self.state_at(&feed, slot_of(word), generation_of(word));
+            if shared.word() == word {
+                return state;
+            }
+        }
+    }
+
+    fn state_at(&self, feed: &Feed, current: usize, sequence: u64) -> EngineState {
+        let shared = self.shared();
         let record = feed.slots[current].record;
         let next = feed.slots[1 - current].record;
         let next_played = shared.has_played(1 - current, next.seq);
         let ring = &shared.slots[current].ring;
-        let position = record.start_frame + ring.read_position().saturating_sub(record.start);
+        // What has been heard: what was rendered of this record, less what
+        // is still in the output, never before the record's start.
+        let rendered = ring.read_position().saturating_sub(record.start);
+        let in_flight = if shared.heard_end.load(Ordering::Acquire) == record.seq {
+            0
+        } else {
+            shared.in_flight()
+        };
+        let position = record.start_frame + rendered.saturating_sub(in_flight);
         let ended = record.token.is_some() && shared.ended.load(Ordering::Acquire) == record.seq;
         EngineState {
             current: record.token,

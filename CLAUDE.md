@@ -62,13 +62,17 @@ before relying on it, and update it when you learn something new.
   not the global Java 25.
 - **Git Bash rewrites `/data/...` and `/sdcard/...` in adb arguments** into
   Windows paths, so pushes and shell commands fail or land in the wrong place.
-  Prefix adb calls with `MSYS_NO_PATHCONV=1` (the `spikes/b-audio` scripts do).
+  Prefix adb calls with `MSYS_NO_PATHCONV=1`.
   Files adb pushes into a directory it created belong to `shell`, so the app
   can't read them: push into the app's own `files/` directory.
 - **C code in Android Rust builds:** cargo-ndk sets the hyphenated
   `CFLAGS_<triple>` variables, which `cc` prefers over the underscore form, so
   pass extra flags as `env "CFLAGS_aarch64-linux-android=..."`. Crates that
   build with cmake (libopus) need the VS-bundled cmake on PATH.
+  `cargo ndk` builds of them also need `ANDROID_NDK_HOME` (and
+  `ANDROID_NDK`) set to `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`; set
+  those only for the `cargo ndk` command, because they break the host
+  (Windows) build of the same crates.
 - **Babysitting Codex reviews: T3's PR watch wakes late.** It reacts
   promptly to the edited "Codex Review Summary" comment, but delivers the
   inline review comments about ten minutes late. Poll in the background
@@ -116,7 +120,8 @@ before relying on it, and update it when you learn something new.
   helpers in `tests/*.rs` crates. Those files carry a crate-level
   `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - **CI's `cargo doc` and clippy differ in features.** `cargo doc` runs
-  without `--all-features`, so code used only behind a feature (for example
+  with `RUSTDOCFLAGS=-D warnings` (set it locally too, or rustdoc lints such
+  as an unescaped `<Provider>` only fail in CI) and without `--all-features`, so code used only behind a feature (for example
   `test-support` helpers) must be `#[cfg(feature = ...)]`-gated, or it fails
   CI as dead code while local `--all-features` clippy passes.
 - **Running Rust test binaries on the emulator:** `cargo ndk -t x86_64
@@ -136,3 +141,29 @@ before relying on it, and update it when you learn something new.
   give CI jobs workstream prefixes. For stacked PRs, merge bottom-up with
   merge commits and retarget the next PR to `main` before deleting its base
   branch.
+  Merging many PRs at once is cheapest locally. Merge them `--no-ff` in order
+  on a branch off `main`, run CI on the result, and fast-forward `main`.
+  GitHub marks a PR merged once its head is in its base. For a stacked PR
+  whose base can't be retargeted ("no new commits"), fast-forward that base
+  branch to `main`.
+  `core.yml` conflicts happen whenever two branches append a job in the same
+  place. Resolve them by hand: a regex union of the hunks cut one job's header
+  off. Check the job list (`grep -E '^  [a-z-]+:$'`).
+  Branches that merge cleanly can still conflict in meaning. A's follow-ups
+  added a field to `QueueState` that storage didn't persist, so only the
+  merged state failed to compile. Always build the merged state.
+- **When GitHub Actions starts no jobs** (annotation: "recent account payments
+  have failed or your spending limit needs to be increased", every job
+  failing in 2 s with zero steps): the private repo's minutes are used up.
+  Run the `core.yml` steps locally on Windows instead. The NDK builds
+  (opusic-sys) need Visual Studio's cmake on PATH (see
+  `../Ristle/CLAUDE.local.md`), and `ANDROID_NDK_HOME` points at
+  `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`. cargo-deny takes
+  `--all-features` before `check`. The `bindings` job (Kotlin/Swift) only
+  runs on Linux, so skip it only when `crates/ffi` is untouched.
+- **`ristle-storage` fixture and SQLite quirks.** `crates/storage/tests/fixtures/schema-v1.sql`
+  stands for users' databases: never regenerate it; a schema change is a new
+  migration plus a test against it (`src/fixture.rs`). rusqlite's bundled
+  SQLite turns foreign keys **on** by default, also for ad-hoc test
+  connections, and `VACUUM INTO` writes `sqlite_master` in a different
+  order, so compare schemas sorted by type and name.

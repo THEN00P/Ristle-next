@@ -65,18 +65,22 @@ fn plays_at_the_device_rate_in_real_time_and_ends() {
     thread::sleep(Duration::from_millis(1000));
     let position = engine.state().position_ms;
     let elapsed = started.elapsed().as_millis() as u64;
-    // The device pulls in real time. The position counts frames handed to
-    // the device, so it leads the wall clock by the device buffer (AAudio
-    // fills it at start) and trails it by start-up.
+    // The device pulls in real time. The position is what has been heard:
+    // frames rendered less the output latency, so it never leads the wall
+    // clock (beyond the latency estimate's error) and trails it by start-up.
+    println!("position {position} ms after {elapsed} ms");
     assert!(
-        position + 300 >= elapsed && position <= elapsed + 150,
+        position + 300 >= elapsed && position <= elapsed + 30,
         "{position} ms after {elapsed} ms"
     );
 
+    // Ended is reported once the last frame has been heard.
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !engine.state().ended && Instant::now() < deadline {
+    while events.0.lock().unwrap().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
+    // The decode thread stops output right after it reports the end.
+    thread::sleep(Duration::from_millis(50));
     let state = engine.state();
     assert!(state.ended && !state.playing, "{state:?}");
     assert_eq!(state.position_ms, 1500);

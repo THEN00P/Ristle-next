@@ -21,7 +21,7 @@ use tokio::sync::Notify;
 
 use self::decrypt::{Decryption, Decryptor};
 use crate::Error;
-use crate::fetch::{ByteRange, Fetch, FetchBody, FetchRequest};
+use crate::fetch::{ByteRange, Fetch, FetchBody, FetchRequest, redact_url};
 
 /// How far ahead of the reader the fetch task fills.
 const AHEAD: u64 = 4 << 20;
@@ -104,7 +104,7 @@ struct HttpBody {
 impl FeedBody for HttpBody {
     async fn next(&mut self) -> Result<Option<Bytes>, Error> {
         self.body.chunk().await.map_err(|error| Error::Fetch {
-            url: self.url.clone(),
+            url: redact_url(&self.url),
             error,
         })
     }
@@ -127,7 +127,7 @@ impl Feed for HttpFeed {
             .get(request)
             .await
             .map_err(|error| Error::Fetch {
-                url: self.url.clone(),
+                url: redact_url(&self.url),
                 error,
             })?;
         let total = body.total_length();
@@ -521,6 +521,10 @@ impl Read for RemoteSource {
             if !inside && s.want != Some(pos) {
                 remote.request_restart(&mut s, pos);
             }
+            // A fetch paused by flow control rechecks its window against the
+            // new position; without this, a read just past the window waits
+            // for the timeout.
+            remote.wake.notify_one();
             let (next, timeout) = remote
                 .arrived
                 .wait_timeout(s, READ_TIMEOUT)
@@ -548,6 +552,7 @@ impl Seek for RemoteSource {
             .filter(|t| *t >= self.skip)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
         s.pos = target;
+        self.remote.wake.notify_one();
         // After a failed fetch nothing is fetching: a seek is the retry,
         // even within the window.
         if s.failed.is_some() {
@@ -695,6 +700,75 @@ mod tests {
         let mut again = Vec::new();
         source.read_to_end(&mut again).unwrap();
         assert_eq!(again, data);
+        remote.close();
+        task.abort();
+    }
+
+    /// Serves the whole resource in 64 KiB chunks, as fast as asked.
+    struct Steady {
+        data: Bytes,
+    }
+
+    struct SteadyBody {
+        data: Bytes,
+    }
+
+    #[async_trait]
+    impl FeedBody for SteadyBody {
+        async fn next(&mut self) -> Result<Option<Bytes>, Error> {
+            if self.data.is_empty() {
+                return Ok(None);
+            }
+            let n = self.data.len().min(64 << 10);
+            Ok(Some(self.data.split_to(n)))
+        }
+    }
+
+    #[async_trait]
+    impl Feed for Steady {
+        async fn open(&self, offset: u64) -> Result<(Box<dyn FeedBody>, Option<u64>), Error> {
+            let data = self.data.slice(offset as usize..);
+            Ok((Box::new(SteadyBody { data }), Some(self.data.len() as u64)))
+        }
+    }
+
+    #[test]
+    fn a_read_just_past_a_full_window_wakes_the_paused_fetch() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let data: Vec<u8> = (0..(8u32 << 20)).map(|i| (i % 241) as u8).collect();
+        let remote = Remote::new();
+        let feed = Arc::new(Steady {
+            data: Bytes::from(data.clone()),
+        });
+        let task = runtime.spawn(remote.clone().run(feed, None));
+        let mut source = RemoteSource::new(remote.clone(), 0);
+        let mut buf = [0u8; 100];
+        assert_eq!(source.read(&mut buf).unwrap(), 100);
+        // Wait until the fetch has filled its read-ahead and paused.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let end = loop {
+            let end = remote.lock().end();
+            if end >= AHEAD {
+                std::thread::sleep(Duration::from_millis(50));
+                break remote.lock().end();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // Just past the window, inside the gap a read waits for.
+        let target = end + 1000;
+        source.seek(SeekFrom::Start(target)).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(source.read(&mut buf).unwrap(), 100);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(&buf[..], &data[target as usize..target as usize + 100]);
         remote.close();
         task.abort();
     }

@@ -10,6 +10,7 @@
 //! instance.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use ristle_domain::{Artwork, ConnectionId, PluginId};
@@ -212,11 +213,14 @@ pub(crate) enum WriteRefused {
 pub(crate) struct Connections {
     plugin: PluginId,
     entries: Mutex<HashMap<ConnectionId, Entry>>,
-    /// Every read and write of a connection's stored state (data,
-    /// credential, cache) holds this for reading and checks the generation;
-    /// a generation change or removal holds it for writing. So once a new
-    /// generation is published, nothing of the old one is written or read.
+    /// Every read and write of a connection's or the Plugin's stored state
+    /// (data, credential, cache, storage) holds this for reading and checks
+    /// the generation and the retirement count; a generation change, a
+    /// removal and a retirement hold it for writing. So once either moves,
+    /// nothing of the old one is written or read.
     commits: RwLock<()>,
+    /// Moves when a version of the Plugin is installed or it is disabled.
+    retirements: AtomicU64,
     /// Woken when a connection's cleanup ends.
     ready: tokio::sync::Notify,
 }
@@ -227,24 +231,68 @@ impl Connections {
             plugin,
             entries: Mutex::new(HashMap::new()),
             commits: RwLock::new(()),
+            retirements: AtomicU64::new(0),
             ready: tokio::sync::Notify::new(),
         }
     }
 
-    /// Runs `f` if `generation` is still the connection's current one and
-    /// not being cleaned up, with no generation change able to happen
-    /// meanwhile.
+    /// How often the Plugin was retired.
+    pub(crate) fn retirements(&self) -> u64 {
+        self.retirements.load(Ordering::SeqCst)
+    }
+
+    /// Retires every running call: no commit made under the old count
+    /// lands after this returns.
+    pub(crate) fn retire(&self) {
+        let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
+        self.retirements.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether `entry` is still current for a call tagged with `generation`
+    /// and `retirements`.
+    fn current(&self, entry: &Entry, generation: u64, retirements: u64) -> bool {
+        entry.info.generation == generation
+            && entry.cleanup == Cleanup::Done
+            && self.retirements() == retirements
+    }
+
+    /// Runs `f` if `generation` is still the connection's current one, it
+    /// is not being cleaned up and the Plugin was not retired since
+    /// `retirements`, with none of that able to change meanwhile.
     pub(crate) fn commit<R>(
         &self,
         connection: &ConnectionId,
         generation: u64,
+        retirements: u64,
         f: impl FnOnce() -> R,
     ) -> Option<R> {
         let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
-        let current = lock(&self.entries).get(connection).is_some_and(|entry| {
-            entry.info.generation == generation && entry.cleanup == Cleanup::Done
-        });
+        let current = lock(&self.entries)
+            .get(connection)
+            .is_some_and(|entry| self.current(entry, generation, retirements));
         current.then(f)
+    }
+
+    /// Runs `f` if the Plugin was not retired since `retirements`, for its
+    /// connection-independent state (`storage`).
+    pub(crate) fn commit_plugin<R>(&self, retirements: u64, f: impl FnOnce() -> R) -> Option<R> {
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
+        (self.retirements() == retirements).then(f)
+    }
+
+    /// The connection as registered, if a call tagged with `generation`
+    /// and `retirements` is still current.
+    pub(crate) fn info_at(
+        &self,
+        connection: &ConnectionId,
+        generation: u64,
+        retirements: u64,
+    ) -> Option<ConnectionInfo> {
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
+        lock(&self.entries)
+            .get(connection)
+            .filter(|entry| self.current(entry, generation, retirements))
+            .map(|entry| entry.info.clone())
     }
 
     /// Ends the cleanup of a connection's previous generation. A failed one
@@ -279,7 +327,6 @@ impl Connections {
         }
     }
 
-    /// The vault key of a connection's Credential Record.
     /// The vault key of a connection's Credential Record. Plugin ids are
     /// reverse DNS and may contain dots; the connection id is hex after the
     /// last dot, so no two Plugin and connection pairs share a key.
@@ -344,13 +391,6 @@ impl Connections {
         lock(&self.entries).remove(connection).is_some()
     }
 
-    /// The connection as registered.
-    pub(crate) fn info(&self, connection: &ConnectionId) -> Option<ConnectionInfo> {
-        lock(&self.entries)
-            .get(connection)
-            .map(|entry| entry.info.clone())
-    }
-
     /// The connection's current generation, or `None` once it ended.
     pub(crate) fn generation(&self, connection: &ConnectionId) -> Option<u64> {
         lock(&self.entries)
@@ -365,6 +405,7 @@ impl Connections {
         vault: &dyn SecretVault,
         connection: &ConnectionId,
         generation: u64,
+        retirements: u64,
     ) -> Result<Option<(Option<CredentialRecord>, u64)>, VaultError> {
         let key = self.vault_key(connection);
         let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
@@ -372,7 +413,7 @@ impl Connections {
         let Some(entry) = entries.get_mut(connection) else {
             return Ok(None);
         };
-        if entry.info.generation != generation || entry.cleanup != Cleanup::Done {
+        if !self.current(entry, generation, retirements) {
             return Ok(None);
         }
         if !entry.credential.loaded {
@@ -389,12 +430,14 @@ impl Connections {
     }
 
     /// Replaces the stored record if it is still the one at `base`, the
-    /// version the writer last read. Writes are serialized by the lock.
+    /// version the writer last read, by a call tagged with `generation`
+    /// and `retirements` that is still current. Writes are serialized by
+    /// the lock.
     pub(crate) fn write_credential(
         &self,
         vault: &dyn SecretVault,
         connection: &ConnectionId,
-        generation: u64,
+        (generation, retirements): (u64, u64),
         base: u64,
         record: CredentialRecord,
         encoded: &[u8],
@@ -405,7 +448,7 @@ impl Connections {
         let Some(entry) = entries.get_mut(connection) else {
             return Err(WriteRefused::Retired);
         };
-        if entry.info.generation != generation || entry.cleanup != Cleanup::Done {
+        if !self.current(entry, generation, retirements) {
             return Err(WriteRefused::Retired);
         }
         if entry.credential.version != base {

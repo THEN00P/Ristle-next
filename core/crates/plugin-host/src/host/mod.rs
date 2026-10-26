@@ -13,7 +13,6 @@ mod pending;
 mod storage;
 mod system;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -49,9 +48,6 @@ pub(crate) struct PluginContext {
     pub(crate) services: Arc<Services>,
     pub(crate) log: Mutex<LogBucket>,
     pub(crate) connections: Connections,
-    /// Moves when a version of the Plugin is installed or it is disabled:
-    /// every call that started before is retired.
-    pub(crate) retirements: AtomicU64,
 }
 
 impl PluginContext {
@@ -62,12 +58,11 @@ impl PluginContext {
             manifest,
             services,
             log: Mutex::new(LogBucket::new()),
-            retirements: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn retirements(&self) -> u64 {
-        self.retirements.load(Ordering::SeqCst)
+        self.connections.retirements()
     }
 }
 
@@ -191,6 +186,15 @@ impl HostState {
             plugin,
             call: None,
         }
+    }
+
+    /// The retirement count of a running call that is not retired, for
+    /// commits of the Plugin's own state.
+    pub(crate) fn live_retirements(&self) -> Option<u64> {
+        if self.retired() {
+            return None;
+        }
+        self.call.as_ref().map(|call| call.retirements)
     }
 
     /// Whether the running call is retired: its connection's generation

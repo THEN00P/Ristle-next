@@ -34,13 +34,14 @@ struct GenerationGate {
     plugin: Arc<super::PluginContext>,
     connection: ConnectionId,
     generation: u64,
+    retirements: u64,
 }
 
 impl CacheGate for GenerationGate {
     fn commit(&self, write: &mut dyn FnMut()) {
         self.plugin
             .connections
-            .commit(&self.connection, self.generation, write);
+            .commit(&self.connection, self.generation, self.retirements, write);
     }
 }
 
@@ -121,8 +122,8 @@ impl HostState {
         let plugin = &self.plugin;
         let info = plugin
             .connections
-            .info(&call.connection)
-            .ok_or_else(|| Error::Unauthorized("the connection is gone".to_owned()))?;
+            .info_at(&call.connection, call.generation, call.retirements)
+            .ok_or_else(|| Error::Unauthorized("this call was retired".to_owned()))?;
         let mut reach = Reach::hosts(plugin.manifest.permissions.hosts.clone());
         if let Some(server) = &info.server {
             reach = reach.with_granted(server.origins.clone());
@@ -133,9 +134,12 @@ impl HostState {
                 plugin.services.vault.as_ref(),
                 &call.connection,
                 call.generation,
+                call.retirements,
             )
             .map_err(|error| Error::Transient(format!("credentials unavailable: {error}")))?
-            .and_then(|(record, _)| record);
+            // `None` is a retired call, which sends nothing.
+            .ok_or_else(|| Error::Unauthorized("this call was retired".to_owned()))?
+            .0;
         let rules = Arc::new(
             credential
                 .and_then(|record| record.parsed_rules())
@@ -179,6 +183,7 @@ impl HostState {
             plugin: self.plugin.clone(),
             connection: call.connection.clone(),
             generation: call.generation,
+            retirements: call.retirements,
         }));
         prepared.sequencer = Some(Arc::new(ResponseSequence {
             store: plugin.services.store.clone(),

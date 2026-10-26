@@ -89,6 +89,24 @@ jobs:
   # its C build is checked with the NDK. Cross-compiled and linted; CI
   # cannot run it.
   storage-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: storage-android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - name: NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - run: cargo ndk -t arm64-v8a -t x86_64 --platform 28 clippy -p ristle-storage --all-targets --all-features --locked -- -D warnings
 
   android-media:
     # ristle-media's Android code (the MediaCodec AAC provider) and its
@@ -105,16 +123,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
-          key: storage-android
-
           key: android-media
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-ndk
       - name: NDK
         run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-      - run: cargo ndk -t arm64-v8a -t x86_64 --platform 28 clippy -p ristle-storage --all-targets --all-features --locked -- -D warnings
-
       - run: cargo ndk -t arm64-v8a -t x86_64 --platform 28 clippy -p ristle-media --all-targets --all-features --locked -- -D warnings
 
   # The example Plugins (MIT, plugin-api/examples): formatted, linted and

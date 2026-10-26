@@ -255,6 +255,8 @@ pub struct SequenceState { pub descriptor: SequenceDescriptor, pub slots: Vec<Sl
                            pub order: Vec<SlotId>, pub cursor: Option<usize>, pub materialized_end: usize,
                            pub shuffle: Option<u64>,  // order[..=cursor] is what played this pass
                            pub revision: u64, pub next_slot: SlotId }
+/// `Beginning` with a seed is Shuffle Play; `Slot` with a seed plays that slot, then all others shuffled.
+pub enum StartAt { Beginning, Slot(SlotId) }
 impl Sequence {
     pub fn start(descriptor: SequenceDescriptor, slots: Vec<Slot>, at: StartAt, shuffle: Option<u64>) -> Result<Self, InvalidSequence>;
     pub fn set_shuffle(&mut self, seed: Option<u64>);   // keeps current and consumed prefix
@@ -264,7 +266,10 @@ impl Sequence {
     pub fn restart(&mut self);
     pub fn window(&self, history: usize, lookahead: usize) -> Vec<SlotId>;
     pub fn hydration_plan(&self, max: usize) -> Vec<SlotId>;     // only unresolved lookahead
-    pub fn resolve(&mut self, resolved: Vec<(SlotId, TrackRef)>);
+    pub fn resolve(&mut self, resolved: Vec<(SlotId, TrackRef)>) -> usize;  // how many were unresolved
+    pub fn seek_to(&mut self, slot: SlotId) -> bool;               // anywhere, for queue navigation
+    pub fn refill_batch(&self, max: usize) -> Vec<SlotId>;         // after materialized_end, whatever the cursor
+    pub fn set_materialized_end(&mut self, end: usize) -> bool;
     pub fn apply_local_change(&mut self, change: CollectionChange); // like/unlike made in Ristle
     pub fn rebase(&mut self, page: ObservedPage) -> RebaseOutcome;  // drift found on re-read
     pub fn state(&self) -> &SequenceState;

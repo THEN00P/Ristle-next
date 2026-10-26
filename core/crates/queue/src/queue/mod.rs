@@ -4,7 +4,9 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{EntryId, Origin, QueueEntry, RepeatMode};
+use ristle_domain::TrackRef;
+
+use crate::entry::{CollectionPosition, EntryId, Origin, QueueEntry, RepeatMode};
 use crate::error::CorruptState;
 
 mod ops;
@@ -56,6 +58,20 @@ pub struct QueueState {
     pub shuffle: Option<u64>,
     /// The id the next new entry gets. Greater than every id in the state.
     pub next_id: EntryId,
+    /// Collection entries of this pass that `trim_history` dropped, so that
+    /// reconciling a shuffled pass still counts them as played. Cleared when
+    /// a new pass starts.
+    #[serde(default)]
+    pub trimmed: Vec<Trimmed>,
+}
+
+/// A collection entry `trim_history` dropped from this pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trimmed {
+    /// Its Track.
+    pub track: TrackRef,
+    /// Its position in the collection.
+    pub position: CollectionPosition,
 }
 
 /// The state of an empty queue: nothing started, repeat off, ids from 1.
@@ -70,6 +86,7 @@ impl Default for QueueState {
             repeat: RepeatMode::Off,
             shuffle: None,
             next_id: EntryId(1),
+            trimmed: Vec::new(),
         }
     }
 }
@@ -84,6 +101,10 @@ impl QueueState {
                 cursor,
                 len: self.collection.len(),
             });
+        }
+        // A next id of u64::MAX could only be handed out by overflowing.
+        if self.next_id.0 == u64::MAX {
+            return Err(CorruptState::EntryIdsExhausted);
         }
         if self.play_next_count > self.requests.len() {
             return Err(CorruptState::PlayNextBeyondRequests {
@@ -244,6 +265,10 @@ mod state_tests {
             repeat: RepeatMode::Queue,
             shuffle: Some(42),
             next_id: EntryId(9),
+            trimmed: vec![Trimmed {
+                track: track("spotify", "trimmed").reference,
+                position: CollectionPosition(0),
+            }],
         }
     }
 
@@ -353,6 +378,10 @@ mod state_tests {
         assert_eq!(
             corrupt(|s| s.current = Some(Current::Detached(Box::new(collection_entry(6, 9, "x"))))),
             CorruptState::MisplacedEntry(EntryId(6))
+        );
+        assert_eq!(
+            corrupt(|s| s.next_id = EntryId(u64::MAX)),
+            CorruptState::EntryIdsExhausted
         );
         assert_eq!(
             corrupt(|s| {

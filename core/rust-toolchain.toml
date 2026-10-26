@@ -3,3 +3,5 @@
 channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
+# The Plugin host's tests build the example Plugins (plugin-api/examples).
+targets = ["wasm32-unknown-unknown"]

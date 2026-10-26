@@ -1,0 +1,25 @@
+# Example Plugins for the ristle:plugin API (MIT, like the WIT).
+#
+# Build: cargo build --release --target wasm32-unknown-unknown
+# The core modules are encoded into components with `wit-component`
+# (`ristle-plugin-host`'s test helper does this for the conformance tests).
+[workspace]
+resolver = "3"
+members = ["mock-provider"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+wit-bindgen = "0.62"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

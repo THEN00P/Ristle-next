@@ -181,3 +181,183 @@ fn leb128(out: &mut Vec<u8>, mut value: usize) {
         out.push(byte | 0x80);
     }
 }
+
+/// The mock Plugin (`plugin-api/examples/mock-provider`) as a component:
+/// built once per test process with the pinned toolchain's
+/// `wasm32-unknown-unknown` target, then encoded with `wit-component`.
+///
+/// # Panics
+///
+/// When the build or the encoding fails; the message says why.
+#[allow(clippy::panic)]
+pub fn mock_provider_component() -> Vec<u8> {
+    static COMPONENT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    COMPONENT
+        .get_or_init(|| match build_example("mock-provider", "mock_provider") {
+            Ok(component) => component,
+            Err(error) => panic!("building the mock Plugin failed: {error}"),
+        })
+        .clone()
+}
+
+fn build_example(package: &str, artifact: &str) -> Result<Vec<u8>, String> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let examples = manifest_dir.join("../../../plugin-api/examples");
+    let target = manifest_dir.join("../../target/plugin-examples");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = std::process::Command::new(cargo)
+        .current_dir(&examples)
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "--target",
+            "wasm32-unknown-unknown",
+            "-p",
+            package,
+        ])
+        .arg("--target-dir")
+        .arg(&target)
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    let module =
+        std::fs::read(target.join(format!("wasm32-unknown-unknown/release/{artifact}.wasm")))
+            .map_err(|error| format!("reading the module: {error}"))?;
+    wit_component::ComponentEncoder::default()
+        .module(&module)
+        .and_then(|encoder| encoder.validate(true).encode())
+        .map_err(|error| format!("encoding the component: {error:#}"))
+}
+
+/// A manifest for the mock Plugin.
+pub fn mock_manifest(publisher: &Publisher, version: &str, extra: &str) -> String {
+    format!(
+        "id = \"dev.ristle.mock\"\nname = \"Mock\"\nversion = \"{version}\"\npublisher = \"Ristle\"\npublisher-key = \"{}\"\n\n[provider]\nid = \"mock\"\nname = \"Mock\"\n\n[permissions]\nimage-hosts = [\"i.mock.example\"]\n{extra}\n\n[limits]\ntracks = 50\nliked-states = 40\nplaylist-add = 100\nplaylist-remove = 100\n",
+        publisher.key()
+    )
+}
+
+/// The mock Plugin, signed. `permissions` is appended to its
+/// `[permissions]` table.
+pub fn mock_package(publisher: &Publisher, permissions: &str) -> crate::package::Package {
+    let mut pieces = Unsigned::new(mock_manifest(publisher, "1.0.0", permissions));
+    pieces.component = mock_provider_component();
+    match crate::package::Package::read(pieces.signed(&[publisher])) {
+        Ok(package) => package,
+        Err(error) => unreadable_package(error),
+    }
+}
+
+#[allow(clippy::panic)]
+fn unreadable_package(error: crate::package::PackageError) -> ! {
+    panic!("the mock package does not read: {error}")
+}
+
+type Values = std::collections::BTreeMap<(String, String), (Vec<u8>, Option<u64>)>;
+
+/// A [`PluginStore`](crate::PluginStore) in memory. Every namespace counts
+/// towards one quota, as for a single Plugin.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryPluginStore {
+    values: std::sync::Arc<std::sync::Mutex<Values>>,
+    sequences: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+}
+
+impl MemoryPluginStore {
+    /// An empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn scope(&self, namespace: String) -> Box<dyn crate::KvScope> {
+        Box::new(MemoryScope {
+            values: self.values.clone(),
+            namespace,
+        })
+    }
+}
+
+struct MemoryScope {
+    values: std::sync::Arc<std::sync::Mutex<Values>>,
+    namespace: String,
+}
+
+impl MemoryScope {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Values> {
+        self.values
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl crate::KvScope for MemoryScope {
+    fn get(&self, key: &str, now_ms: u64) -> Result<Option<Vec<u8>>, crate::StoreError> {
+        Ok(self
+            .lock()
+            .get(&(self.namespace.clone(), key.to_owned()))
+            .filter(|(_, expires)| expires.is_none_or(|expires| expires > now_ms))
+            .map(|(value, _)| value.clone()))
+    }
+
+    fn set(
+        &self,
+        key: &str,
+        value: &[u8],
+        expires_at_ms: Option<u64>,
+        quota_bytes: u64,
+        now_ms: u64,
+    ) -> Result<crate::Stored, crate::StoreError> {
+        let mut values = self.lock();
+        let slot = (self.namespace.clone(), key.to_owned());
+        let used: u64 = values
+            .iter()
+            .filter(|(other, (_, expires))| {
+                **other != slot && expires.is_none_or(|expires| expires > now_ms)
+            })
+            .map(|((_, key), (value, _))| (key.len() + value.len()) as u64)
+            .sum();
+        if used + (key.len() + value.len()) as u64 > quota_bytes {
+            return Ok(crate::Stored::OverQuota);
+        }
+        values.insert(slot, (value.to_vec(), expires_at_ms));
+        Ok(crate::Stored::Yes)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), crate::StoreError> {
+        self.lock()
+            .remove(&(self.namespace.clone(), key.to_owned()));
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), crate::StoreError> {
+        let namespace = self.namespace.clone();
+        self.lock().retain(|(other, _), _| *other != namespace);
+        Ok(())
+    }
+}
+
+impl crate::PluginStore for MemoryPluginStore {
+    fn plugin_kv(&self, plugin: &PluginId) -> Box<dyn crate::KvScope> {
+        self.scope(format!("plugin:{plugin}"))
+    }
+
+    fn connection_kv(&self, connection: &ristle_domain::ConnectionId) -> Box<dyn crate::KvScope> {
+        self.scope(format!("connection:{connection}"))
+    }
+
+    fn next_response_sequence(
+        &self,
+        connection: &ristle_domain::ConnectionId,
+    ) -> Result<u64, crate::StoreError> {
+        let mut sequences = self
+            .sequences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = sequences.entry(connection.to_string()).or_insert(0);
+        *next += 1;
+        Ok(*next)
+    }
+}

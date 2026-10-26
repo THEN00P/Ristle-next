@@ -1,0 +1,6 @@
+# The same toolchain as core/, with the target Plugins are built for.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

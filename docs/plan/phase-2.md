@@ -71,7 +71,7 @@ with the order it produced. Tests use a manual clock and fixed seeds.
 `[workspace.dependencies]`, and keep `cargo deny` green. This set was checked
 against `core/deny.toml` on 2026-10-19 and passes: wasmtime 49 (Cranelift,
 Pulley, component model, cache), wasmsign2 0.2.8, rusqlite 0.37 (bundled),
-reqwest 0.12 on rustls, tokio, symphonia 0.6.1, symphonia-adapter-libopus,
+hyper 1 and hyper-util's client on rustls (ring, webpki-roots), tokio, symphonia 0.6.1, symphonia-adapter-libopus,
 cpal 0.18, rubato 0.16, aes/ctr/cbc, uniffi 0.32.2, serde, toml, thiserror,
 tracing, ed25519-dalek, sha2, ndk, jni, ndk-context, rand_chacha.
 `symphonia-adapter-fdk-aac`, `fdk-aac` and `fdk-aac-sys` are banned by name:
@@ -333,6 +333,10 @@ pub trait HttpCacheStore: Send + Sync {
     fn put(&self, key: &CacheKey, response: &StoredResponse) -> Result<(), StoreError>;
     fn remove(&self, key: &CacheKey) -> Result<(), StoreError>;
     fn evict_older_than(&self, last_fetched_before_ms: u64) -> Result<u64, StoreError>;
+    fn remove_connection(&self, plugin: &PluginId, connection: &ConnectionId) -> Result<u64, StoreError>;
+    fn remove_plugin(&self, plugin: &PluginId) -> Result<u64, StoreError>;
+    /// Least recently used first (`get` and `put` count as uses).
+    fn trim(&self, plugin: &PluginId, plugin_max_bytes: u64, total_max_bytes: u64) -> Result<u64, StoreError>;
 }
 
 // ristle-plugin-host

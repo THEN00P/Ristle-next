@@ -52,6 +52,17 @@ rand_chacha = { version = "0.9", default-features = false }
 # same version.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3"
+# ristle-net (M4).
+http = "1"
+http-body-util = "0.1.3"
+httparse = "1.10"
+httpdate = "1"
+hyper = { version = "1.12", default-features = false }
+hyper-rustls = { version = "0.27.10", default-features = false }
+hyper-util = { version = "0.1.21", default-features = false }
+rustls = { version = "0.23.40", default-features = false }
+tower-service = "0.3"
+webpki-roots = "1"
 
 [workspace.lints.rust]
 missing_docs = "warn"

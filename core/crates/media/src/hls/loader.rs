@@ -16,7 +16,7 @@ use super::fmp4::{Sample, TrackInfo, parse_moof};
 use super::playlist::{self, Key, Map, MediaPlaylist, Playlist, Segment, sequence_iv};
 use crate::Error;
 use crate::demux::mp4::{be32, be64};
-use crate::fetch::{ByteRange, Fetch, FetchBody, FetchError, FetchRequest, read_all};
+use crate::fetch::{ByteRange, Fetch, FetchBody, FetchError, FetchRequest, read_all, redact_url};
 
 /// Plaintext chunks in flight. With 16-64 KB chunks this keeps a few
 /// seconds of high-bitrate audio ahead without holding whole files.
@@ -117,12 +117,12 @@ impl Shared {
             match self.fetch.get(self.request(url, range)).await {
                 Ok(body) => return Ok(body),
                 Err(FetchError::Network(detail)) if attempt < ATTEMPTS => {
-                    tracing::debug!(%url, attempt, %detail, "retrying");
+                    tracing::debug!(url = %redact_url(url.as_str()), attempt, %detail, "retrying");
                     tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
                 }
                 Err(error) => {
                     return Err(Error::Fetch {
-                        url: url.to_string(),
+                        url: redact_url(url.as_str()),
                         error,
                     });
                 }
@@ -138,7 +138,7 @@ impl Shared {
     ) -> Result<Vec<u8>, Error> {
         let body = self.get(url, range).await?;
         read_all(body, limit).await.map_err(|error| Error::Fetch {
-            url: url.to_string(),
+            url: redact_url(url.as_str()),
             error,
         })
     }
@@ -180,7 +180,7 @@ impl Shared {
                 let iv = key.iv.unwrap_or_else(|| {
                     // RFC 8216bis requires an IV for an encrypted init
                     // section; fall back to the sequence-number rule.
-                    tracing::warn!(url = %map.url, "encrypted init section without an IV");
+                    tracing::warn!(url = %redact_url(map.url.as_str()), "encrypted init section without an IV");
                     sequence_iv(map.sequence)
                 });
                 let mut cipher = self.cipher(self.key(key).await?, iv);
@@ -211,7 +211,7 @@ pub(crate) enum Plan {
 }
 
 /// A byte-range seek inside the first segment.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RangedSeek {
     /// Microseconds into the segment.
     pub(crate) offset_us: u64,
@@ -264,7 +264,7 @@ async fn vod(
     let mut map: Option<Arc<Map>> = None;
     for (index, segment) in playlist.segments.iter().enumerate().skip(start) {
         send_init_if_changed(shared, segment, &mut map, tx).await?;
-        let ranged = match seek {
+        let ranged = match &seek {
             Some(seek) if index == start && segment.map.is_some() => {
                 match ranged_start(shared, segment, seek).await {
                     Ok(found) => found,
@@ -429,7 +429,7 @@ async fn stream_segment(
     let mut plain = Vec::new();
     loop {
         let chunk = body.chunk().await.map_err(|error| Error::Fetch {
-            url: segment.url.to_string(),
+            url: redact_url(segment.url.as_str()),
             error,
         })?;
         let Some(chunk) = chunk else { break };
@@ -505,7 +505,7 @@ fn sub_range(range: Option<ByteRange>, offset: u64) -> Option<ByteRange> {
 async fn ranged_start(
     shared: &Shared,
     segment: &Segment,
-    seek: RangedSeek,
+    seek: &RangedSeek,
 ) -> Result<Option<Ranged>, Error> {
     let mut probe = MOOF_PROBE;
     let head = loop {

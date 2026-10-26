@@ -86,6 +86,29 @@ pub trait Fetch: Send + Sync {
     async fn get(&self, request: FetchRequest) -> Result<Box<dyn FetchBody>, FetchError>;
 }
 
+/// A URL for errors and logs: without its query, fragment and userinfo,
+/// which carry signatures and tokens in signed CDN URLs.
+pub(crate) fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            let had_secret = parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some();
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            if had_secret {
+                format!("{parsed}?<redacted>")
+            } else {
+                parsed.to_string()
+            }
+        }
+        Err(_) => "<unparsable URL>".to_owned(),
+    }
+}
+
 /// Reads a whole body.
 pub(crate) async fn read_all(
     mut body: Box<dyn FetchBody>,
@@ -106,6 +129,19 @@ pub(crate) async fn read_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redaction_drops_query_fragment_and_userinfo() {
+        assert_eq!(
+            redact_url("https://TOKEN@cdn.example/a.ogg?sig=S#f"),
+            "https://cdn.example/a.ogg?<redacted>"
+        );
+        assert_eq!(
+            redact_url("https://u:p@cdn.example/a"),
+            "https://cdn.example/a?<redacted>"
+        );
+        assert_eq!(redact_url("https://cdn.example/a"), "https://cdn.example/a");
+    }
 
     #[test]
     fn ranges_render_as_inclusive_http_ranges() {

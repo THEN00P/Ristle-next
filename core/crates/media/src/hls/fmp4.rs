@@ -13,14 +13,18 @@ use crate::Error;
 use crate::demux::DemuxedPacket;
 use crate::demux::mp4::{be32, be64, boxes, child, find_trak, timescale};
 
-/// What the init segment says about the selected track.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What the init segment says about the selected track, and the `trex`
+/// defaults of every track (other tracks' sample sizes place the selected
+/// track's data when a `traf` continues where the previous one ended).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrackInfo {
     pub(crate) track_id: u32,
     pub(crate) timescale: u32,
     /// `trex` defaults, used when a fragment does not override them.
     pub(crate) default_duration: u32,
     pub(crate) default_size: u32,
+    /// `(track_ID, default duration, default size)` for the other tracks.
+    pub(crate) others: Vec<(u32, u32, u32)>,
 }
 
 impl TrackInfo {
@@ -38,18 +42,38 @@ impl TrackInfo {
             timescale,
             default_duration: 0,
             default_size: 0,
+            others: Vec::new(),
         };
         if let Some(mvex) = child(moov, b"mvex")? {
             for item in boxes(mvex) {
                 let (kind, trex) = item?;
+                if &kind != b"trex" {
+                    continue;
+                }
                 // version/flags, track_ID, description index, duration, size.
-                if &kind == b"trex" && be32(trex, 4) == Some(track_id) {
-                    info.default_duration = be32(trex, 12).unwrap_or(0);
-                    info.default_size = be32(trex, 16).unwrap_or(0);
+                let Some(id) = be32(trex, 4) else { continue };
+                let duration = be32(trex, 12).unwrap_or(0);
+                let size = be32(trex, 16).unwrap_or(0);
+                if id == track_id {
+                    info.default_duration = duration;
+                    info.default_size = size;
+                } else {
+                    info.others.push((id, duration, size));
                 }
             }
         }
         Ok(info)
+    }
+
+    /// A track's `trex` default duration and size.
+    fn defaults(&self, track_id: u32) -> (u32, u32) {
+        if track_id == self.track_id {
+            return (self.default_duration, self.default_size);
+        }
+        self.others
+            .iter()
+            .find(|(id, _, _)| *id == track_id)
+            .map_or((0, 0), |&(_, duration, size)| (duration, size))
     }
 }
 
@@ -127,8 +151,11 @@ pub(crate) fn parse_moof(
             None => previous_traf_end,
         };
         let selected = track_id == track.track_id;
-        let default_duration = default_duration.unwrap_or(track.default_duration);
-        let default_size = default_size.unwrap_or(track.default_size);
+        // Each traf falls back to its own track's trex: an unselected
+        // track's sizes still decide where the next traf's data starts.
+        let (trex_duration, trex_size) = track.defaults(track_id);
+        let default_duration = default_duration.unwrap_or(trex_duration);
+        let default_size = default_size.unwrap_or(trex_size);
 
         if selected && let Some(tfdt) = child(traf, b"tfdt")? {
             fragment.decode_time = match tfdt.first() {
@@ -481,6 +508,7 @@ pub(crate) mod tests {
         timescale: 44_100,
         default_duration: 1024,
         default_size: 0,
+        others: Vec::new(),
     };
 
     /// A segment: styp, then a moof with a video traf (track 1) and an
@@ -596,6 +624,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_unselected_traf_is_sized_by_its_own_trex() {
+        // Video (track 1) gives only a data offset: its sample size comes
+        // from its trex (300). Audio (track 2) has no base offset and no data
+        // offset, so its data starts where the video's ends.
+        let video_trun = mp4_box(
+            b"trun",
+            &full(
+                0x01,
+                &[&1u32.to_be_bytes()[..], &0i32.to_be_bytes()].concat(),
+            ),
+        );
+        let video = mp4_box(
+            b"traf",
+            &[mp4_box(b"tfhd", &full(0, &1u32.to_be_bytes())), video_trun].concat(),
+        );
+        let audio = mp4_box(
+            b"traf",
+            &[
+                mp4_box(b"tfhd", &full(0, &2u32.to_be_bytes())),
+                trun(None, &[(1024, 40), (1024, 41)]),
+            ]
+            .concat(),
+        );
+        let body = [video, audio].concat();
+        let moof_len = (body.len() + 8) as i32;
+        // Point the video's data offset at the mdat body after the moof.
+        let mut body = body;
+        let at = body.windows(4).position(|w| w == b"trun").unwrap() + 4 + 8;
+        body[at..at + 4].copy_from_slice(&(moof_len + 8).to_be_bytes());
+        let track = TrackInfo {
+            others: vec![(1, 3000, 300)],
+            ..AUDIO.clone()
+        };
+        let fragment = parse_moof(&body, 0, &track).unwrap();
+        let mdat_body = u64::try_from(moof_len + 8).unwrap();
+        let offsets: Vec<u64> = fragment.samples.iter().map(|s| s.offset).collect();
+        assert_eq!(offsets, vec![mdat_body + 300, mdat_body + 340]);
+    }
+
+    #[test]
     fn trex_defaults_apply_when_the_fragment_has_none() {
         let mut trak = mp4_box(
             b"tkhd",
@@ -628,7 +696,8 @@ pub(crate) mod tests {
                 track_id: 7,
                 timescale: 48_000,
                 default_duration: 960,
-                default_size: 120
+                default_size: 120,
+                others: Vec::new(),
             }
         );
     }

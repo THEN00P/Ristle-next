@@ -33,4 +33,6 @@ pub use queue::{
     AddOutcome, CanonicalQueue, CollectionEntry, Current, Lane, QueueState, Rejection, Removed,
     StartOutcome,
 };
-pub use sequence::{Sequence, SequenceState, StartAt};
+pub use sequence::{
+    ChangeOutcome, CollectionChange, ObservedPage, RebaseOutcome, Sequence, SequenceState, StartAt,
+};

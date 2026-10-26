@@ -87,10 +87,10 @@ impl Sequence {
         self.reorder_upcoming(seed);
         self.state.shuffle = seed;
         self.state.materialized_end = self.state.materialized_end.min(self.upcoming_start());
-        self.state.revision += 1;
+        self.state.revision = self.state.revision.wrapping_add(1);
     }
 
-    fn upcoming_start(&self) -> usize {
+    pub(super) fn upcoming_start(&self) -> usize {
         self.state.cursor.map_or(0, |cursor| cursor + 1)
     }
 
@@ -195,7 +195,7 @@ impl Sequence {
     pub fn restart(&mut self) {
         self.state.cursor = None;
         self.state.materialized_end = 0;
-        self.state.revision += 1;
+        self.state.revision = self.state.revision.wrapping_add(1);
     }
 
     /// The bounded window around the cursor: up to `history` slots before
@@ -205,7 +205,10 @@ impl Sequence {
             return Vec::new();
         };
         let begin = cursor.saturating_sub(history);
-        let end = (cursor + lookahead + 1).min(self.state.order.len());
+        let end = cursor
+            .saturating_add(lookahead)
+            .saturating_add(1)
+            .min(self.state.order.len());
         self.state.order[begin..end].to_vec()
     }
 
@@ -217,7 +220,7 @@ impl Sequence {
         let end = self
             .state
             .cursor
-            .map_or(lookahead, |cursor| cursor + lookahead)
+            .map_or(lookahead, |cursor| cursor.saturating_add(lookahead))
             .saturating_add(1)
             .min(self.state.order.len());
         let begin = self.state.materialized_end.min(end);

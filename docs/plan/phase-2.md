@@ -270,8 +270,11 @@ impl Sequence {
     pub fn seek_to(&mut self, slot: SlotId) -> bool;               // anywhere, for queue navigation
     pub fn refill_batch(&self, max: usize) -> Vec<SlotId>;         // after materialized_end, whatever the cursor
     pub fn set_materialized_end(&mut self, end: usize) -> bool;
-    pub fn apply_local_change(&mut self, change: CollectionChange); // like/unlike made in Ristle
+    pub fn apply_local_change(&mut self, change: CollectionChange) -> ChangeOutcome; // like/unlike made in Ristle; slots inserted/removed
     pub fn rebase(&mut self, page: ObservedPage) -> RebaseOutcome;  // drift found on re-read
+    // CollectionChange { Added { source, at, track }, Removed { source, track, at: Option<u64> } }
+    // ObservedPage { source, offset, tracks: Vec<TrackRef>, revision, total }
+    // RebaseOutcome { shift: i64, resolved, dropped, inserted: Vec<SlotId> }
     pub fn state(&self) -> &SequenceState;
     pub fn restore(state: SequenceState) -> Result<Self, CorruptState>;
 }

@@ -85,6 +85,35 @@ impl HostPattern {
             host == self.host
         }
     }
+
+    /// Whether every host `other` matches is matched by this pattern too.
+    pub fn covers(&self, other: &HostPattern) -> bool {
+        match (self.wildcard, other.wildcard) {
+            (false, false) => self.host == other.host,
+            (false, true) => false,
+            // `other.host` is `a.example.com` or `.a.example.com`.
+            (true, _) => {
+                other.host.ends_with(&self.host)
+                    && (other.wildcard || other.host.len() > self.host.len())
+            }
+        }
+    }
+
+    /// Whether it is a wildcard.
+    pub fn is_wildcard(&self) -> bool {
+        self.wildcard
+    }
+}
+
+impl std::fmt::Display for HostPattern {
+    /// The pattern as a manifest writes it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.wildcard {
+            write!(f, "*{}", self.host)
+        } else {
+            f.write_str(&self.host)
+        }
+    }
 }
 
 /// A host pattern that is not valid.
@@ -276,6 +305,21 @@ mod tests {
         assert!(wildcard.matches("a.b.sndcdn.com"));
         assert!(!wildcard.matches("sndcdn.com"));
         assert!(!wildcard.matches("evilsndcdn.com"));
+    }
+
+    #[test]
+    fn patterns_cover_the_patterns_they_include() {
+        let p = |text: &str| HostPattern::parse(text).unwrap();
+        assert!(p("*.example.com").covers(&p("a.example.com")));
+        assert!(p("*.example.com").covers(&p("*.a.example.com")));
+        assert!(p("*.example.com").covers(&p("*.example.com")));
+        assert!(!p("*.example.com").covers(&p("example.com")));
+        assert!(!p("*.example.com").covers(&p("aexample.com")));
+        assert!(!p("a.example.com").covers(&p("*.a.example.com")));
+        assert!(p("a.example.com").covers(&p("A.example.com")));
+        assert!(!p("a.example.com").covers(&p("b.example.com")));
+        assert_eq!(p("*.Example.com").to_string(), "*.example.com");
+        assert_eq!(p("api.example.com").to_string(), "api.example.com");
     }
 
     #[test]

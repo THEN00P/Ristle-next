@@ -19,3 +19,16 @@
 //!
 //! Persistence and secrets are ports this crate declares and `ristle-app`
 //! implements. Milestone M5 (`docs/plan/phase-2.md`).
+
+pub mod package;
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
+/// Every error this crate returns.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// A package was refused.
+    #[error(transparent)]
+    Package(#[from] package::PackageError),
+}

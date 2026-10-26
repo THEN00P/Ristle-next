@@ -3,7 +3,8 @@
 //! public addresses, at most [`MAX_SOCKETS`] per Plugin across its
 //! instances. A socket belongs to its instance and its connection's
 //! generation: it closes with the instance, serves only calls for its own
-//! connection, and is closed once that generation ends.
+//! connection, and is closed once that generation ends or the Plugin is
+//! retired, even in the middle of a send or receive.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -45,22 +46,28 @@ impl Slot {
     }
 }
 
+/// An open stream and the slot it holds: closing it frees the slot.
+struct Open {
+    stream: Box<dyn ristle_net::Socket>,
+    _slot: Slot,
+}
+
 /// The host side of a `socket.tcp` resource.
 // `pub` because the generated bindings re-export the types they map
 // resources to; the module itself is private.
 #[allow(unreachable_pub)]
 pub struct TcpHandle {
-    stream: Option<Box<dyn ristle_net::Socket>>,
+    open: Option<Open>,
     connection: ristle_domain::ConnectionId,
     generation: u64,
-    _slot: Slot,
+    retirements: u64,
 }
 
 impl std::fmt::Debug for TcpHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TcpHandle")
             .field("connection", &self.connection)
-            .field("open", &self.stream.is_some())
+            .field("open", &self.open.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -85,11 +92,11 @@ impl HostState {
                 "a socket serves only calls for its own connection".to_owned(),
             ));
         }
-        if current != Some(handle.generation) {
-            handle.stream = None;
+        if current != Some(handle.generation) || handle.retirements != call.retirements {
+            handle.open = None;
             return Err(retired());
         }
-        if handle.stream.is_none() {
+        if handle.open.is_none() {
             return Err(Error::Transient("the socket is closed".to_owned()));
         }
         Ok(handle)
@@ -150,10 +157,13 @@ impl socket::HostTcp for HostState {
                 return Ok(Err(retired()));
             }
             let handle = TcpHandle {
-                stream: Some(stream),
+                open: Some(Open {
+                    stream,
+                    _slot: slot,
+                }),
                 connection: call.connection,
                 generation: call.generation,
-                _slot: slot,
+                retirements: call.retirements,
             };
             Ok(Ok(state.table.push(handle)?))
         })
@@ -168,26 +178,40 @@ impl socket::HostTcp for HostState {
             return Ok(Err(too_large("socket data")));
         }
         Ok(self.timed(|state| {
-            let services = state.plugin.services.clone();
+            let plugin = state.plugin.clone();
             let time = SEND_TIME.min(state.clock.remaining());
             let handle = state.usable_socket(&self_)?;
-            let Some(stream) = handle.stream.as_mut() else {
+            let ended =
+                plugin
+                    .connections
+                    .ended(&handle.connection, handle.generation, handle.retirements);
+            let Some(open) = handle.open.as_mut() else {
                 return Err(Error::Transient("the socket is closed".to_owned()));
             };
-            let sent = services.runtime.block_on(tokio::time::timeout(time, async {
-                stream.write_all(&data).await?;
-                stream.flush().await
-            }));
+            let stream = &mut open.stream;
+            let sent = plugin.services.runtime.block_on(async {
+                tokio::select! {
+                    sent = tokio::time::timeout(time, async {
+                        stream.write_all(&data).await?;
+                        stream.flush().await
+                    }) => Some(sent),
+                    () = ended => None,
+                }
+            });
             match sent {
-                Ok(Ok(())) => Ok(()),
+                Some(Ok(Ok(()))) => Ok(()),
                 // How much was sent is unknown: the socket is closed.
-                Ok(Err(error)) => {
-                    handle.stream = None;
+                Some(Ok(Err(error))) => {
+                    handle.open = None;
                     Err(Error::Transient(format!("sending failed: {error}")))
                 }
-                Err(_) => {
-                    handle.stream = None;
+                Some(Err(_)) => {
+                    handle.open = None;
                     Err(Error::Transient("sending timed out".to_owned()))
+                }
+                None => {
+                    handle.open = None;
+                    Err(retired())
                 }
             }
         }))
@@ -202,33 +226,45 @@ impl socket::HostTcp for HostState {
         // Capped before anything is allocated.
         let max = max.min(RECEIVE_BYTES) as usize;
         Ok(self.timed(|state| {
-            let services = state.plugin.services.clone();
+            let plugin = state.plugin.clone();
             let time = Duration::from_millis(u64::from(timeout_ms))
                 .min(RECEIVE_TIME)
                 .min(state.clock.remaining());
             let handle = state.usable_socket(&self_)?;
-            let Some(stream) = handle.stream.as_mut() else {
+            let ended =
+                plugin
+                    .connections
+                    .ended(&handle.connection, handle.generation, handle.retirements);
+            let Some(open) = handle.open.as_mut() else {
                 return Err(Error::Transient("the socket is closed".to_owned()));
             };
+            let stream = &mut open.stream;
             let mut buffer = vec![0u8; max];
-            match services
-                .runtime
-                .block_on(tokio::time::timeout(time, stream.read(&mut buffer)))
-            {
-                Ok(Ok(0)) if max > 0 => {
-                    handle.stream = None;
+            let received = plugin.services.runtime.block_on(async {
+                tokio::select! {
+                    read = tokio::time::timeout(time, stream.read(&mut buffer)) => Some(read),
+                    () = ended => None,
+                }
+            });
+            match received {
+                Some(Ok(Ok(0))) if max > 0 => {
+                    handle.open = None;
                     Err(Error::Transient("the peer closed the socket".to_owned()))
                 }
-                Ok(Ok(read)) => {
+                Some(Ok(Ok(read))) => {
                     buffer.truncate(read);
                     Ok(buffer)
                 }
-                Ok(Err(error)) => {
-                    handle.stream = None;
+                Some(Ok(Err(error))) => {
+                    handle.open = None;
                     Err(Error::Transient(format!("receiving failed: {error}")))
                 }
                 // Nothing within the timeout.
-                Err(_) => Ok(Vec::new()),
+                Some(Err(_)) => Ok(Vec::new()),
+                None => {
+                    handle.open = None;
+                    Err(retired())
+                }
             }
         }))
     }

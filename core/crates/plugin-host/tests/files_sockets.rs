@@ -264,3 +264,87 @@ async fn a_plugin_holds_at_most_four_sockets_until_its_instance_goes() {
     plugin.discard_instances();
     assert_eq!(one(&plugin, "c1", &hold(4)).await.unwrap(), vec!["held"]);
 }
+
+/// A TCP server on 127.0.0.1 that accepts, then hangs up or keeps the
+/// connection open without a word.
+async fn listener(hang_up: bool) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut silent = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            if !hang_up {
+                silent.push(stream);
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_socket_the_host_closed_frees_its_slot() {
+    let port = listener(true).await;
+    let plugin = socket_plugin(port, true).await;
+    let hold = |count: u32| format!("hold-sockets:{count}:127.0.0.1:{port}");
+    assert_eq!(one(&plugin, "c1", &hold(4)).await.unwrap(), vec!["held"]);
+    assert!(matches!(
+        one(&plugin, "c1", &hold(1)).await,
+        Err(PluginError::Internal(_))
+    ));
+    // The peer hung up: receiving closes each socket, while the Plugin
+    // still holds the handles.
+    assert_eq!(
+        one(&plugin, "c1", "drain-held").await.unwrap(),
+        vec!["drained"]
+    );
+    assert_eq!(one(&plugin, "c1", &hold(4)).await.unwrap(), vec!["held"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_generation_cuts_a_receive_short() {
+    let port = listener(false).await;
+    let plugin = socket_plugin(port, true).await;
+    let calling = plugin.clone();
+    let started = std::time::Instant::now();
+    let call =
+        tokio::spawn(
+            async move { one(&calling, "c1", &format!("socket:127.0.0.1:{port}:ping")).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    plugin
+        .set_connection(connection_info("c1", 2))
+        .await
+        .unwrap();
+    let result = call.await.unwrap();
+    // The receive would otherwise wait out its 2 s.
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(result, Err(PluginError::Internal(ref text)) if text.contains("retired")),
+        "{result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retiring_the_plugin_cuts_a_receive_short() {
+    let port = listener(false).await;
+    let plugin = socket_plugin(port, true).await;
+    let calling = plugin.clone();
+    let started = std::time::Instant::now();
+    let call =
+        tokio::spawn(
+            async move { one(&calling, "c1", &format!("socket:127.0.0.1:{port}:ping")).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    plugin.retire_calls();
+    let result = call.await.unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(result.is_err(), "{result:?}");
+}

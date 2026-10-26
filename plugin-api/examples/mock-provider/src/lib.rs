@@ -465,6 +465,16 @@ fn connection_script(conn: &Connection, command: &str) -> Option<Tracks> {
                 )),
             }
         }
+        // `drain-held`: receives once on every held socket, keeping the
+        // handles, so the host closes those whose peer hung up.
+        "drain-held" => {
+            if let Ok(held) = HELD.lock() {
+                for tcp in held.iter() {
+                    let _ = tcp.receive(64, 1_000);
+                }
+            }
+            Ok(vec![Ok(track("t0", "drained"))])
+        }
         // `slow-write:<scheme>:<url>`: reads the credential, fetches a slow
         // URL, then writes, so another call can write in between.
         "slow-write" => {

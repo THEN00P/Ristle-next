@@ -15,7 +15,9 @@ use ::cpal::{
     SupportedStreamConfigRange,
 };
 
-use super::{AudioOutput, OutputError, OutputErrors, OutputInfo, OutputRequest, Render};
+use super::{
+    AudioOutput, OutputError, OutputErrors, OutputInfo, OutputLatency, OutputRequest, Render,
+};
 
 /// Samples converted per render call when the device is not `f32`. The
 /// buffer is allocated before the stream starts.
@@ -162,15 +164,20 @@ fn open_stream(
         sample_rate: config.sample_rate,
         channels: config.channels,
     };
-    let errors = request.errors.clone();
+    let sink = Sink {
+        errors: request.errors.clone(),
+        latency: request.latency.clone(),
+        rate: f64::from(config.sample_rate),
+        channels: usize::from(config.channels).max(1),
+    };
     let stream = match chosen.sample_format() {
-        SampleFormat::F32 => build_f32(&device, &config, render, errors),
-        SampleFormat::F64 => build::<f64>(&device, &config, render, errors),
-        SampleFormat::I16 => build::<i16>(&device, &config, render, errors),
-        SampleFormat::I32 => build::<i32>(&device, &config, render, errors),
-        SampleFormat::U16 => build::<u16>(&device, &config, render, errors),
-        SampleFormat::I8 => build::<i8>(&device, &config, render, errors),
-        SampleFormat::U8 => build::<u8>(&device, &config, render, errors),
+        SampleFormat::F32 => build_f32(&device, &config, render, sink.clone()),
+        SampleFormat::F64 => build::<f64>(&device, &config, render, sink.clone()),
+        SampleFormat::I16 => build::<i16>(&device, &config, render, sink.clone()),
+        SampleFormat::I32 => build::<i32>(&device, &config, render, sink.clone()),
+        SampleFormat::U16 => build::<u16>(&device, &config, render, sink.clone()),
+        SampleFormat::I8 => build::<i8>(&device, &config, render, sink.clone()),
+        SampleFormat::U8 => build::<u8>(&device, &config, render, sink.clone()),
         other => Err(OutputError::Unsupported(format!("sample format {other}"))),
     }?;
     // cpal 0.18 returns built streams stopped, which is how ours start.
@@ -259,18 +266,52 @@ fn choose_config(
         .unwrap_or(*default)
 }
 
+/// What the callbacks report to: failures, and the latency they measure.
+#[derive(Clone)]
+struct Sink {
+    errors: OutputErrors,
+    latency: OutputLatency,
+    rate: f64,
+    channels: usize,
+}
+
+impl Sink {
+    /// Records how far behind the listener is once this buffer is written:
+    /// the buffer itself, plus the time until its first frame plays. Real-time
+    /// safe.
+    fn measure(&self, info: &::cpal::OutputCallbackInfo, samples: usize) {
+        let timestamp = info.timestamp();
+        let ahead = timestamp.playback.duration_since(timestamp.callback);
+        let frames = (ahead.as_secs_f64() * self.rate) as u64 + (samples / self.channels) as u64;
+        self.latency.set_frames(frames);
+    }
+
+    fn report(&self, error: &::cpal::Error) {
+        match error.kind() {
+            // An xrun is a glitch, not a failure; a reroute to the new
+            // default device is handled by the host.
+            ErrorKind::Xrun | ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied => {}
+            _ => self.errors.report(OutputError::Backend(error.to_string())),
+        }
+    }
+}
+
 /// A device that takes `f32` gets the engine's buffer directly.
 fn build_f32(
     device: &::cpal::Device,
     config: &StreamConfig,
     mut render: Box<dyn Render>,
-    errors: OutputErrors,
+    sink: Sink,
 ) -> Result<::cpal::Stream, OutputError> {
+    let errors = sink.clone();
     device
         .build_output_stream(
             *config,
-            move |out: &mut [f32], _: &::cpal::OutputCallbackInfo| render.render(out),
-            move |error: ::cpal::Error| report(&errors, &error),
+            move |out: &mut [f32], info: &::cpal::OutputCallbackInfo| {
+                sink.measure(info, out.len());
+                render.render(out);
+            },
+            move |error: ::cpal::Error| errors.report(&error),
             None,
         )
         .map_err(backend)
@@ -281,18 +322,19 @@ fn build<T>(
     device: &::cpal::Device,
     config: &StreamConfig,
     mut render: Box<dyn Render>,
-    errors: OutputErrors,
+    sink: Sink,
 ) -> Result<::cpal::Stream, OutputError>
 where
     T: SizedSample + FromSample<f32> + Send + 'static,
 {
-    let channels = usize::from(config.channels).max(1);
     // Whole frames per pass.
-    let mut scratch = vec![0.0_f32; (SCRATCH_SAMPLES / channels).max(1) * channels];
+    let mut scratch = vec![0.0_f32; (SCRATCH_SAMPLES / sink.channels).max(1) * sink.channels];
+    let errors = sink.clone();
     device
         .build_output_stream(
             *config,
-            move |out: &mut [T], _: &::cpal::OutputCallbackInfo| {
+            move |out: &mut [T], info: &::cpal::OutputCallbackInfo| {
+                sink.measure(info, out.len());
                 for chunk in out.chunks_mut(scratch.len()) {
                     let scratch = &mut scratch[..chunk.len()];
                     render.render(scratch);
@@ -301,19 +343,10 @@ where
                     }
                 }
             },
-            move |error: ::cpal::Error| report(&errors, &error),
+            move |error: ::cpal::Error| errors.report(&error),
             None,
         )
         .map_err(backend)
-}
-
-fn report(errors: &OutputErrors, error: &::cpal::Error) {
-    match error.kind() {
-        // An xrun is a glitch, not a failure; a reroute to the new default
-        // device is handled by the host.
-        ErrorKind::Xrun | ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied => {}
-        _ => errors.report(OutputError::Backend(error.to_string())),
-    }
 }
 
 fn backend(error: ::cpal::Error) -> OutputError {
@@ -343,6 +376,7 @@ mod tests {
             preferred_rate,
             channels: 2,
             errors: OutputErrors::new(|_| {}),
+            latency: OutputLatency::new(),
         }
     }
 

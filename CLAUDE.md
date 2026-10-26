@@ -69,6 +69,10 @@ before relying on it, and update it when you learn something new.
   `CFLAGS_<triple>` variables, which `cc` prefers over the underscore form, so
   pass extra flags as `env "CFLAGS_aarch64-linux-android=..."`. Crates that
   build with cmake (libopus) need the VS-bundled cmake on PATH.
+  `cargo ndk` builds of them also need `ANDROID_NDK_HOME` (and
+  `ANDROID_NDK`) set to `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`; set
+  those only for the `cargo ndk` command, because they break the host
+  (Windows) build of the same crates.
 - **Babysitting Codex reviews: T3's PR watch wakes late.** It reacts
   promptly to the edited "Codex Review Summary" comment, but delivers the
   inline review comments about ten minutes late. Poll in the background

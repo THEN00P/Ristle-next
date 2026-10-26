@@ -26,16 +26,18 @@ use std::time::{Duration, Instant};
 
 use ndk::audio::{
     AudioCallbackResult, AudioContentType, AudioDirection, AudioError, AudioFormat,
-    AudioPerformanceMode, AudioSharingMode, AudioStream, AudioStreamBuilder, AudioUsage,
+    AudioPerformanceMode, AudioSharingMode, AudioStream, AudioStreamBuilder, AudioUsage, Clockid,
 };
 
-use super::{AudioOutput, OutputError, OutputInfo, OutputRequest, Render};
+use super::{AudioOutput, OutputError, OutputInfo, OutputLatency, OutputRequest, Render};
 
 /// Reopen attempts after a disconnect before the failure is reported: about
 /// 10 s with the delays below.
 const REOPEN_ATTEMPTS: u32 = 10;
 const FIRST_REOPEN_DELAY: Duration = Duration::from_millis(100);
 const LONGEST_REOPEN_DELAY: Duration = Duration::from_secs(2);
+/// How often the latency is measured while playing.
+const LATENCY_POLL: Duration = Duration::from_millis(100);
 
 /// The default output route, through AAudio.
 #[derive(Default)]
@@ -54,6 +56,8 @@ enum Command {
     /// Sent by the error callback when the stream was disconnected.
     Reopen,
     Close,
+    /// Internal to the output thread: time to measure the latency again.
+    Measure,
 }
 
 /// The engine's `Render`, shared by successive streams across reopens. Only
@@ -153,6 +157,10 @@ fn run(
     };
     let (mut stream, settings) = match open_stream(requested, &render, &reopen) {
         Ok((stream, info)) => {
+            // Until the first timestamp: the buffer AAudio fills ahead.
+            request
+                .latency
+                .set_frames(u64::try_from(stream.buffer_size_in_frames()).unwrap_or(0));
             let settings = Settings {
                 sample_rate: i32::try_from(info.sample_rate).ok(),
                 channels: i32::from(info.channels),
@@ -170,15 +178,23 @@ fn run(
     // reopen is retried with backoff before it is reported. A later Resume
     // tries again even after that.
     let mut retry: Option<(Instant, Duration, u32)> = None;
+    let latency = request.latency.clone();
     loop {
-        let command = match retry {
-            Some((at, _, _)) => {
-                match commands.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                    Ok(command) => command,
-                    Err(mpsc::RecvTimeoutError::Timeout) => Command::Reopen,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
+        // While playing, the latency is measured every LATENCY_POLL.
+        let measure_at = (running && stream.is_some()).then(|| Instant::now() + LATENCY_POLL);
+        let wake = match (retry.map(|(at, _, _)| at), measure_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let command = match wake {
+            Some(at) => match commands.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Timeout) => match retry {
+                    Some((due, _, _)) if due <= Instant::now() => Command::Reopen,
+                    _ => Command::Measure,
+                },
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            },
             None => match commands.recv() {
                 Ok(command) => command,
                 Err(_) => break,
@@ -227,6 +243,12 @@ fn run(
                         continue;
                     }
                 }
+            }
+            Command::Measure => {
+                if let Some(stream) = &stream {
+                    measure(stream, &latency);
+                }
+                Ok(())
             }
             Command::Close => break,
         };
@@ -307,6 +329,32 @@ fn open_stream(
         "audio output opened"
     );
     Ok((stream, info))
+}
+
+/// Frames written but not yet presented: `getTimestamp` gives the frame
+/// presented at a moment, which is moved forward to now.
+fn measure(stream: &AudioStream, latency: &OutputLatency) {
+    let Ok(timestamp) = stream.timestamp(Clockid::Monotonic) else {
+        // No timestamp until the stream has run for a burst; keep the last.
+        return;
+    };
+    let rate = i128::from(stream.sample_rate());
+    let elapsed = i128::from((monotonic_ns() - timestamp.time_nanoseconds).max(0));
+    let presented = i128::from(timestamp.frame_position) + elapsed * rate / 1_000_000_000;
+    let pending = i128::from(stream.frames_written()) - presented;
+    latency.set_frames(u64::try_from(pending.max(0)).unwrap_or(0));
+}
+
+/// CLOCK_MONOTONIC in nanoseconds.
+fn monotonic_ns() -> i64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec, and CLOCK_MONOTONIC is
+    // always available on Android.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+    now.tv_sec * 1_000_000_000 + now.tv_nsec
 }
 
 fn aaudio(error: AudioError) -> OutputError {

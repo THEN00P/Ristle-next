@@ -116,7 +116,8 @@ before relying on it, and update it when you learn something new.
   helpers in `tests/*.rs` crates. Those files carry a crate-level
   `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - **CI's `cargo doc` and clippy differ in features.** `cargo doc` runs
-  without `--all-features`, so code used only behind a feature (for example
+  with `RUSTDOCFLAGS=-D warnings` (set it locally too, or rustdoc lints such
+  as an unescaped `<Provider>` only fail in CI) and without `--all-features`, so code used only behind a feature (for example
   `test-support` helpers) must be `#[cfg(feature = ...)]`-gated, or it fails
   CI as dead code while local `--all-features` clippy passes.
 - **Running Rust test binaries on the emulator:** `cargo ndk -t x86_64

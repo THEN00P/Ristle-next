@@ -87,6 +87,59 @@ impl Method {
 pub trait Attach: Send + Sync {
     /// The headers for a request to `url`.
     fn headers(&self, url: &Url) -> Vec<Header>;
+
+    /// Query parameters appended to a request to `url`. They are added to
+    /// the hop sent, never to the URL redirects are resolved against or the
+    /// cache key.
+    fn query(&self, url: &Url) -> Vec<(String, String)> {
+        let _ = url;
+        Vec::new()
+    }
+}
+
+/// Decides whether a response may still be written to the cache. The
+/// Plugin host uses it so a request that outlived its connection's
+/// generation never stores what it received after the old generation's
+/// cache was deleted: `commit` checks the generation and runs `write` under
+/// the same lock a generation change takes.
+pub trait CacheGate: Send + Sync {
+    /// Runs `write` if the response may still be stored.
+    fn commit(&self, write: &mut dyn FnMut());
+}
+
+/// Numbers the responses that reach the Provider, in the order their headers
+/// arrive (`http.response.sequence`). It is called once per response, on a
+/// blocking thread, before the body is read.
+pub trait Sequencer: Send + Sync {
+    /// The next number.
+    fn next(&self) -> Result<u64, String>;
+}
+
+/// A byte budget several requests share, such as all bodies of one
+/// `fetch-all`. Each body, cached ones included, takes from it as it is
+/// read; a body that does not fit fails with [`Error::BudgetSpent`].
+#[derive(Clone, Debug)]
+pub struct BodyBudget(Arc<AtomicU64>);
+
+impl BodyBudget {
+    /// A budget of `bytes`.
+    pub fn new(bytes: u64) -> Self {
+        Self(Arc::new(AtomicU64::new(bytes)))
+    }
+
+    /// What is left.
+    pub fn remaining(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Takes `bytes`, if that many are left.
+    fn take(&self, bytes: u64) -> bool {
+        self.0
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(bytes)
+            })
+            .is_ok()
+    }
 }
 
 /// One request.
@@ -116,6 +169,12 @@ pub struct Request {
     pub timeout: Duration,
     /// The largest body accepted.
     pub max_body: u64,
+    /// A budget shared with other requests, if any.
+    pub budget: Option<BodyBudget>,
+    /// Decides whether the response may still be cached.
+    pub gate: Option<Arc<dyn CacheGate>>,
+    /// Numbers the response when its headers arrive.
+    pub sequencer: Option<Arc<dyn Sequencer>>,
 }
 
 impl Request {
@@ -132,6 +191,9 @@ impl Request {
             revalidate: false,
             timeout: MAX_TIMEOUT,
             max_body: MAX_BODY_BYTES,
+            budget: None,
+            gate: None,
+            sequencer: None,
         }
     }
 }
@@ -168,6 +230,10 @@ pub struct Response {
     /// When it was last fetched from the Provider, in Unix milliseconds. A
     /// result built from several responses is as old as its oldest.
     pub fetched_at_ms: u64,
+    /// Its number from the request's [`Sequencer`], given when its headers
+    /// arrived; `None` without a sequencer or when it did not reach the
+    /// Provider.
+    pub sequence: Option<u64>,
 }
 
 /// A response whose body is read as it arrives. Never cached.
@@ -283,6 +349,16 @@ struct Validators {
     headers: Vec<Header>,
 }
 
+/// Request headers that keep a request out of the cache.
+const PASSED_THROUGH: [&str; 6] = [
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "if-match",
+    "if-unmodified-since",
+    "if-range",
+];
+
 impl Client {
     /// A client. `cache` is where cached responses live; without one,
     /// every request bypasses the cache.
@@ -344,26 +420,24 @@ impl Client {
             None => None,
         };
         let now = self.inner.clock.now_ms();
+        // A request that asks for validation is never answered from the
+        // cache unvalidated, not even when the Provider fails.
+        let must_validate = cache::request_wants_revalidation(&request.headers);
         if let Some(stored) = &stored
             && stored.is_fresh(now)
             && !request.revalidate
-            && !cache::request_wants_revalidation(&request.headers)
+            && !must_validate
         {
             return served(stored, &request);
         }
         let conditional = match &stored {
-            Some(stored)
-                if !headers::has(&request.headers, "if-none-match")
-                    && !headers::has(&request.headers, "if-modified-since") =>
-            {
-                Url::parse(&stored.url)
-                    .ok()
-                    .map(|url| Validators {
-                        url,
-                        headers: stored.validators(),
-                    })
-                    .filter(|validators| !validators.headers.is_empty())
-            }
+            Some(stored) => Url::parse(&stored.url)
+                .ok()
+                .map(|url| Validators {
+                    url,
+                    headers: stored.validators(),
+                })
+                .filter(|validators| !validators.headers.is_empty()),
             _ => None,
         };
         let max_body = request.max_body;
@@ -371,11 +445,22 @@ impl Client {
             let exchange = self
                 .open(&request, &caller_headers, conditional.as_ref())
                 .await?;
+            // Numbered as the headers arrive, not when the body is read.
+            let sequence = match request.sequencer.clone() {
+                Some(sequencer) => Some(
+                    tokio::task::spawn_blocking(move || sequencer.next())
+                        .await
+                        .map_err(|error| Error::Network(format!("response sequence: {error}")))?
+                        .map_err(|error| Error::Network(format!("response sequence: {error}")))?,
+                ),
+                None => None,
+            };
             let body = read_body(
                 exchange.body,
                 &exchange.headers,
                 bodiless(request.method, exchange.status),
                 max_body,
+                request.budget.as_ref(),
             )
             .await?;
             Ok::<_, Error>((
@@ -384,15 +469,17 @@ impl Client {
                 exchange.url,
                 body,
                 exchange.sent,
+                sequence,
             ))
         })
         .await
         .unwrap_or(Err(Error::Timeout));
         let now = self.inner.clock.now_ms();
-        let (status, response_headers, url, body, sent) = match result {
+        let (status, response_headers, url, body, sent, sequence) = match result {
             Ok(parts) => parts,
             Err(error) => {
                 if provider_failed(&error)
+                    && !must_validate
                     && let Some(stored) = &stored
                     && stored.usable_on_error(now)
                 {
@@ -410,10 +497,19 @@ impl Client {
             && let (Some(stored), Some(key)) = (&stored, &key)
         {
             return self
-                .revalidated(key, stored, &request, response_headers, &sent, now)
+                .revalidated(
+                    key,
+                    stored,
+                    &request,
+                    response_headers,
+                    &sent,
+                    now,
+                    sequence,
+                )
                 .await;
         }
         if matches!(status, 500 | 502 | 503 | 504)
+            && !must_validate
             && let Some(stored) = &stored
             && stored.usable_on_error(now)
         {
@@ -441,6 +537,7 @@ impl Client {
             cached: false,
             reached_provider: true,
             fetched_at_ms: now,
+            sequence,
         })
     }
 
@@ -553,7 +650,14 @@ impl Client {
                 Vec::new()
             };
             sent.extend(attached_text);
-            let uri: Uri = url
+            let mut outgoing_url = url.clone();
+            if let Some(attach) = &request.attach {
+                let query = attach.query(&url);
+                if !query.is_empty() {
+                    outgoing_url.query_pairs_mut().extend_pairs(query);
+                }
+            }
+            let uri: Uri = outgoing_url
                 .as_str()
                 .parse()
                 .map_err(|_| Error::NotAllowed("URL is not a valid URI".to_owned()))?;
@@ -679,7 +783,12 @@ impl Client {
         self.inner.cache.as_ref()?;
         let scope = request.cache.scope()?.clone();
         let method = request.method.cache_method()?;
-        if headers::has(&request.headers, "range") {
+        // The caller's own ranges and preconditions are the Provider's to
+        // evaluate: neither is answered from, nor stored in, the cache.
+        if PASSED_THROUGH
+            .iter()
+            .any(|name| headers::has(&request.headers, name))
+        {
             return None;
         }
         let key = match &request.cache {
@@ -765,9 +874,10 @@ impl Client {
             stale_until_ms: freshness.stale_until_ms,
             vary,
         };
-        self.put(key, stored).await;
+        self.put(key, stored, request.gate.clone()).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn revalidated(
         &self,
         key: &CacheKey,
@@ -776,6 +886,7 @@ impl Client {
         received: Vec<Header>,
         sent: &[Header],
         now: u64,
+        sequence: Option<u64>,
     ) -> Result<Response, Error> {
         let merged = cache::merge_headers(&stored.headers, &received);
         // Each part fits the bounds; together they must too.
@@ -808,12 +919,12 @@ impl Client {
             ..stored.clone()
         };
         if freshness.is_some() {
-            self.put(key, updated.clone()).await;
+            self.put(key, updated.clone(), request.gate.clone()).await;
         } else {
             let gone = key.clone();
             self.with_store(move |store| store.remove(&gone)).await;
         }
-        check_body(updated.body.len(), request.max_body)?;
+        charge(updated.body.len(), request)?;
         Ok(Response {
             status: updated.status,
             headers: updated.headers,
@@ -823,6 +934,7 @@ impl Client {
             received,
             reached_provider: true,
             fetched_at_ms: now,
+            sequence,
         })
     }
 
@@ -851,7 +963,7 @@ impl Client {
         .await;
     }
 
-    async fn put(&self, key: &CacheKey, stored: StoredResponse) {
+    async fn put(&self, key: &CacheKey, stored: StoredResponse, gate: Option<Arc<dyn CacheGate>>) {
         let key = key.clone();
         let plugin = key.scope.plugin.clone();
         let now = self.inner.clock.now_ms();
@@ -862,16 +974,26 @@ impl Client {
         }
         let result = self
             .with_store(move |store| {
-                store.put(&key, &stored)?;
-                store.trim(
-                    &plugin,
-                    cache::PLUGIN_BUDGET_BYTES,
-                    cache::TOTAL_BUDGET_BYTES,
-                )?;
-                if purge {
-                    store.evict_older_than(expiry_cutoff(now))?;
+                let write = || {
+                    store.put(&key, &stored)?;
+                    store.trim(
+                        &plugin,
+                        cache::PLUGIN_BUDGET_BYTES,
+                        cache::TOTAL_BUDGET_BYTES,
+                    )?;
+                    if purge {
+                        store.evict_older_than(expiry_cutoff(now))?;
+                    }
+                    Ok::<_, StoreError>(())
+                };
+                match gate {
+                    Some(gate) => {
+                        let mut outcome = Ok(());
+                        gate.commit(&mut || outcome = write());
+                        outcome
+                    }
+                    None => write(),
                 }
-                Ok::<_, StoreError>(())
             })
             .await;
         if let Some(Err(error)) = result {
@@ -938,8 +1060,20 @@ fn expiry_cutoff(now_ms: u64) -> u64 {
 /// A cached response as the caller sees it, within the request's body
 /// bound like a fetched one.
 fn served(stored: &StoredResponse, request: &Request) -> Result<Response, Error> {
-    check_body(stored.body.len(), request.max_body)?;
+    charge(stored.body.len(), request)?;
     Ok(from_stored(stored, &request.url))
+}
+
+/// Checks a cached body against the request's bounds and takes it from
+/// the shared budget.
+fn charge(length: usize, request: &Request) -> Result<(), Error> {
+    check_body(length, request.max_body)?;
+    if let Some(budget) = &request.budget
+        && !budget.take(length as u64)
+    {
+        return Err(Error::BudgetSpent);
+    }
+    Ok(())
 }
 
 fn check_body(length: usize, max: u64) -> Result<(), Error> {
@@ -964,6 +1098,7 @@ fn from_stored(stored: &StoredResponse, request_url: &Url) -> Response {
         cached: true,
         received: Vec::new(),
         reached_provider: false,
+        sequence: None,
         fetched_at_ms: stored.fetched_at_ms,
     }
 }
@@ -994,15 +1129,29 @@ async fn read_body(
     response_headers: &[Header],
     bodiless: bool,
     max: u64,
+    budget: Option<&BodyBudget>,
 ) -> Result<Bytes, Error> {
-    if !bodiless
-        && let Some(length) = headers::get(response_headers, "content-length")
-            .and_then(|length| length.trim().parse::<u64>().ok())
+    let declared = (!bodiless)
+        .then(|| headers::get(response_headers, "content-length"))
+        .flatten()
+        .and_then(|length| length.trim().parse::<u64>().ok());
+    if let Some(length) = declared
         && length > max
     {
         return Err(Error::TooLarge(format!(
             "body of {length} bytes exceeds {max}"
         )));
+    }
+    // A declared length is reserved from a shared budget at once, so
+    // concurrent bodies are kept in the order they announce themselves
+    // instead of all running out together. Undeclared ones take as they
+    // arrive.
+    let mut reserved = 0u64;
+    if let (Some(budget), Some(length)) = (budget, declared) {
+        if !budget.take(length) {
+            return Err(Error::BudgetSpent);
+        }
+        reserved = length;
     }
     let mut out = BytesMut::new();
     while let Some(frame) = body.frame().await {
@@ -1010,6 +1159,14 @@ async fn read_body(
         if let Ok(data) = frame.into_data() {
             if (out.len() + data.len()) as u64 > max {
                 return Err(Error::TooLarge(format!("body exceeds {max} bytes")));
+            }
+            let beyond =
+                ((out.len() + data.len()) as u64).saturating_sub(reserved.max(out.len() as u64));
+            if let Some(budget) = budget
+                && beyond > 0
+                && !budget.take(beyond)
+            {
+                return Err(Error::BudgetSpent);
             }
             out.extend_from_slice(&data);
         }

@@ -50,8 +50,33 @@ pub trait PluginStore: Send + Sync {
     /// The Plugin's `storage` namespace.
     fn plugin_kv(&self, plugin: &PluginId) -> Box<dyn KvScope>;
     /// One Provider Connection's data, counted against its Plugin's quota.
-    fn connection_kv(&self, connection: &ConnectionId) -> Box<dyn KvScope>;
-    /// The next `http.response.sequence` of a connection. It grows with
-    /// every call and never repeats or goes back, across restarts too.
-    fn next_response_sequence(&self, connection: &ConnectionId) -> Result<u64, StoreError>;
+    /// Keyed by Plugin and connection: connection ids are unique within a
+    /// Plugin only, and every Plugin's anonymous connection has the empty
+    /// id.
+    fn connection_kv(&self, plugin: &PluginId, connection: &ConnectionId) -> Box<dyn KvScope>;
+    /// The next `http.response.sequence` of a connection of a Plugin. It
+    /// grows with every call and never repeats or goes back, across
+    /// restarts too.
+    fn next_response_sequence(
+        &self,
+        plugin: &PluginId,
+        connection: &ConnectionId,
+    ) -> Result<u64, StoreError>;
+}
+
+/// The platform credential store failed.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("secret vault: {0}")]
+pub struct VaultError(pub String);
+
+/// Secrets in the platform's credential store (Android Keystore, the iOS
+/// Keychain, the desktop's secret service). Implemented by the facade's
+/// `PlatformHost`. Credential Records live here, never in the database.
+pub trait SecretVault: Send + Sync {
+    /// The secret stored under `key`.
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>, VaultError>;
+    /// Stores or replaces the secret under `key`.
+    fn write(&self, key: &str, value: &[u8]) -> Result<(), VaultError>;
+    /// Removes the secret under `key`, if any.
+    fn delete(&self, key: &str) -> Result<(), VaultError>;
 }

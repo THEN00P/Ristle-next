@@ -6,7 +6,9 @@
 //! payloads over 16 MiB fail the call with `error.internal`, or trap for an
 //! import without an error result.
 
+mod connection;
 mod crypto;
+mod http;
 mod pending;
 mod storage;
 mod system;
@@ -14,13 +16,14 @@ mod system;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use ristle_domain::{Clock, PluginId};
+use ristle_domain::{Clock, ConnectionId, PluginId};
 use wasmtime::component::ResourceTable;
 
 use crate::bindings::ristle::plugin::types::Error as WitError;
+use crate::connections::Connections;
 use crate::limits::{self, Limiter};
 use crate::package::Manifest;
-use crate::ports::PluginStore;
+use crate::ports::{PluginStore, SecretVault};
 
 /// The largest string a Plugin may pass to an import.
 pub(crate) const MAX_STRING: usize = 64 * 1024;
@@ -31,8 +34,11 @@ pub(crate) const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 pub(crate) struct Services {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) store: Arc<dyn PluginStore>,
+    pub(crate) vault: Arc<dyn SecretVault>,
     pub(crate) net: ristle_net::Client,
     pub(crate) locale: Mutex<String>,
+    /// The core runtime: imports block on it from the call's thread.
+    pub(crate) runtime: tokio::runtime::Handle,
 }
 
 /// What every instance of one Plugin shares.
@@ -41,17 +47,37 @@ pub(crate) struct PluginContext {
     pub(crate) manifest: Manifest,
     pub(crate) services: Arc<Services>,
     pub(crate) log: Mutex<LogBucket>,
+    pub(crate) connections: Connections,
 }
 
 impl PluginContext {
     pub(crate) fn new(manifest: Manifest, services: Arc<Services>) -> Self {
         Self {
             id: manifest.id.clone(),
+            connections: Connections::new(manifest.id.clone()),
             manifest,
             services,
             log: Mutex::new(LogBucket::new()),
         }
     }
+
+    pub(crate) fn retirements(&self) -> u64 {
+        self.connections.retirements()
+    }
+}
+
+/// The call an instance is running: which connection, under which
+/// generation, and what it read.
+#[derive(Clone, Debug)]
+pub(crate) struct CallContext {
+    pub(crate) connection: ConnectionId,
+    pub(crate) generation: u64,
+    pub(crate) retirements: u64,
+    /// The credential version this call last read, or the one it started
+    /// with, for `set-credential`'s compare-and-set.
+    pub(crate) credential_base: u64,
+    /// The user asked to refresh: cached responses are revalidated.
+    pub(crate) refresh: bool,
 }
 
 /// A token bucket for `system.log`.
@@ -121,6 +147,11 @@ impl CallClock {
         }
     }
 
+    /// How long the call may still take, for timeouts inside imports.
+    pub(crate) fn remaining(&self) -> Duration {
+        self.total_budget.saturating_sub(self.started.elapsed())
+    }
+
     /// Called on every epoch tick while guest code runs: which budget is
     /// spent, if any.
     pub(crate) fn check(&mut self) -> Option<Exceeded> {
@@ -143,10 +174,7 @@ pub(crate) struct HostState {
     pub(crate) table: ResourceTable,
     pub(crate) clock: CallClock,
     pub(crate) plugin: Arc<PluginContext>,
-    /// A host call is running. Guest code that runs outside one, such as
-    /// start functions during instantiation (install's trial included),
-    /// reaches no Plugin state.
-    pub(crate) in_call: bool,
+    pub(crate) call: Option<CallContext>,
 }
 
 impl HostState {
@@ -156,8 +184,28 @@ impl HostState {
             table: ResourceTable::new(),
             clock: CallClock::idle(),
             plugin,
-            in_call: false,
+            call: None,
         }
+    }
+
+    /// The retirement count of a running call that is not retired, for
+    /// commits of the Plugin's own state.
+    pub(crate) fn live_retirements(&self) -> Option<u64> {
+        if self.retired() {
+            return None;
+        }
+        self.call.as_ref().map(|call| call.retirements)
+    }
+
+    /// Whether the running call is retired: its connection's generation
+    /// moved or ended, or the Plugin was replaced or disabled since it
+    /// started. A retired call reaches nothing outside its instance.
+    pub(crate) fn retired(&self) -> bool {
+        let Some(call) = &self.call else {
+            return true;
+        };
+        self.plugin.retirements() != call.retirements
+            || self.plugin.connections.generation(&call.connection) != Some(call.generation)
     }
 
     /// Runs an import's body, counting its time as import time.

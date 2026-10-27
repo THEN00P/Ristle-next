@@ -20,6 +20,12 @@
 //! | `errors:<n>` | `<n>` unavailable Tracks with 60 KiB reasons |
 //! | `many:<n>` | `<n>` Tracks with 60 KiB titles and album names |
 //! | `rich` | Tracks with every field set, some of them invalid |
+//! | `account`, `server`, `folders`, `id`, `credential` | what `connection` reports, as a title |
+//! | `set-credential:<scheme>[:<host>:<authorization>]` | stores a credential, attaching `Authorization` to `<host>` |
+//! | `data:<key>=<value>`, `data:<key>` | `connection.set-data`; `get-data` as a title |
+//! | `fetch:<url>`, `fetch-bypass:<url>` | one GET, cached by HTTP rules or not, described as a title |
+//! | `fetch-all:<n>:<url>`, `fetch-urls:<url>\|<url>…` | GETs at once, one title per outcome |
+//! | `slow-write:<scheme>:<url>` | reads the credential, fetches `<url>`, then writes |
 //! | anything else | a Track per id; ids starting `gone` are unavailable |
 //!
 //! Every other export returns fixed, predictable values.
@@ -39,7 +45,7 @@ use ristle::plugin::types::{
     ListRequest, Listing, Location, Named, Page, Playlist, PluginBytes, SettingValue, Shelf,
     StreamSource, Target, Track, TrackTraits, ViewPage,
 };
-use ristle::plugin::{crypto, storage, system};
+use ristle::plugin::{crypto, http, storage, system};
 
 struct Mock;
 
@@ -99,7 +105,10 @@ fn titled(titles: Vec<String>) -> Tracks {
 }
 
 /// Runs a script command given as the first id of `catalog.tracks`.
-fn script(command: &str, calls: u64) -> Option<Tracks> {
+fn script(conn: &Connection, command: &str, calls: u64) -> Option<Tracks> {
+    if let Some(result) = connection_script(conn, command) {
+        return Some(result);
+    }
     if command == "trap" {
         core::arch::wasm32::unreachable();
     }
@@ -236,6 +245,150 @@ fn script(command: &str, calls: u64) -> Option<Tracks> {
     }
 }
 
+fn get(url: &str, cache: http::Cache) -> http::Request {
+    http::Request {
+        method: http::Method::Get,
+        url: url.to_string(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        cache,
+        timeout_ms: None,
+    }
+}
+
+/// A response as a title: its body as text when short, else its length.
+fn describe(response: &http::Response) -> String {
+    let body = if response.body.len() <= 64 {
+        String::from_utf8_lossy(&response.body).into_owned()
+    } else {
+        format!("<{} bytes>", response.body.len())
+    };
+    format!(
+        "{} {} cached={} sequence={}",
+        response.status, body, response.cached, response.sequence
+    )
+}
+
+/// Scripts for the `connection` resource.
+fn connection_script(conn: &Connection, command: &str) -> Option<Tracks> {
+    let (name, argument) = command.split_once(':').unwrap_or((command, ""));
+    let result = match name {
+        "account" => titled(vec![
+            conn.account()
+                .map_or("none".to_string(), |account| account.name),
+        ]),
+        "server" => titled(vec![
+            conn.server()
+                .map_or("none".to_string(), |server| server.name),
+        ]),
+        "folders" => titled(vec![conn.folders().len().to_string()]),
+        "id" => titled(vec![conn.id()]),
+        "credential" => titled(vec![
+            conn.credential()
+                .map_or("none".to_string(), |credential| credential.scheme),
+        ]),
+        // `set-credential:<scheme>` or `set-credential:<scheme>:<host>:<authorization>`
+        "set-credential" => {
+            let mut parts = argument.splitn(3, ':');
+            let scheme = parts.next().unwrap_or_default().to_string();
+            let attach = match (parts.next(), parts.next()) {
+                (Some(host), Some(value)) => vec![ristle::plugin::types::Attach {
+                    hosts: vec![host.to_string()],
+                    headers: vec![("Authorization".to_string(), value.to_string())],
+                    query: Vec::new(),
+                }],
+                _ => Vec::new(),
+            };
+            conn.set_credential(&credential(scheme, attach))
+                .map(|()| vec![Ok(track("t0", "set"))])
+        }
+        // `data:<key>=<value>` sets, `data:<key>` reads.
+        "data" => match argument.split_once('=') {
+            Some((key, value)) => conn
+                .set_data(key, value.as_bytes(), None)
+                .map(|()| vec![Ok(track("t0", "stored"))]),
+            None => titled(vec![
+                conn.get_data(argument)
+                    .map(|value| String::from_utf8_lossy(&value).into_owned())
+                    .unwrap_or_else(|| "none".to_string()),
+            ]),
+        },
+        "fetch" => conn
+            .fetch(&get(argument, http::Cache::Http))
+            .map(|response| vec![Ok(track("t0", &describe(&response)))]),
+        "fetch-bypass" => conn
+            .fetch(&get(argument, http::Cache::Bypass))
+            .map(|response| vec![Ok(track("t0", &describe(&response)))]),
+        // `fetch-all:<n>:<url>`: one Track per request, titled by its outcome.
+        "fetch-all" => {
+            let (count, url) = argument.split_once(':').unwrap_or(("0", ""));
+            let count: usize = count.parse().unwrap_or(0);
+            let requests = vec![get(url, http::Cache::Bypass); count];
+            conn.fetch_all(&requests).map(|results| {
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(index, result)| {
+                        let title = match result {
+                            Ok(response) => describe(response),
+                            Err(error) => format!("error {error:?}"),
+                        };
+                        Ok(track(&format!("t{index}"), &title))
+                    })
+                    .collect()
+            })
+        }
+        // `fetch-urls:<url>|<url>|…`: GETs at once, one title per outcome.
+        "fetch-urls" => {
+            let requests: Vec<_> = argument
+                .split('|')
+                .map(|url| get(url, http::Cache::Bypass))
+                .collect();
+            conn.fetch_all(&requests).map(|results| {
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(index, result)| {
+                        let title = match result {
+                            Ok(response) => describe(response),
+                            Err(error) => format!("error {error:?}"),
+                        };
+                        Ok(track(&format!("t{index}"), &title))
+                    })
+                    .collect()
+            })
+        }
+        // `slow-write:<scheme>:<url>`: reads the credential, fetches a slow
+        // URL, then writes, so another call can write in between.
+        "slow-write" => {
+            let (scheme, url) = argument.split_once(':').unwrap_or((argument, ""));
+            let _ = conn.credential();
+            match conn.fetch(&get(url, http::Cache::Bypass)) {
+                Ok(_) => conn
+                    .set_credential(&credential(scheme.to_string(), Vec::new()))
+                    .map(|()| vec![Ok(track("t0", "set"))]),
+                Err(error) => Err(error),
+            }
+        }
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn credential(scheme: String, attach: Vec<ristle::plugin::types::Attach>) -> Credential {
+    Credential {
+        scheme,
+        access_token: None,
+        refresh_token: None,
+        expires_at: None,
+        scopes: Vec::new(),
+        username: None,
+        password: None,
+        custom: None,
+        attach,
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -319,7 +472,7 @@ impl catalog::Guest for Mock {
     fn tracks(_conn: &Connection, ids: Vec<String>) -> Result<Vec<Result<Track, Error>>, Error> {
         let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(first) = ids.first()
-            && let Some(result) = script(first, calls)
+            && let Some(result) = script(_conn, first, calls)
         {
             return result;
         }

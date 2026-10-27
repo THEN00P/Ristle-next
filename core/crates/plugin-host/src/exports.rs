@@ -131,13 +131,23 @@ impl LoadedPlugin {
     ) -> Result<Vec<Result<Track, PluginError>>, PluginError> {
         let batch = self.manifest().limits.tracks.unwrap_or(1).max(1) as usize;
         let mut out = Vec::with_capacity(ids.len());
+        // Every batch must run for the same account: if the generation or
+        // the Plugin changes between them, the whole request is retired.
+        let pin = self.pin(connection);
+        let unpinned = || PluginError::from(CallError::Retired);
         for chunk in ids.chunks(batch) {
+            if self.pin(connection) != pin {
+                return Err(unpinned());
+            }
             let chunk = chunk.to_vec();
             let requested = chunk.len();
             let results = self
-                .call(connection, CallKind::Normal, move |store, guests, conn| {
-                    guests.catalog.call_tracks(store, conn, &chunk)
-                })
+                .call(
+                    connection,
+                    CallKind::Normal,
+                    false,
+                    move |store, guests, conn| guests.catalog.call_tracks(store, conn, &chunk),
+                )
                 .await?
                 .map_err(PluginError::of_call)?;
             if results.len() != requested {
@@ -153,6 +163,9 @@ impl LoadedPlugin {
                     Err(error) => Err(PluginError::checked(error, &mut budget)?),
                 });
             }
+        }
+        if self.pin(connection) != pin {
+            return Err(unpinned());
         }
         Ok(out)
     }
@@ -170,6 +183,7 @@ impl LoadedPlugin {
             .call(
                 connection,
                 CallKind::ByteSource,
+                false,
                 move |store, guests, conn| match &guests.byte_source {
                     Some(source) => source
                         .call_read(store, conn, &handle, offset, length)

@@ -23,7 +23,7 @@ fn retired() -> Error {
 
 impl HostState {
     /// The call's context, unless it is retired.
-    fn live_call(&self) -> Option<super::CallContext> {
+    pub(super) fn live_call(&self) -> Option<super::CallContext> {
         (!self.retired()).then(|| self.call.clone()).flatten()
     }
 

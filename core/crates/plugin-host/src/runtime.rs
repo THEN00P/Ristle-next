@@ -33,7 +33,7 @@ use crate::host::{
 };
 use crate::limits;
 use crate::package::{Exports, Package, PackageError};
-use crate::ports::{PluginStore, SecretVault};
+use crate::ports::{FolderAccess, PluginStore, SecretVault};
 
 /// What the Plugin host needs from the rest of the core.
 pub struct HostPorts {
@@ -45,6 +45,9 @@ pub struct HostPorts {
     pub vault: Arc<dyn SecretVault>,
     /// The core's one HTTP client.
     pub net: ristle_net::Client,
+    /// The platform's access to granted folders (`files`); `None` where
+    /// the platform has none, and `files` then fails with `unsupported`.
+    pub folders: Option<Arc<dyn FolderAccess>>,
 }
 
 /// Settings of a [`PluginHost`].
@@ -58,6 +61,10 @@ pub struct HostSettings {
     pub idle_instance: Duration,
     /// How often idle instances are released.
     pub sweep_interval: Duration,
+    /// Socket destinations confirmed as if granted, so tests can reach a
+    /// loopback server. Only exists for tests.
+    #[cfg(feature = "test-support")]
+    pub socket_origins: Vec<ristle_net::GrantedOrigin>,
 }
 
 impl Default for HostSettings {
@@ -67,6 +74,8 @@ impl Default for HostSettings {
             locale: "en-US".to_owned(),
             idle_instance: limits::IDLE_INSTANCE,
             sweep_interval: limits::SWEEP_INTERVAL,
+            #[cfg(feature = "test-support")]
+            socket_origins: Vec::new(),
         }
     }
 }
@@ -158,6 +167,9 @@ impl PluginHost {
                 net: ports.net,
                 locale: Mutex::new(settings.locale),
                 runtime: runtime.clone(),
+                folders: ports.folders,
+                #[cfg(feature = "test-support")]
+                socket_origins: settings.socket_origins,
             }),
             calls: Arc::new(tokio::sync::Semaphore::new(
                 settings.concurrent_calls.max(1),

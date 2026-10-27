@@ -360,6 +360,13 @@ pub trait PluginStore: Send + Sync {
 // the host from ristle-app through `LoadedPlugin::set_connection(ConnectionInfo)`
 // (at start and on every change) and `remove_connection`; Credential Records
 // live in the SecretVault under `ristle.credential.<plugin>.<connection>`.
+/// Folder Grants, per platform (SAF tree, security-scoped bookmark, desktop
+/// path). The host checks the grant and normalizes paths first; the
+/// implementation never leaves the folder, links included.
+pub trait FolderAccess: Send + Sync {
+    fn list(&self, folder: &str, path: &str, after: Option<&str>, limit: usize) -> Result<Vec<FileEntry>, FolderError>;
+    fn read(&self, folder: &str, path: &str, offset: u64, length: u32) -> Result<Vec<u8>, FolderError>;
+}
 pub trait SecretVault: Send + Sync {  // implemented by the facade's PlatformHost
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>, VaultError>;
     fn write(&self, key: &str, value: &[u8]) -> Result<(), VaultError>;

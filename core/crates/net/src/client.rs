@@ -115,6 +115,11 @@ pub trait Sequencer: Send + Sync {
     fn next(&self) -> Result<u64, String>;
 }
 
+/// A raw connection made by [`Client::connect_socket`].
+pub trait Socket: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> Socket for T {}
+
 /// A byte budget several requests share, such as all bodies of one
 /// `fetch-all`. Each body, cached ones included, takes from it as it is
 /// read; a body that does not fit fails with [`Error::BudgetSpent`].
@@ -393,6 +398,32 @@ impl Client {
                 last_purge_ms: AtomicU64::new(0),
             }),
         })
+    }
+
+    /// A TCP connection, optionally with TLS (the client's roots, SNI from
+    /// `host`), for protocols that are not HTTP (the `socket` import). The
+    /// name is resolved here and only public addresses are used, or what
+    /// `origin` confirms; the caller checks `host:port` against the
+    /// manifest first.
+    pub async fn connect_socket(
+        &self,
+        host: &str,
+        port: u16,
+        tls: bool,
+        origin: Option<&crate::GrantedOrigin>,
+    ) -> Result<Box<dyn Socket>, Error> {
+        let tcp = crate::connect::tcp_connect(host, port, origin).await?;
+        if !tls {
+            return Ok(Box::new(tcp));
+        }
+        let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+            .map_err(|_| Error::NotAllowed(format!("{host} is not a TLS server name")))?;
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(self.inner.tls.clone()));
+        let stream = connector
+            .connect(name, tcp)
+            .await
+            .map_err(|error| Error::Network(format!("TLS: {error}")))?;
+        Ok(Box::new(stream))
     }
 
     /// Holds requests to `host` for `wait`, as if it had answered 429 with

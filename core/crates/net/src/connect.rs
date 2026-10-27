@@ -83,6 +83,17 @@ async fn connect(granted: &Granted, uri: &Uri) -> Result<TcpStream, BoxError> {
     let origin = granted
         .iter()
         .find(|origin| origin.host == host && origin.port == port && scheme_is(origin, scheme));
+    connect_checked(host, port, origin, &format!("{scheme}://{host}:{port}")).await
+}
+
+/// Resolves `host`, keeps the addresses `origin` allows (public ones without
+/// an origin), connects to the first that answers and checks the peer.
+async fn connect_checked(
+    host: &str,
+    port: u16,
+    origin: Option<&crate::GrantedOrigin>,
+    label: &str,
+) -> Result<TcpStream, BoxError> {
     let allows = |address: IpAddr| match origin {
         Some(origin) => origin.allows(address),
         None => address::is_public(address),
@@ -103,7 +114,7 @@ async fn connect(granted: &Granted, uri: &Uri) -> Result<TcpStream, BoxError> {
         let mut addresses: Vec<IpAddr> = resolved.iter().map(|socket| socket.ip()).collect();
         addresses.dedup();
         return Err(Box::new(Refused {
-            origin: format!("{scheme}://{host}:{port}"),
+            origin: label.to_owned(),
             granted: origin.is_some(),
             addresses,
         }));
@@ -116,7 +127,7 @@ async fn connect(granted: &Granted, uri: &Uri) -> Result<TcpStream, BoxError> {
                 let peer = stream.peer_addr()?;
                 if !allows(peer.ip()) {
                     return Err(Box::new(Refused {
-                        origin: format!("{scheme}://{host}:{port}"),
+                        origin: label.to_owned(),
                         granted: origin.is_some(),
                         addresses: vec![peer.ip()],
                     }));
@@ -140,4 +151,26 @@ fn scheme_is(origin: &crate::GrantedOrigin, scheme: &str) -> bool {
         (origin.scheme, scheme),
         (crate::Scheme::Http, "http") | (crate::Scheme::Https, "https")
     )
+}
+
+/// A raw TCP connection for the Plugin host's `socket` import: the name is
+/// resolved here, only public addresses are used (or what `origin`
+/// confirms), and the peer is checked once connected. Every new connection
+/// resolves again.
+pub(crate) async fn tcp_connect(
+    host: &str,
+    port: u16,
+    origin: Option<&crate::GrantedOrigin>,
+) -> Result<TcpStream, crate::Error> {
+    let label = format!("tcp://{host}:{port}");
+    connect_checked(host, port, origin, &label)
+        .await
+        .map_err(|error| match error.downcast::<Refused>() {
+            Ok(refused) => crate::Error::AddressRefused {
+                origin: refused.origin,
+                granted: refused.granted,
+                addresses: refused.addresses,
+            },
+            Err(error) => crate::Error::Network(error.to_string()),
+        })
 }

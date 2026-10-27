@@ -223,6 +223,9 @@ pub(crate) struct Connections {
     retirements: AtomicU64,
     /// Woken when a connection's cleanup ends.
     ready: tokio::sync::Notify,
+    /// Marked when a generation ends or the Plugin is retired, for I/O
+    /// that must stop with its call.
+    changed: tokio::sync::watch::Sender<()>,
 }
 
 impl Connections {
@@ -233,6 +236,7 @@ impl Connections {
             commits: RwLock::new(()),
             retirements: AtomicU64::new(0),
             ready: tokio::sync::Notify::new(),
+            changed: tokio::sync::watch::Sender::new(()),
         }
     }
 
@@ -246,6 +250,22 @@ impl Connections {
     pub(crate) fn retire(&self) {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
         self.retirements.fetch_add(1, Ordering::SeqCst);
+        self.changed.send_replace(());
+    }
+
+    /// Resolves once a call tagged with `generation` and `retirements` is
+    /// no longer current: its generation ended or the Plugin was retired.
+    pub(crate) async fn ended(&self, connection: &ConnectionId, generation: u64, retirements: u64) {
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let current = lock(&self.entries)
+                .get(connection)
+                .is_some_and(|entry| self.current(entry, generation, retirements));
+            if !current || changes.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Whether `entry` is still current for a call tagged with `generation`
@@ -271,6 +291,23 @@ impl Connections {
             .get(connection)
             .is_some_and(|entry| self.current(entry, generation, retirements));
         current.then(f)
+    }
+
+    /// Like [`Self::commit`], with the connection as registered, so a check
+    /// against it holds for as long as `f` runs.
+    pub(crate) fn commit_with<R>(
+        &self,
+        connection: &ConnectionId,
+        generation: u64,
+        retirements: u64,
+        f: impl FnOnce(&ConnectionInfo) -> R,
+    ) -> Option<R> {
+        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
+        let info = lock(&self.entries)
+            .get(connection)
+            .filter(|entry| self.current(entry, generation, retirements))
+            .map(|entry| entry.info.clone())?;
+        Some(f(&info))
     }
 
     /// Runs `f` if the Plugin was not retired since `retirements`, for its
@@ -342,6 +379,14 @@ impl Connections {
     /// Registers or updates a connection.
     pub(crate) fn set(&self, info: ConnectionInfo) -> Registered {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
+        let registered = self.register(info);
+        if registered == Registered::NewGeneration {
+            self.changed.send_replace(());
+        }
+        registered
+    }
+
+    fn register(&self, info: ConnectionInfo) -> Registered {
         let mut entries = lock(&self.entries);
         match entries.get_mut(&info.id) {
             Some(entry)
@@ -388,7 +433,9 @@ impl Connections {
     /// Ends a connection's generation for good.
     pub(crate) fn remove(&self, connection: &ConnectionId) -> bool {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
-        lock(&self.entries).remove(connection).is_some()
+        let removed = lock(&self.entries).remove(connection).is_some();
+        self.changed.send_replace(());
+        removed
     }
 
     /// The connection's current generation, or `None` once it ended.

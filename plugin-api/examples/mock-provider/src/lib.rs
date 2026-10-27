@@ -26,6 +26,9 @@
 //! | `fetch:<url>`, `fetch-bypass:<url>` | one GET, cached by HTTP rules or not, described as a title |
 //! | `fetch-all:<n>:<url>`, `fetch-urls:<url>\|<url>…` | GETs at once, one title per outcome |
 //! | `slow-write:<scheme>:<url>` | reads the credential, fetches `<url>`, then writes |
+//! | `list:<folder>:<path>`, `readfile:<folder>:<path>:<offset>:<length>` | `files.list` (folders end in `/`); `files.read` as text |
+//! | `socket:<host>:<port>:<message>` | connects, sends, returns what comes back |
+//! | `hold-sockets:<n>:<host>:<port>` | opens `<n>` sockets and keeps them |
 //! | anything else | a Track per id; ids starting `gone` are unavailable |
 //!
 //! Every other export returns fixed, predictable values.
@@ -54,6 +57,9 @@ export!(Mock);
 /// Calls served by this instance. Linear memory is the only place it lives,
 /// so a fresh instance starts at zero.
 static CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Sockets kept open by `hold-sockets:`.
+static HELD: Mutex<Vec<ristle::plugin::socket::Tcp>> = Mutex::new(Vec::new());
 
 /// Memory kept alive by `grow:`.
 static KEPT: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
@@ -357,6 +363,117 @@ fn connection_script(conn: &Connection, command: &str) -> Option<Tracks> {
                     })
                     .collect()
             })
+        }
+        // `list:<folder>:<path>`: one title per entry, folders ending in `/`.
+        "list" => {
+            let (folder, path) = argument.split_once(':').unwrap_or((argument, ""));
+            let dir = ristle::plugin::types::FilePath {
+                folder: folder.to_string(),
+                path: path.to_string(),
+            };
+            ristle::plugin::files::list(conn, &dir, None).map(|entries| {
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        let suffix = if entry.folder { "/" } else { "" };
+                        Ok(track(
+                            &format!("t{index}"),
+                            &format!("{}{suffix}", entry.name),
+                        ))
+                    })
+                    .collect()
+            })
+        }
+        // `readfile:<folder>:<path>:<offset>:<length>`: the bytes as text.
+        "readfile" => {
+            let parts: Vec<&str> = argument.splitn(4, ':').collect();
+            match parts.as_slice() {
+                [folder, path, offset, length] => {
+                    let file = ristle::plugin::types::FilePath {
+                        folder: (*folder).to_string(),
+                        path: (*path).to_string(),
+                    };
+                    ristle::plugin::files::read(
+                        conn,
+                        &file,
+                        offset.parse().unwrap_or(0),
+                        length.parse().unwrap_or(0),
+                    )
+                    .map(|bytes| vec![Ok(track("t0", &String::from_utf8_lossy(&bytes)))])
+                }
+                _ => Err(Error::Internal(
+                    "readfile:<folder>:<path>:<offset>:<length>".to_string(),
+                )),
+            }
+        }
+        // `socket:<host>:<port>:<message>`: sends the message, returns what
+        // comes back.
+        "socket" => {
+            let parts: Vec<&str> = argument.splitn(3, ':').collect();
+            match parts.as_slice() {
+                [host, port, message] => {
+                    match ristle::plugin::socket::Tcp::connect(
+                        conn,
+                        host,
+                        port.parse().unwrap_or(0),
+                        false,
+                    ) {
+                        Ok(tcp) => match tcp.send(message.as_bytes()) {
+                            Ok(()) => tcp.receive(64, 2_000).map(|bytes| {
+                                vec![Ok(track("t0", &String::from_utf8_lossy(&bytes)))]
+                            }),
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+                _ => Err(Error::Internal(
+                    "socket:<host>:<port>:<message>".to_string(),
+                )),
+            }
+        }
+        // `hold-sockets:<n>:<host>:<port>`: opens `<n>` sockets and keeps
+        // them in this instance.
+        "hold-sockets" => {
+            let parts: Vec<&str> = argument.splitn(3, ':').collect();
+            match parts.as_slice() {
+                [count, host, port] => {
+                    let mut result = Ok(vec![Ok(track("t0", "held"))]);
+                    for _ in 0..count.parse::<u32>().unwrap_or(0) {
+                        match ristle::plugin::socket::Tcp::connect(
+                            conn,
+                            host,
+                            port.parse().unwrap_or(0),
+                            false,
+                        ) {
+                            Ok(tcp) => {
+                                if let Ok(mut held) = HELD.lock() {
+                                    held.push(tcp);
+                                }
+                            }
+                            Err(error) => {
+                                result = Err(error);
+                                break;
+                            }
+                        }
+                    }
+                    result
+                }
+                _ => Err(Error::Internal(
+                    "hold-sockets:<n>:<host>:<port>".to_string(),
+                )),
+            }
+        }
+        // `drain-held`: receives once on every held socket, keeping the
+        // handles, so the host closes those whose peer hung up.
+        "drain-held" => {
+            if let Ok(held) = HELD.lock() {
+                for tcp in held.iter() {
+                    let _ = tcp.receive(64, 1_000);
+                }
+            }
+            Ok(vec![Ok(track("t0", "drained"))])
         }
         // `slow-write:<scheme>:<url>`: reads the credential, fetches a slow
         // URL, then writes, so another call can write in between.

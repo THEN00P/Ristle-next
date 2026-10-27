@@ -8,11 +8,18 @@
 
 mod connection;
 mod crypto;
+mod files;
 mod http;
 mod pending;
+mod socket;
 mod storage;
 mod system;
 
+// Named by the generated bindings, which re-export it.
+#[allow(unreachable_pub)]
+pub use socket::TcpHandle;
+
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -23,7 +30,7 @@ use crate::bindings::ristle::plugin::types::Error as WitError;
 use crate::connections::Connections;
 use crate::limits::{self, Limiter};
 use crate::package::Manifest;
-use crate::ports::{PluginStore, SecretVault};
+use crate::ports::{FolderAccess, PluginStore, SecretVault};
 
 /// The largest string a Plugin may pass to an import.
 pub(crate) const MAX_STRING: usize = 64 * 1024;
@@ -39,6 +46,31 @@ pub(crate) struct Services {
     pub(crate) locale: Mutex<String>,
     /// The core runtime: imports block on it from the call's thread.
     pub(crate) runtime: tokio::runtime::Handle,
+    /// The platform's access to granted folders, where there is one.
+    pub(crate) folders: Option<Arc<dyn FolderAccess>>,
+    /// Socket destinations tests confirm as if granted.
+    #[cfg(feature = "test-support")]
+    pub(crate) socket_origins: Vec<ristle_net::GrantedOrigin>,
+}
+
+impl Services {
+    /// What a socket to `target` may reach beyond public addresses:
+    /// nothing, except in tests.
+    pub(crate) fn socket_origin(
+        &self,
+        target: &crate::package::SocketTarget,
+    ) -> Option<ristle_net::GrantedOrigin> {
+        #[cfg(feature = "test-support")]
+        if let Some(origin) = self
+            .socket_origins
+            .iter()
+            .find(|origin| origin.host == target.host && origin.port == target.port)
+        {
+            return Some(origin.clone());
+        }
+        let _ = target;
+        None
+    }
 }
 
 /// What every instance of one Plugin shares.
@@ -48,6 +80,8 @@ pub(crate) struct PluginContext {
     pub(crate) services: Arc<Services>,
     pub(crate) log: Mutex<LogBucket>,
     pub(crate) connections: Connections,
+    /// Open sockets across the Plugin's instances.
+    pub(crate) open_sockets: AtomicUsize,
 }
 
 impl PluginContext {
@@ -58,6 +92,7 @@ impl PluginContext {
             manifest,
             services,
             log: Mutex::new(LogBucket::new()),
+            open_sockets: AtomicUsize::new(0),
         }
     }
 
@@ -229,13 +264,6 @@ impl HostState {
 #[derive(Debug)]
 pub struct ConnectionHandle {
     pub(crate) connection: ristle_domain::ConnectionId,
-}
-
-/// The host side of a `socket.tcp` resource.
-#[allow(unreachable_pub)]
-#[derive(Debug)]
-pub struct TcpHandle {
-    _private: (),
 }
 
 /// An argument over a bound, for imports with an error result.

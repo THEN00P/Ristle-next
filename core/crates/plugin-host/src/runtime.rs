@@ -556,8 +556,6 @@ impl LoadedPlugin {
         self.discard_instances();
     }
 
-    /// Deletes what the old generation left: every step is tried, and the
-    /// first failure is reported.
     /// Deletes the connection's Credential Record.
     fn revoke_credential(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
         let context = &self.inner.context;
@@ -568,6 +566,8 @@ impl LoadedPlugin {
             .map_err(|error| crate::Error::Store(error.to_string()))
     }
 
+    /// Deletes what the old generation left: every step is tried, and the
+    /// first failure is reported.
     async fn end_generation(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
         let context = &self.inner.context;
         self.discard_connection_instances(connection);

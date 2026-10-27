@@ -32,12 +32,13 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::Error;
 
 /// The schema version this build writes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The version of `cache.sqlite` this build writes.
 pub(crate) const CACHE_VERSION: u32 = 1;
 
 pub(crate) const SCHEMA_V1: &str = include_str!("schema/ristle-v1.sql");
+const SCHEMA_V2: &str = include_str!("schema/ristle-v2.sql");
 const CACHE_V1: &str = include_str!("schema/cache-v1.sql");
 
 /// One step from `version - 1` to `version`.
@@ -47,10 +48,16 @@ pub(crate) struct Migration {
 }
 
 /// Every migration, in order, starting at 1 without gaps.
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    apply: |tx| tx.execute_batch(SCHEMA_V1),
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        apply: |tx| tx.execute_batch(SCHEMA_V1),
+    },
+    Migration {
+        version: 2,
+        apply: |tx| tx.execute_batch(SCHEMA_V2),
+    },
+];
 
 /// What [`migrate`] found and did.
 #[derive(Debug, PartialEq, Eq)]
@@ -163,9 +170,9 @@ fn back_up(conn: &Connection, path: &Path, version: u32) -> Result<(), Error> {
 /// The tables and indexes of a schema, by kind and name, as SQLite stores
 /// their definitions. Triggers and views are not compared: Ristle creates
 /// none.
-type Schema = Vec<(String, String, String)>;
+pub(crate) type Schema = Vec<(String, String, String)>;
 
-fn schema_of(conn: &Connection, schema: &str) -> Result<Schema, Error> {
+pub(crate) fn schema_of(conn: &Connection, schema: &str) -> Result<Schema, Error> {
     let mut select = conn.prepare(&format!(
         "SELECT type, name, sql FROM {schema}.sqlite_master
          WHERE type IN ('table', 'index') AND sql IS NOT NULL ORDER BY type, name"
@@ -177,7 +184,7 @@ fn schema_of(conn: &Connection, schema: &str) -> Result<Schema, Error> {
 }
 
 /// The schema `migrations` produce, built in memory.
-fn expected_schema(migrations: &[Migration]) -> Result<Schema, Error> {
+pub(crate) fn expected_schema(migrations: &[Migration]) -> Result<Schema, Error> {
     let mut conn = Connection::open_in_memory()?;
     let tx = conn.transaction()?;
     for migration in migrations {

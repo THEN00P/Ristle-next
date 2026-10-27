@@ -268,7 +268,10 @@ impl<'a> PageCache<'a> {
             page.revision.clone().map_or(Value::Null, Value::Text),
             Value::Blob(page.payload.clone()),
             Value::Integer(size(
-                key.namespace.len() + key.key.len() + page.payload.len(),
+                key.namespace.len()
+                    + key.key.len()
+                    + page.revision.as_ref().map_or(0, String::len)
+                    + page.payload.len(),
             )?),
             Value::Integer(int(page.fetched_ms, "fetch time")?),
             Value::Integer(int(self.tx.now_ms(), "time")?),

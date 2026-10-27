@@ -1049,3 +1049,150 @@ fn a_reused_connection_id_continues_above_its_old_generations() {
         .unwrap();
     assert_eq!(next, 4);
 }
+
+// The entries `trim_history` dropped from this pass persist with the queue.
+#[test]
+fn trimmed_entries_round_trip_with_the_queue() {
+    let dirs = Dirs::new();
+    let mut queue = queue_of(3);
+    queue.trimmed = vec![
+        ristle_queue::Trimmed {
+            track: reference("spotify", "played-1"),
+            position: CollectionPosition(0),
+        },
+        ristle_queue::Trimmed {
+            track: reference("spotify", "played-1"),
+            position: CollectionPosition(4),
+        },
+        ristle_queue::Trimmed {
+            track: ristle_domain::TrackRef::server_scoped(
+                "jellyfin".into(),
+                "item-1".into(),
+                "jellyfin-1".into(),
+            )
+            .unwrap(),
+            position: CollectionPosition(5),
+        },
+    ];
+    {
+        let storage = dirs.open();
+        let saved = session(queue.clone());
+        let changes = storage
+            .write_blocking(move |tx| tx.session().save(&saved))
+            .unwrap();
+        assert_eq!(changes.inserted, 3 + 3);
+    }
+    let storage = dirs.open();
+    let restored = storage
+        .read_blocking(|tx| tx.session().load_for_cold_start())
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.session.queue, queue);
+
+    // Trimming more appends; a new pass clears them.
+    queue.trimmed.push(ristle_queue::Trimmed {
+        track: reference("spotify", "played-2"),
+        position: CollectionPosition(6),
+    });
+    let saved = session(queue.clone());
+    let changes = storage
+        .write_blocking(move |tx| tx.session().save(&saved))
+        .unwrap();
+    assert_eq!(
+        changes,
+        Changes {
+            inserted: 1,
+            updated: 0,
+            deleted: 0
+        }
+    );
+    queue.trimmed.clear();
+    let saved = session(queue.clone());
+    let changes = storage
+        .write_blocking(move |tx| tx.session().save(&saved))
+        .unwrap();
+    assert_eq!(
+        changes,
+        Changes {
+            inserted: 0,
+            updated: 0,
+            deleted: 4
+        }
+    );
+    let restored = storage
+        .read_blocking(|tx| tx.session().load_for_cold_start())
+        .unwrap()
+        .unwrap();
+    assert!(restored.session.queue.trimmed.is_empty());
+}
+
+// Codex review of #25: a refused save writes nothing, even when the caller
+// handles the error and commits the rest of its transaction.
+#[test]
+fn a_refused_session_save_writes_nothing() {
+    let dirs = Dirs::new();
+    let storage = dirs.open();
+    let original = session(queue_of(2));
+    let saved = original.clone();
+    storage
+        .write_blocking(move |tx| tx.session().save(&saved))
+        .unwrap();
+
+    // Passes `QueueState::check`, but its last entry id does not fit an
+    // SQLite INTEGER, so the row cannot be built.
+    let mut bad = queue_of(2);
+    bad.collection[1].id = EntryId(1 << 63);
+    bad.next_id = EntryId((1 << 63) + 1);
+    bad.repeat = RepeatMode::Queue;
+    let bad = PlaybackSession {
+        position_ms: 99_000,
+        ..session(bad)
+    };
+    storage
+        .write_blocking(move |tx| {
+            let refused = tx.session().save(&bad);
+            assert!(matches!(refused, Err(Error::Invalid { .. })), "{refused:?}");
+            tx.settings().put("rest-of-the-transaction", "committed")
+        })
+        .unwrap();
+
+    let (restored, marker) = storage
+        .read_blocking(|tx| {
+            Ok((
+                tx.session().load_for_cold_start()?.unwrap().session,
+                tx.settings().get("rest-of-the-transaction")?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(marker.as_deref(), Some("committed"));
+}
+
+// Codex review of #25: a page's revision counts toward its cached size.
+#[test]
+fn a_page_size_counts_its_revision() {
+    let dirs = Dirs::new();
+    let storage = dirs.open();
+    storage
+        .write_blocking(|tx| {
+            tx.page_cache().put(
+                &ristle_storage::repo::PageKey {
+                    provider: "spotify".into(),
+                    connection: "spotify-1".into(),
+                    generation: 0,
+                    namespace: "playlist".into(),
+                    key: "p1".into(),
+                },
+                &ristle_storage::repo::CachedPage {
+                    revision: Some("snapshot-0123456789".into()),
+                    payload: vec![0; 100],
+                    fetched_ms: 1,
+                },
+            )
+        })
+        .unwrap();
+    let size = storage
+        .read_blocking(|tx| tx.page_cache().size(Some(&"spotify".into())))
+        .unwrap();
+    assert_eq!(size, 8 + 2 + 19 + 100);
+}

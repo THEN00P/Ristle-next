@@ -325,6 +325,10 @@ Besides the fixed signatures, `Storage` has `write_blocking` and
 `read_blocking` for the synchronous ports, and `set_aside` to move a
 database in recovery mode out of the way.
 
+Schema v2 (migration 2) adds `queue_trimmed`: `QueueState::trimmed`, one
+row per entry `trim_history` dropped from the current pass, saved with the
+Playback Session.
+
 ### Ports
 
 ```rust

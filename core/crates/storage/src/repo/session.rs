@@ -5,17 +5,19 @@ use ristle_queue::sequence::SequenceId;
 use ristle_queue::sequence::SlotId;
 use ristle_queue::{
     CollectionPosition, Current, EntryId, Origin, QueueEntry, QueueState, RepeatMode, Submitter,
+    Trimmed,
 };
 use rusqlite::types::Value;
 
 use crate::sql::{
-    Changes, RowSet, TrackColumns, index, int, optional, read_track, seed_from_sql, seed_to_sql,
-    uindex, uint,
+    Changes, RowSet, TrackColumns, index, int, optional, read_track, read_track_ref, seed_from_sql,
+    seed_to_sql, track_ref_values, uindex, uint,
 };
 use crate::{Error, Tx};
 
 const SESSION: &str = "playback_session";
 const ENTRIES: &str = "queue_entries";
+const TRIMMED: &str = "queue_trimmed";
 
 /// Whether playback was running when the session was saved.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -79,6 +81,18 @@ const ENTRY_ROWS: RowSet = RowSet {
     ],
 };
 
+const TRIMMED_ROWS: RowSet = RowSet {
+    table: TRIMMED,
+    scope: None,
+    key: "trim_index",
+    columns: &[
+        "collection_position",
+        "provider_id",
+        "track_id",
+        "connection_id",
+    ],
+};
+
 const LANE_COLLECTION: i64 = 0;
 const LANE_REQUESTS: i64 = 1;
 const LANE_DETACHED: i64 = 2;
@@ -92,7 +106,9 @@ impl<'a> Session<'a> {
     /// rewritten; the session row always is, stamped with the clock.
     ///
     /// Refuses queue state that [`QueueState::check`] rejects, so a corrupt
-    /// queue is never persisted.
+    /// queue is never persisted. Every row is built and checked before the
+    /// first write, so a refused save writes nothing, even when the caller
+    /// handles the error and commits the rest of its transaction.
     pub fn save(&self, session: &PlaybackSession) -> Result<Changes, Error> {
         let conn = self.tx.write_conn()?;
         let queue = &session.queue;
@@ -114,18 +130,7 @@ impl<'a> Session<'a> {
             Intent::Paused => 0,
             Intent::Playing => 1,
         };
-        conn.prepare_cached(
-            "INSERT INTO playback_session (id, cursor, play_next_count, current, repeat,
-                 shuffle_seed, next_entry_id, sequence_id, position_ms, intent, updated_ms)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT (id) DO UPDATE SET cursor = excluded.cursor,
-                 play_next_count = excluded.play_next_count, current = excluded.current,
-                 repeat = excluded.repeat, shuffle_seed = excluded.shuffle_seed,
-                 next_entry_id = excluded.next_entry_id, sequence_id = excluded.sequence_id,
-                 position_ms = excluded.position_ms, intent = excluded.intent,
-                 updated_ms = excluded.updated_ms",
-        )?
-        .execute(rusqlite::params![
+        let header = rusqlite::params![
             queue.cursor.map(|c| index(c, "queue cursor")).transpose()?,
             index(queue.play_next_count, "Play Next count")?,
             current,
@@ -136,7 +141,7 @@ impl<'a> Session<'a> {
             int(session.position_ms, "playback position")?,
             intent,
             int(self.tx.now_ms(), "save time")?,
-        ])?;
+        ];
 
         let mut rows = Vec::with_capacity(queue.collection.len() + queue.requests.len() + 1);
         for (lane, entries) in [
@@ -150,7 +155,28 @@ impl<'a> Session<'a> {
         if let Some(Current::Detached(entry)) = &queue.current {
             rows.push(entry_row(entry, LANE_DETACHED, 0)?);
         }
-        ENTRY_ROWS.sync(conn, None, rows)
+        let trimmed = queue
+            .trimmed
+            .iter()
+            .enumerate()
+            .map(|(i, trimmed)| trimmed_row(trimmed, i))
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        conn.prepare_cached(
+            "INSERT INTO playback_session (id, cursor, play_next_count, current, repeat,
+                 shuffle_seed, next_entry_id, sequence_id, position_ms, intent, updated_ms)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (id) DO UPDATE SET cursor = excluded.cursor,
+                 play_next_count = excluded.play_next_count, current = excluded.current,
+                 repeat = excluded.repeat, shuffle_seed = excluded.shuffle_seed,
+                 next_entry_id = excluded.next_entry_id, sequence_id = excluded.sequence_id,
+                 position_ms = excluded.position_ms, intent = excluded.intent,
+                 updated_ms = excluded.updated_ms",
+        )?
+        .execute(header)?;
+        let mut changes = ENTRY_ROWS.sync(conn, None, rows)?;
+        changes += TRIMMED_ROWS.sync(conn, None, trimmed)?;
+        Ok(changes)
     }
 
     /// The saved session, paused, or `None` when nothing was saved.
@@ -262,6 +288,30 @@ impl<'a> Session<'a> {
             }
         }
 
+        let mut trimmed = Vec::new();
+        {
+            let mut select = conn.prepare_cached(
+                "SELECT trim_index, collection_position, provider_id, track_id, connection_id
+                 FROM queue_trimmed ORDER BY trim_index",
+            )?;
+            let mut stored = select.query([])?;
+            while let Some(row) = stored.next()? {
+                if uindex(row.get(0)?, TRIMMED, "trim_index")? != trimmed.len() {
+                    return Err(Error::corrupt(TRIMMED, "indices are not contiguous"));
+                }
+                let track = read_track_ref(TRIMMED, row.get(2)?, row.get(3)?, row.get(4)?)?
+                    .ok_or_else(|| Error::corrupt(TRIMMED, "a trimmed entry has no Track"))?;
+                trimmed.push(Trimmed {
+                    track,
+                    position: CollectionPosition(uint(
+                        row.get(1)?,
+                        TRIMMED,
+                        "collection_position",
+                    )?),
+                });
+            }
+        }
+
         let current = match (current, detached.pop()) {
             (0, None) => None,
             (1, None) => Some(Current::AtCursor),
@@ -292,6 +342,7 @@ impl<'a> Session<'a> {
             },
             shuffle: shuffle.map(seed_from_sql),
             next_id: EntryId(uint(next_id, SESSION, "next_entry_id")?),
+            trimmed,
         };
         queue
             .check()
@@ -317,9 +368,19 @@ impl<'a> Session<'a> {
     pub fn clear(&self) -> Result<(), Error> {
         let conn = self.tx.write_conn()?;
         conn.execute("DELETE FROM queue_entries", [])?;
+        conn.execute("DELETE FROM queue_trimmed", [])?;
         conn.execute("DELETE FROM playback_session", [])?;
         Ok(())
     }
+}
+
+fn trimmed_row(trimmed: &Trimmed, trim_index: usize) -> Result<(i64, Vec<Value>), Error> {
+    let mut values = vec![Value::Integer(int(
+        trimmed.position.0,
+        "collection position",
+    )?)];
+    values.extend(track_ref_values(Some(&trimmed.track)));
+    Ok((index(trim_index, "trimmed index")?, values))
 }
 
 fn entry_row(entry: &QueueEntry, lane: i64, position: usize) -> Result<(i64, Vec<Value>), Error> {

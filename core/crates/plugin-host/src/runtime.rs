@@ -490,13 +490,21 @@ impl LoadedPlugin {
             let _transition = plugin.inner.transitions.clone().lock_owned().await;
             let connection = info.id.clone();
             let connections = &plugin.inner.context.connections;
-            if connections.set(info) != Registered::NewGeneration {
+            let registered = connections.set(info);
+            if !matches!(
+                registered,
+                Registered::NewGeneration | Registered::Unfinished
+            ) {
                 return Ok(());
             }
             // Calls for the new generation wait until this is done; if it
             // fails, the connection stays unavailable until registering it
-            // again cleans up.
-            let cleaned = plugin.end_generation(&connection).await;
+            // again cleans up. An unfinished removal also revokes the old
+            // account's credential.
+            let mut cleaned = plugin.end_generation(&connection).await;
+            if registered == Registered::Unfinished {
+                cleaned = cleaned.and(plugin.revoke_credential(&connection));
+            }
             connections.finish_cleaning(&connection, cleaned.is_ok());
             cleaned
         });
@@ -519,12 +527,12 @@ impl LoadedPlugin {
             context.connections.remove(&connection);
             let cleaned = plugin.end_generation(&connection).await;
             // The credential goes whatever else failed: signing out revokes it.
-            let revoked = context
-                .services
-                .vault
-                .delete(&context.connections.vault_key(&connection))
-                .map_err(|error| crate::Error::Store(error.to_string()));
-            cleaned.and(revoked)
+            let removed = cleaned.and(plugin.revoke_credential(&connection));
+            // A failed removal is finished when the id is registered again.
+            context
+                .connections
+                .finish_removal(&connection, removed.is_ok());
+            removed
         });
         removal
             .await
@@ -546,6 +554,16 @@ impl LoadedPlugin {
     pub fn retire_calls(&self) {
         self.inner.context.connections.retire();
         self.discard_instances();
+    }
+
+    /// Deletes the connection's Credential Record.
+    fn revoke_credential(&self, connection: &ConnectionId) -> Result<(), crate::Error> {
+        let context = &self.inner.context;
+        context
+            .services
+            .vault
+            .delete(&context.connections.vault_key(connection))
+            .map_err(|error| crate::Error::Store(error.to_string()))
     }
 
     /// Deletes what the old generation left: every step is tried, and the

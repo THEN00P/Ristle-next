@@ -926,3 +926,49 @@ async fn signing_out_finishes_even_when_its_caller_gives_up() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn a_failed_sign_out_is_finished_before_the_id_is_used_again() {
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = Unreliable {
+        inner: MemoryPluginStore::new(),
+        failing: failing.clone(),
+        stall: Duration::ZERO,
+    };
+    let plugin = unreliable_host(store, MemoryVault::new())
+        .load(&mock_package(&Publisher::new(1), ""))
+        .unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    one(&plugin, "c1", "data:ids=old account").await.unwrap();
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(plugin.remove_connection(&c("c1")).await.is_err());
+    // Registered again while the cleanup still fails: no call gets in.
+    assert!(
+        plugin
+            .set_connection(connection_info("c1", 1))
+            .await
+            .is_err()
+    );
+    let error = one(&plugin, "c1", "data:ids").await.unwrap_err();
+    assert!(
+        matches!(error, PluginError::Internal(ref text) if text.contains("unavailable")),
+        "{error:?}"
+    );
+    // Once it succeeds, nothing of the old account is left.
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    assert_eq!(one(&plugin, "c1", "data:ids").await.unwrap(), "none");
+    // A removal that succeeded leaves nothing to finish.
+    plugin.remove_connection(&c("c1")).await.unwrap();
+    plugin
+        .set_connection(connection_info("c1", 1))
+        .await
+        .unwrap();
+    assert_eq!(one(&plugin, "c1", "data:ids").await.unwrap(), "none");
+}

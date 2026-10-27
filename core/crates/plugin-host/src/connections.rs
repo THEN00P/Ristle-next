@@ -9,7 +9,7 @@
 //! moves, the call is retired and its imports reach nothing outside its
 //! instance.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
@@ -196,6 +196,9 @@ pub(crate) enum Registered {
     Unchanged,
     /// Its generation moved: everything of the old one goes.
     NewGeneration,
+    /// A removal of the same id did not finish: its cleanup, credential
+    /// included, must succeed before any call is admitted.
+    Unfinished,
 }
 
 /// Why a credential write was refused.
@@ -213,6 +216,10 @@ pub(crate) enum WriteRefused {
 pub(crate) struct Connections {
     plugin: PluginId,
     entries: Mutex<HashMap<ConnectionId, Entry>>,
+    /// Removed connections whose cleanup has not succeeded yet. Their data
+    /// is keyed by connection, not generation, so registering the id again
+    /// must first finish the removal.
+    unfinished: Mutex<HashSet<ConnectionId>>,
     /// Every read and write of a connection's or the Plugin's stored state
     /// (data, credential, cache, storage) holds this for reading and checks
     /// the generation and the retirement count; a generation change, a
@@ -233,6 +240,7 @@ impl Connections {
         Self {
             plugin,
             entries: Mutex::new(HashMap::new()),
+            unfinished: Mutex::new(HashSet::new()),
             commits: RwLock::new(()),
             retirements: AtomicU64::new(0),
             ready: tokio::sync::Notify::new(),
@@ -310,13 +318,6 @@ impl Connections {
         Some(f(&info))
     }
 
-    /// Runs `f` if the Plugin was not retired since `retirements`, for its
-    /// connection-independent state (`storage`).
-    pub(crate) fn commit_plugin<R>(&self, retirements: u64, f: impl FnOnce() -> R) -> Option<R> {
-        let _commit = self.commits.read().unwrap_or_else(PoisonError::into_inner);
-        (self.retirements() == retirements).then(f)
-    }
-
     /// The connection as registered, if a call tagged with `generation`
     /// and `retirements` is still current.
     pub(crate) fn info_at(
@@ -335,6 +336,9 @@ impl Connections {
     /// Ends the cleanup of a connection's previous generation. A failed one
     /// leaves the connection unavailable.
     pub(crate) fn finish_cleaning(&self, connection: &ConnectionId, succeeded: bool) {
+        if succeeded {
+            lock(&self.unfinished).remove(connection);
+        }
         if let Some(entry) = lock(&self.entries).get_mut(connection) {
             entry.cleanup = if succeeded {
                 Cleanup::Done
@@ -379,14 +383,20 @@ impl Connections {
     /// Registers or updates a connection.
     pub(crate) fn set(&self, info: ConnectionInfo) -> Registered {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
-        let registered = self.register(info);
-        if registered == Registered::NewGeneration {
+        let unfinished = lock(&self.unfinished).contains(&info.id);
+        let registered = self.register(info, unfinished);
+        if registered != Registered::Unchanged && registered != Registered::New {
             self.changed.send_replace(());
         }
         registered
     }
 
-    fn register(&self, info: ConnectionInfo) -> Registered {
+    fn register(&self, info: ConnectionInfo, unfinished: bool) -> Registered {
+        let cleaning = if unfinished {
+            Registered::Unfinished
+        } else {
+            Registered::NewGeneration
+        };
         let mut entries = lock(&self.entries);
         match entries.get_mut(&info.id) {
             Some(entry)
@@ -399,7 +409,7 @@ impl Connections {
             Some(entry) if entry.info.generation == info.generation => {
                 entry.info = info;
                 entry.cleanup = Cleanup::Running;
-                Registered::NewGeneration
+                cleaning
             }
             Some(entry) => {
                 entry.info = info;
@@ -407,7 +417,7 @@ impl Connections {
                 // one is cleaned up.
                 entry.credential = Slot::default();
                 entry.cleanup = Cleanup::Running;
-                Registered::NewGeneration
+                cleaning
             }
             None => {
                 entries.insert(
@@ -415,10 +425,18 @@ impl Connections {
                     Entry {
                         info,
                         credential: Slot::default(),
-                        cleanup: Cleanup::Done,
+                        cleanup: if unfinished {
+                            Cleanup::Running
+                        } else {
+                            Cleanup::Done
+                        },
                     },
                 );
-                Registered::New
+                if unfinished {
+                    Registered::Unfinished
+                } else {
+                    Registered::New
+                }
             }
         }
     }
@@ -430,12 +448,22 @@ impl Connections {
             .map(|entry| entry.credential.version)
     }
 
-    /// Ends a connection's generation for good.
+    /// Ends a connection's generation for good. Until
+    /// [`Self::finish_removal`] reports success, registering the id again
+    /// is [`Registered::Unfinished`].
     pub(crate) fn remove(&self, connection: &ConnectionId) -> bool {
         let _change = self.commits.write().unwrap_or_else(PoisonError::into_inner);
+        lock(&self.unfinished).insert(connection.clone());
         let removed = lock(&self.entries).remove(connection).is_some();
         self.changed.send_replace(());
         removed
+    }
+
+    /// Ends a removal's cleanup; a failed one stays unfinished.
+    pub(crate) fn finish_removal(&self, connection: &ConnectionId, succeeded: bool) {
+        if succeeded {
+            lock(&self.unfinished).remove(connection);
+        }
     }
 
     /// The connection's current generation, or `None` once it ended.

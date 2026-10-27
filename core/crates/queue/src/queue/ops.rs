@@ -2,7 +2,7 @@
 
 use ristle_domain::{Track, TrackRef};
 
-use super::{CanonicalQueue, Current};
+use super::{CanonicalQueue, Current, Trimmed};
 use crate::entry::{
     Advance, CollectionPosition, EntryId, Origin, QueueEntry, RepeatMode, Submitter,
 };
@@ -68,6 +68,11 @@ pub enum Rejection {
     /// A Disabled Track cannot enter the Canonical Queue.
     #[error("the Track is unavailable")]
     Unavailable,
+    /// The queue has handed out every entry id there is. Starting a new
+    /// collection does not reset ids, so this stays until the session is
+    /// replaced; it cannot happen in practice (2^64 entries).
+    #[error("the queue has no entry ids left")]
+    IdsExhausted,
 }
 
 /// Which part of the queue a removed entry came from.
@@ -109,19 +114,27 @@ impl CanonicalQueue {
         origin: Origin,
         slot: Option<SlotId>,
         submitter: Option<Submitter>,
-    ) -> QueueEntry {
+    ) -> Option<QueueEntry> {
         let id = self.state.next_id;
-        self.state.next_id = EntryId(id.0 + 1);
-        QueueEntry {
+        // u64::MAX is never handed out (`QueueState::check` rejects it as the
+        // next id), so the increment cannot overflow.
+        let next = id.0.checked_add(1).filter(|&next| next < u64::MAX)?;
+        self.state.next_id = EntryId(next);
+        Some(QueueEntry {
             id,
             track,
             origin,
             slot,
             submitter,
-        }
+        })
     }
 
-    fn create_from(&mut self, entry: CollectionEntry) -> QueueEntry {
+    /// How many more entries can be created.
+    fn ids_left(&self) -> u64 {
+        u64::MAX - 1 - self.state.next_id.0
+    }
+
+    fn create_from(&mut self, entry: CollectionEntry) -> Option<QueueEntry> {
         self.create(
             entry.track,
             Origin::Collection {
@@ -221,7 +234,8 @@ impl CanonicalQueue {
             .enumerate()
             .filter(|(_, entry)| entry.track.is_queueable())
             .position(|(index, _)| index >= start);
-        let Some(cursor) = first else {
+        let fits = u64::try_from(accepted).is_ok_and(|needed| needed <= self.ids_left());
+        let Some(cursor) = first.filter(|_| fits) else {
             return StartOutcome {
                 accepted,
                 skipped,
@@ -233,12 +247,13 @@ impl CanonicalQueue {
         self.state.requests.clear();
         self.state.play_next_count = 0;
         self.state.shuffle = None;
+        self.state.trimmed.clear();
         for entry in entries
             .into_iter()
             .filter(|entry| entry.track.is_queueable())
         {
             let entry = self.create_from(entry);
-            self.state.collection.push(entry);
+            self.state.collection.extend(entry);
         }
         self.state.cursor = Some(cursor);
         self.state.current = Some(Current::AtCursor);
@@ -258,7 +273,9 @@ impl CanonicalQueue {
         if !track.is_queueable() {
             return Err(Rejection::Unavailable);
         }
-        let entry = self.create(track, Origin::Request, None, by);
+        let entry = self
+            .create(track, Origin::Request, None, by)
+            .ok_or(Rejection::IdsExhausted)?;
         let id = entry.id;
         self.state.requests.push(entry);
         Ok(id)
@@ -270,7 +287,7 @@ impl CanonicalQueue {
         for track in tracks {
             match self.add_to_queue(track, by.clone()) {
                 Ok(_) => outcome.added += 1,
-                Err(Rejection::Unavailable) => outcome.skipped += 1,
+                Err(Rejection::Unavailable | Rejection::IdsExhausted) => outcome.skipped += 1,
             }
         }
         outcome
@@ -282,7 +299,9 @@ impl CanonicalQueue {
         if !track.is_queueable() {
             return Err(Rejection::Unavailable);
         }
-        let entry = self.create(track, Origin::Request, None, by);
+        let entry = self
+            .create(track, Origin::Request, None, by)
+            .ok_or(Rejection::IdsExhausted)?;
         let id = entry.id;
         self.state
             .requests
@@ -312,9 +331,13 @@ impl CanonicalQueue {
                 outcome.skipped += 1;
                 continue;
             }
-            let entry = self.create_from(entry);
-            self.state.collection.push(entry);
-            outcome.added += 1;
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
         }
         outcome
     }
@@ -330,7 +353,12 @@ impl CanonicalQueue {
     /// anchor's, so a duplicate anywhere else in the collection is never
     /// mistaken for it (legacy trap 6). When the anchor's Track is gone, the
     /// whole edited collection follows, and a removed continuation is
-    /// dropped.
+    /// dropped. While shuffled, what follows is instead everything this pass
+    /// has not played, history trimmed by `trim_history` included, shuffled
+    /// with the active seed.
+    ///
+    /// At the collection's tail with [`RepeatMode::Queue`], what follows is
+    /// the next pass, and the edited collection becomes that whole pass.
     pub fn replace_upcoming_collection(&mut self, entries: Vec<CollectionEntry>) -> AddOutcome {
         let mut outcome = AddOutcome::default();
         let entries: Vec<_> = entries
@@ -341,6 +369,10 @@ impl CanonicalQueue {
                 queueable
             })
             .collect();
+
+        if self.wrapping() {
+            return self.replace_next_pass(entries, outcome);
+        }
 
         let start = self.upcoming_start();
         let collection = &self.state.collection;
@@ -400,15 +432,25 @@ impl CanonicalQueue {
             Some(_) => {
                 let mut remaining: Vec<Option<CollectionEntry>> =
                     entries.into_iter().map(Some).collect();
-                for played in &self.state.collection {
-                    let Origin::Collection { position } = played.origin else {
-                        continue;
-                    };
+                let played =
+                    self.state
+                        .trimmed
+                        .iter()
+                        .map(|trimmed| (&trimmed.track, trimmed.position))
+                        .chain(self.state.collection.iter().filter_map(
+                            |entry| match entry.origin {
+                                Origin::Collection { position } => {
+                                    Some((&entry.track.reference, position))
+                                }
+                                Origin::Request => None,
+                            },
+                        ));
+                for (track, position) in played {
                     let nearest = remaining
                         .iter()
                         .enumerate()
                         .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
-                        .filter(|(_, entry)| entry.track.reference == played.track.reference)
+                        .filter(|(_, entry)| &entry.track.reference == track)
                         .min_by_key(|(_, entry)| entry.position.0.abs_diff(position.0))
                         .map(|(index, _)| index);
                     if let Some(index) = nearest {
@@ -419,14 +461,61 @@ impl CanonicalQueue {
             }
         };
         for entry in remaining {
-            let entry = self.create_from(entry);
-            self.state.collection.push(entry);
-            outcome.added += 1;
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
         }
         // While shuffled, the new tail is shuffled too, with the same seed.
         // What stayed in place (requests, the continuation) keeps its place.
         if let Some(seed) = self.state.shuffle {
             Random::new(seed).shuffle(&mut self.state.collection[first_new..]);
+        }
+        outcome
+    }
+
+    /// Reconciles while the next pass is what follows: the edited collection
+    /// becomes the whole next pass, in its order (shuffled with the active
+    /// seed while shuffled). The entry playing finishes this pass and is not
+    /// part of the next one; its occurrence in the edit is. History of the
+    /// finished pass is dropped.
+    fn replace_next_pass(
+        &mut self,
+        entries: Vec<CollectionEntry>,
+        mut outcome: AddOutcome,
+    ) -> AddOutcome {
+        let playing = match self.state.current {
+            Some(Current::AtCursor) => self
+                .state
+                .cursor
+                .map(|cursor| self.state.collection.swap_remove(cursor)),
+            _ => None,
+        };
+        self.state.collection.clear();
+        self.state.trimmed.clear();
+        self.state.cursor = None;
+        if let Some(mut playing) = playing {
+            // Played once more to its end, then dropped like requests kept
+            // as history are when the collection repeats.
+            playing.origin = Origin::Request;
+            self.state.collection.push(playing);
+            self.state.cursor = Some(0);
+        }
+        for entry in entries {
+            match self.create_from(entry) {
+                Some(entry) => {
+                    self.state.collection.push(entry);
+                    outcome.added += 1;
+                }
+                None => outcome.skipped += 1,
+            }
+        }
+        if let Some(seed) = self.state.shuffle {
+            let first = self.upcoming_start();
+            Random::new(seed).shuffle(&mut self.state.collection[first..]);
         }
         outcome
     }
@@ -467,6 +556,7 @@ impl CanonicalQueue {
                 self.state
                     .collection
                     .retain(|entry| entry.origin != Origin::Request);
+                self.state.trimmed.clear();
                 (!self.state.collection.is_empty()).then_some(0)
             }
             Some(_) => {
@@ -529,6 +619,10 @@ impl CanonicalQueue {
                     .state
                     .cursor
                     .is_some_and(|cursor| cursor + 1 >= self.state.collection.len());
+            if wraps {
+                // The jump starts the next pass.
+                self.state.trimmed.clear();
+            }
             let at = if wraps { 0 } else { self.upcoming_start() };
             self.state.collection.splice(at..at, history);
             let Some(cursor) = self
@@ -743,7 +837,18 @@ impl CanonicalQueue {
             return 0;
         };
         let dropped = cursor.saturating_sub(keep);
-        self.state.collection.drain(..dropped);
+        let trimmed =
+            self.state
+                .collection
+                .drain(..dropped)
+                .filter_map(|entry| match entry.origin {
+                    Origin::Collection { position } => Some(Trimmed {
+                        track: entry.track.reference,
+                        position,
+                    }),
+                    Origin::Request => None,
+                });
+        self.state.trimmed.extend(trimmed);
         self.state.cursor = Some(cursor - dropped);
         dropped
     }

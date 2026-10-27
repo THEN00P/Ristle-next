@@ -18,6 +18,7 @@ use std::collections::HashSet;
 
 use ristle_domain::{Addressing, CollectionDescriptor, Count, TrackRef};
 
+use super::shuffle::PAGE;
 use super::{Sequence, SequenceSource, Slot, SlotId};
 use crate::random::Random;
 
@@ -154,7 +155,10 @@ impl Sequence {
     /// slot holds are new to the collection and join what is still to come
     /// as in [`Sequence::apply_local_change`]. Unresolved slots that end up
     /// on a resolved slot's position, or past an exact total, no longer
-    /// stand for anything and are dropped too.
+    /// stand for anything and are dropped too, the current one included: an
+    /// unresolved slot has never played, and keeping it would stall
+    /// playback. A grown exact total adds unresolved slots, at most a page
+    /// of them per read.
     pub fn rebase(&mut self, page: ObservedPage) -> RebaseOutcome {
         let mut outcome = RebaseOutcome::default();
         let source = page.source;
@@ -224,7 +228,6 @@ impl Sequence {
         outcome.shift = shift;
 
         // 2. Resolve what landed on the page; drop repeats; add what is new.
-        let current = self.current();
         for (index, track) in page.tracks.iter().enumerate() {
             let at = position(index);
             let here = self
@@ -246,7 +249,7 @@ impl Sequence {
                 // A resolved slot keeps its Track, which the user may have
                 // seen; unresolved ones moved here are surplus.
                 for &(id, resolved) in &here {
-                    if !resolved && Some(id) != current {
+                    if !resolved {
                         self.drop_slot(id);
                         outcome.dropped.push(id);
                     }
@@ -262,7 +265,7 @@ impl Sequence {
                 continue;
             }
             match here.first() {
-                Some(&(id, _)) if repeat && Some(id) != current => {
+                Some(&(id, _)) if repeat => {
                     self.drop_slot(id);
                     outcome.dropped.push(id);
                 }
@@ -285,16 +288,22 @@ impl Sequence {
         // positions no slot covers get unresolved slots, read later like any
         // other. The repeat rule settles any Track they turn out to repeat.
         if positional && let Some(Count::Exact(total)) = page.total {
+            // Count positions, not slots: a kept resolved slot and the new
+            // Track found at its position share one.
             let covered: HashSet<u64> = self
                 .state
                 .slots
                 .iter()
-                .filter(|slot| slot.source == source)
+                .filter(|slot| slot.source == source && slot.offset < total)
                 .map(|slot| slot.offset)
                 .collect();
             let held = u64::try_from(covered.len()).unwrap_or(u64::MAX);
-            let missing = total.saturating_sub(held);
-            let free: Vec<u64> = (0..total)
+            // The total comes from a Plugin: grow by at most a page per read,
+            // so a wrong total cannot make one read unbounded.
+            let missing = total.saturating_sub(held).min(PAGE);
+            // `held` offsets are covered, so the first `held + missing`
+            // offsets hold `missing` free ones.
+            let free: Vec<u64> = (0..total.min(held.saturating_add(missing)))
                 .filter(|offset| !covered.contains(offset))
                 .take(usize::try_from(missing).unwrap_or(usize::MAX))
                 .collect();
@@ -312,10 +321,7 @@ impl Sequence {
                 .slots
                 .iter()
                 .filter(|slot| {
-                    slot.source == source
-                        && slot.track.is_none()
-                        && slot.offset >= total
-                        && Some(slot.id) != current
+                    slot.source == source && slot.track.is_none() && slot.offset >= total
                 })
                 .map(|slot| slot.id)
                 .collect();
@@ -429,17 +435,28 @@ impl Sequence {
     }
 
     /// Removes one slot from the order and the slots, keeping the cursor
-    /// and the materialized end on the same slots.
+    /// and the materialized end on the same slots. Only unresolved slots are
+    /// dropped, and an unresolved slot never played, so the current slot may
+    /// go too: the slot after it becomes current, or at the end the one
+    /// before it, so that advancing ends the pass.
     fn drop_slot(&mut self, id: SlotId) {
         if let Some(index) = self.state.order.iter().position(|&slot| slot == id) {
             self.state.order.remove(index);
             if index < self.state.materialized_end {
                 self.state.materialized_end -= 1;
             }
-            if let Some(cursor) = self.state.cursor
-                && index < cursor
-            {
-                self.state.cursor = Some(cursor - 1);
+            if let Some(cursor) = self.state.cursor {
+                let cursor = if index < cursor { cursor - 1 } else { cursor };
+                self.state.cursor = if cursor < self.state.order.len() {
+                    Some(cursor)
+                } else {
+                    self.state.order.len().checked_sub(1)
+                };
+                self.state.materialized_end = self
+                    .state
+                    .materialized_end
+                    .max(self.state.cursor.unwrap_or(0))
+                    .min(self.state.order.len());
             }
         }
         self.state.slots.retain(|slot| slot.id != id);

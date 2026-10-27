@@ -484,3 +484,74 @@ fn a_malformed_page_changes_nothing() {
     assert_eq!(outcome, RebaseOutcome::default());
     assert_eq!(sequence.state(), &before);
 }
+
+// A Plugin's total is not trusted: a huge one grows the sequence by at most
+// a page per read.
+#[test]
+fn a_huge_total_grows_the_sequence_a_page_at_a_time() {
+    let liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 41);
+    let mut page = liked.read(0, 50);
+    page.total = Some(Count::Exact(u64::MAX));
+
+    let outcome = sequence.rebase(page);
+
+    assert_eq!(outcome.inserted.len(), 50);
+    assert_eq!(sequence.state().slots.len(), 150);
+    Sequence::restore(sequence.state().clone()).unwrap();
+}
+
+// An unresolved current slot that drift puts on a resolved slot's position
+// stood for nothing: it is retired, and the slot after it becomes current,
+// so hydration settles instead of stalling playback.
+#[test]
+fn an_unresolved_current_slot_on_a_resolved_position_is_retired() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 42);
+    sequence.rebase(liked.read(50, 50));
+    let at_49 = sequence
+        .state()
+        .slots
+        .iter()
+        .find(|slot| slot.offset == 49)
+        .unwrap()
+        .id;
+    assert!(sequence.seek_to(at_49));
+    let index = sequence.state().cursor.unwrap();
+    let following = sequence.state().order.get(index + 1).copied();
+
+    liked.0.remove(0);
+    let outcome = sequence.rebase(liked.read(0, 50));
+
+    assert!(outcome.dropped.contains(&at_49));
+    assert!(sequence.slot(at_49).is_none());
+    assert_eq!(sequence.current(), following);
+    hydrate(&mut sequence, &liked, 10);
+    Sequence::restore(sequence.state().clone()).unwrap();
+}
+
+// Growth counts positions, not slots: after a new Track joined at a resolved
+// position (two slots, one position), a Track appended elsewhere still gets
+// a slot.
+#[test]
+fn growth_counts_positions_not_slots() {
+    let mut liked = Liked::new(100);
+    let mut sequence = shuffled_liked(100, 43);
+    sequence.rebase(liked.read(0, 50));
+    liked.0[10] = like(6000);
+    assert_eq!(sequence.rebase(liked.read(0, 50)).inserted.len(), 1);
+    assert_eq!(sequence.state().slots.len(), 101);
+
+    liked.0.push(like(6001));
+    let outcome = sequence.rebase(liked.read(0, 50));
+
+    assert_eq!(outcome.inserted.len(), 1);
+    hydrate(&mut sequence, &liked, 200);
+    let appended = sequence
+        .state()
+        .slots
+        .iter()
+        .filter(|slot| slot.track.as_ref() == Some(&like(6001)))
+        .count();
+    assert_eq!(appended, 1, "the appended Track has a slot");
+}

@@ -223,13 +223,14 @@ impl HostState {
         }
     }
 
-    /// The retirement count of a running call that is not retired, for
-    /// commits of the Plugin's own state.
-    pub(crate) fn live_retirements(&self) -> Option<u64> {
-        if self.retired() {
-            return None;
-        }
-        self.call.as_ref().map(|call| call.retirements)
+    /// Runs `f` under the commit gate if the running call is still
+    /// current: its connection's generation and the Plugin's retirement
+    /// count, both checked under the lock their changes take.
+    pub(crate) fn commit_current<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
+        let call = self.call.as_ref()?;
+        self.plugin
+            .connections
+            .commit(&call.connection, call.generation, call.retirements, f)
     }
 
     /// Whether the running call is retired: its connection's generation

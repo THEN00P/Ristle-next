@@ -11,15 +11,10 @@ impl Host for HostState {
             return Err(trap("storage.get: key exceeds 64 KiB"));
         }
         self.timed(|state| {
-            let Some(retirements) = state.live_retirements() else {
-                return Ok(None);
-            };
             let plugin = &state.plugin;
             let services = &plugin.services;
             let now = services.clock.now_ms();
-            match plugin.connections.commit_plugin(retirements, || {
-                services.store.plugin_kv(&plugin.id).get(&key, now)
-            }) {
+            match state.commit_current(|| services.store.plugin_kv(&plugin.id).get(&key, now)) {
                 None => Ok(None),
                 Some(read) => read.map_err(|error| {
                     tracing::warn!(plugin = %plugin.id, %error, "storage.get failed");
@@ -42,23 +37,19 @@ impl Host for HostState {
             return Ok(Err(too_large("storage value")));
         }
         Ok(self.timed(|state| {
-            let retired = || Error::Unauthorized("this call was retired".to_owned());
-            let Some(retirements) = state.live_retirements() else {
-                return Err(retired());
-            };
             let plugin = &state.plugin;
             let services = &plugin.services;
             let now = services.clock.now_ms();
             let expires = ttl_seconds.map(|ttl| now.saturating_add(u64::from(ttl) * 1000));
             let quota = u64::from(plugin.manifest.permissions.storage_mib) * 1024 * 1024;
-            let written = plugin.connections.commit_plugin(retirements, || {
+            let written = state.commit_current(|| {
                 services
                     .store
                     .plugin_kv(&plugin.id)
                     .set(&key, &value, expires, quota, now)
             });
             let Some(written) = written else {
-                return Err(retired());
+                return Err(Error::Unauthorized("this call was retired".to_owned()));
             };
             match written {
                 Ok(Stored::Yes) => Ok(()),
@@ -76,13 +67,9 @@ impl Host for HostState {
             return Err(trap("storage.delete: key exceeds 64 KiB"));
         }
         self.timed(|state| {
-            let Some(retirements) = state.live_retirements() else {
-                return Ok(());
-            };
             let plugin = &state.plugin;
-            match plugin.connections.commit_plugin(retirements, || {
-                plugin.services.store.plugin_kv(&plugin.id).delete(&key)
-            }) {
+            match state.commit_current(|| plugin.services.store.plugin_kv(&plugin.id).delete(&key))
+            {
                 None => Ok(()),
                 Some(deleted) => deleted.map_err(|error| {
                     tracing::warn!(plugin = %plugin.id, %error, "storage.delete failed");

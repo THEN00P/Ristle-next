@@ -158,7 +158,10 @@ before relying on it, and update it when you learn something new.
   Run the `core.yml` steps locally on Windows instead. The NDK builds
   (opusic-sys) need Visual Studio's cmake on PATH (see
   `../Ristle/CLAUDE.local.md`), and `ANDROID_NDK_HOME` points at
-  `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`. cargo-deny takes
+  `%LOCALAPPDATA%/Android/Sdk/ndk/<version>`. Set both **only for the
+  `cargo ndk` steps**. If they are set for the host steps, opusic-sys fails
+  for the host: it tries the NDK, or it hits "generator Ninja does not match
+  the generator used previously" in a cached `target/`. cargo-deny takes
   `--all-features` before `check`. The `bindings` job (Kotlin/Swift) only
   runs on Linux, so skip it only when `crates/ffi` is untouched.
 - **`ristle-storage` fixture and SQLite quirks.** `crates/storage/tests/fixtures/schema-v1.sql`

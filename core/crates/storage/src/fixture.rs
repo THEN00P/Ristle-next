@@ -5,11 +5,11 @@
 //! `write_schema_v1_fixture` (run with `--ignored`) and must never be
 //! regenerated: it stands for the databases users have. Tests check that
 //!
-//! - the current build reads every row of it back exactly, so a change to
-//!   the serde shape of a stored domain type cannot break existing data
-//!   unnoticed;
-//! - a fresh database has exactly its schema, so schema v1 cannot be edited
-//!   in place; changes go through a migration;
+//! - the current build migrates it to the current schema and reads every
+//!   row of it back exactly, so a change to the serde shape of a stored
+//!   domain type, or a migration, cannot break existing data unnoticed;
+//! - migration 1 produces exactly its schema, so schema v1 cannot be edited
+//!   in place; changes go through a new migration;
 //! - the migration runner upgrades it, and rolls a failing migration back
 //!   leaving it untouched. Every future migration adds a test here that
 //!   applies it to the fixture.
@@ -199,6 +199,7 @@ fn contents() -> Contents {
                 repeat: RepeatMode::Queue,
                 shuffle: Some(u64::MAX - 1),
                 next_id: EntryId(9),
+                trimmed: Vec::new(),
             },
             sequence: Some(SequenceId("liked:spotify-1+soundcloud-1".into())),
             position_ms: 61_000,
@@ -541,21 +542,16 @@ fn load_fixture(dir: &Path) -> StoragePaths {
     paths
 }
 
-fn schema_of(path: &Path) -> Vec<(String, String, Option<String>)> {
-    let conn = Connection::open(path).unwrap();
-    let mut select = conn
-        .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
-        .unwrap();
-    select
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-
 #[test]
 #[ignore = "writes tests/fixtures/schema-v1.sql, which is committed and never regenerated"]
 fn write_schema_v1_fixture() {
+    // Populating goes through the current schema, so this can only ever have
+    // produced the v1 fixture while v1 was current.
+    assert_eq!(
+        crate::SCHEMA_VERSION,
+        1,
+        "the v1 fixture is frozen; never regenerate it"
+    );
     let dir = tempfile::tempdir().unwrap();
     let paths = StoragePaths::new(dir.path().join("data"), dir.path().join("cache"));
     let clock = Arc::new(ManualClock::new(NOW));
@@ -569,16 +565,16 @@ fn write_schema_v1_fixture() {
 }
 
 #[test]
-fn schema_v1_fixture_reads_back_exactly() {
+fn schema_v1_fixture_migrates_and_reads_back_exactly() {
     let dir = tempfile::tempdir().unwrap();
     let paths = load_fixture(dir.path());
+    let before = dump(&Connection::open(paths.database()).unwrap());
     let clock = Arc::new(ManualClock::new(NOW));
     let storage = Storage::open(&paths, clock).unwrap();
     assert_eq!(storage.status(), &OpenStatus::Ready);
-    assert!(
-        !crate::migrate::sibling(&paths.database(), ".v1.backup").exists(),
-        "v1 was migrated"
-    );
+    assert_eq!(storage.schema_version(), crate::SCHEMA_VERSION);
+    let backup = crate::migrate::sibling(&paths.database(), ".v1.backup");
+    assert_same_dump(&dump(&Connection::open(&backup).unwrap()), &before);
     let c = contents();
 
     let read = storage
@@ -683,14 +679,47 @@ fn schema_v1_fixture_reads_back_exactly() {
 fn schema_v1_is_frozen() {
     let fixture = tempfile::tempdir().unwrap();
     let fixture = load_fixture(fixture.path());
-    let fresh = tempfile::tempdir().unwrap();
-    let fresh = StoragePaths::new(fresh.path().join("data"), fresh.path().join("cache"));
-    drop(Storage::open(&fresh, Arc::new(ManualClock::new(NOW))).unwrap());
+    let v1 = crate::migrate::expected_schema(&crate::migrate::MIGRATIONS[..1]).unwrap();
+    let conn = Connection::open(fixture.database()).unwrap();
     assert_eq!(
-        schema_of(&fresh.database()),
-        schema_of(&fixture.database()),
+        crate::migrate::schema_of(&conn, "main").unwrap(),
+        v1,
         "schema v1 changed; add a migration instead (src/migrate.rs)"
     );
+}
+
+// Migration 2: the trimmed entries of the current pass, saved with the
+// session of a database that started at v1.
+#[test]
+fn migration_2_keeps_trimmed_entries_of_a_v1_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = load_fixture(dir.path());
+    let storage = Storage::open(&paths, Arc::new(ManualClock::new(NOW))).unwrap();
+    let mut session = storage
+        .read_blocking(|tx| tx.session().load_for_cold_start())
+        .unwrap()
+        .unwrap()
+        .session;
+    assert!(session.queue.trimmed.is_empty());
+    session.queue.trimmed = vec![
+        ristle_queue::Trimmed {
+            track: TrackRef::catalog("spotify".into(), "s0".into()).unwrap(),
+            position: CollectionPosition(1),
+        },
+        ristle_queue::Trimmed {
+            track: server_track().reference,
+            position: CollectionPosition(2),
+        },
+    ];
+    let saved = session.clone();
+    storage
+        .write_blocking(move |tx| tx.session().save(&saved))
+        .unwrap();
+    let restored = storage
+        .read_blocking(|tx| tx.session().load_for_cold_start())
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.session, session);
 }
 
 #[test]
@@ -708,6 +737,9 @@ mod runner {
     use super::*;
     use crate::migrate::{MIGRATIONS, Migrated, Migration, migrate, sibling};
 
+    /// The version a synthetic migration takes: the one after the last.
+    const NEXT: u32 = crate::SCHEMA_VERSION + 1;
+
     fn with(extra: Migration) -> Vec<Migration> {
         MIGRATIONS
             .iter()
@@ -724,9 +756,9 @@ mod runner {
         let dir = tempfile::tempdir().unwrap();
         let paths = load_fixture(dir.path());
         let before = dump(&Connection::open(paths.database()).unwrap());
-        // A representative v2: rebuild a table, as SQLite's procedure does.
+        // A representative next migration: rebuild a table, as SQLite's procedure does.
         let migrations = with(Migration {
-            version: 2,
+            version: NEXT,
             apply: |tx| {
                 tx.execute_batch(
                     "CREATE TABLE settings_new (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL,
@@ -742,7 +774,7 @@ mod runner {
             migrate(&mut conn, &paths.database(), &migrations),
             Migrated::Ready { from: 1 }
         );
-        assert_eq!(crate::migrate::user_version(&conn, "main").unwrap(), 2);
+        assert_eq!(crate::migrate::user_version(&conn, "main").unwrap(), NEXT);
         let theme: String = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'ui.theme'",
@@ -762,7 +794,7 @@ mod runner {
         let paths = load_fixture(dir.path());
         let before = dump(&Connection::open(paths.database()).unwrap());
         let migrations = with(Migration {
-            version: 2,
+            version: NEXT,
             apply: |tx| {
                 tx.execute_batch(
                     "ALTER TABLE settings ADD COLUMN extra TEXT; SELECT * FROM missing_table;",
@@ -785,7 +817,7 @@ mod runner {
         let paths = load_fixture(dir.path());
         let before = dump(&Connection::open(paths.database()).unwrap());
         let migrations = with(Migration {
-            version: 2,
+            version: NEXT,
             apply: |tx| tx.execute_batch("DELETE FROM plugins WHERE plugin_id = 'spotify';"),
         });
         let mut conn = Connection::open(paths.database()).unwrap();

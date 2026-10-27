@@ -89,6 +89,7 @@ fn playback_session_restores_paused_with_exact_queue_state() {
         repeat: RepeatMode::Track,
         shuffle: Some(0xdead_beef_dead_beef),
         next_id: EntryId(4),
+        trimmed: Vec::new(),
     };
     let saved = PlaybackSession {
         queue: queue.clone(),

@@ -159,12 +159,22 @@ impl Hold<'_> {
     }
 }
 
+impl Hold<'_> {
+    /// Releases the slot and returns the generation the release started:
+    /// the one the command's changes belong to, whatever the callback does
+    /// to the word afterwards.
+    pub(crate) fn release(self) -> u64 {
+        let generation = self.shared.release_hold();
+        std::mem::forget(self);
+        generation
+    }
+}
+
 impl Drop for Hold<'_> {
     /// Releases the slot and starts a new generation, so a callback that
     /// read the records before or during the hold cannot switch on them.
     fn drop(&mut self) {
-        // HELD is set, so adding HELD clears it and carries one generation.
-        self.shared.current.fetch_add(HELD, Ordering::AcqRel);
+        self.shared.release_hold();
     }
 }
 
@@ -278,6 +288,13 @@ impl Shared {
                 .is_ok()
     }
 
+    /// Clears `HELD` and returns the generation that starts.
+    fn release_hold(&self) -> u64 {
+        // HELD is set, so adding HELD clears it and carries one generation.
+        let before = self.current.fetch_add(HELD, Ordering::AcqRel);
+        generation_of(before + HELD)
+    }
+
     /// Starts a new generation without a command (the end of playback).
     pub(crate) fn advance_generation(&self) {
         self.current.fetch_add(GENERATION, Ordering::AcqRel);
@@ -363,6 +380,26 @@ mod tests {
         shared.advance_generation();
         assert_eq!(slot_of(shared.word()), 0);
         assert_eq!(generation_of(shared.word()), generation_of(seen) + 3);
+    }
+
+    #[test]
+    fn a_release_returns_its_own_generation() {
+        let shared = Shared::new(
+            OutputInfo {
+                sample_rate: 100,
+                channels: 1,
+            },
+            4,
+            OutputLatency::default(),
+        );
+        let before = generation_of(shared.word());
+        let released = shared.hold().release();
+        assert_eq!(released, before + 1);
+        // A Gapless Transition or an end right after does not change it.
+        shared.advance_generation();
+        assert_eq!(released, before + 1);
+        assert_eq!(generation_of(shared.word()), before + 2);
+        assert_eq!(shared.word() & HELD, 0);
     }
 
     #[test]

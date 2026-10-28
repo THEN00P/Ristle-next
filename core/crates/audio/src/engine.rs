@@ -311,8 +311,9 @@ impl Engine {
             return Err(Error::NoCurrent);
         };
         feed.restart(shared, current, Some(track), None, position_ms);
-        drop(slots);
-        Ok(generation_of(shared.word()))
+        // The generation the seek published, not whatever a Gapless
+        // Transition or an end may advance the word to right after.
+        Ok(slots.release())
     }
 
     /// Sets the one core-owned gain, 0 to 1. Changes during playback ramp
@@ -330,19 +331,32 @@ impl Engine {
     /// The engine's state now, consistent with its `sequence`.
     pub fn state(&self) -> EngineState {
         let shared = self.shared();
-        let feed = lock(&self.control.feed);
+        let mut feed = lock(&self.control.feed);
         // Commands are excluded by the feed lock; the render callback can
         // still switch slots or end playback, which changes the word.
-        loop {
+        let (record_seq, mut state, heard) = loop {
             let word = shared.word();
-            let state = self.state_at(&feed, slot_of(word), generation_of(word));
+            let (record_seq, state, heard) =
+                self.state_at(&feed, slot_of(word), generation_of(word));
             if shared.word() == word {
-                return state;
+                break (record_seq, state, heard);
             }
+        };
+        // A latency estimate that grows (AAudio corrects its own) must not
+        // move the position back: within one record, the heard position
+        // only ever advances. A seek or Track change starts a new record.
+        let floor = &mut feed.heard_floor;
+        if floor.0 == record_seq && floor.1 > heard {
+            state.position_ms = shared.frames_to_ms(floor.1);
+        } else {
+            *floor = (record_seq, heard);
         }
+        state
     }
 
-    fn state_at(&self, feed: &Feed, current: usize, sequence: u64) -> EngineState {
+    /// The state for `current` at `sequence`, with the current record's
+    /// `seq` and its heard position in frames.
+    fn state_at(&self, feed: &Feed, current: usize, sequence: u64) -> (u64, EngineState, u64) {
         let shared = self.shared();
         let record = feed.slots[current].record;
         let next = feed.slots[1 - current].record;
@@ -357,13 +371,17 @@ impl Engine {
             shared.in_flight()
         };
         let position = record.start_frame + rendered.saturating_sub(in_flight);
-        let ended = record.token.is_some() && shared.ended.load(Ordering::Acquire) == record.seq;
-        EngineState {
+        // Rendered to its end: no longer buffering. Ended for the platform
+        // only once that end has been heard, when output stops too.
+        let rendered_out =
+            record.token.is_some() && shared.ended.load(Ordering::Acquire) == record.seq;
+        let ended = rendered_out && shared.heard_end.load(Ordering::Acquire) == record.seq;
+        let state = EngineState {
             current: record.token,
             next: next.token.filter(|_| !next.failed && !next_played),
             playing: shared.playing.load(Ordering::Acquire),
             buffering: record.token.is_some()
-                && !ended
+                && !rendered_out
                 && !record.failed
                 && record.end.is_none()
                 && ring.readable() == 0,
@@ -371,7 +389,8 @@ impl Engine {
             position_ms: shared.frames_to_ms(position),
             error: record.token.and(feed.slots[current].error.clone()),
             sequence,
-        }
+        };
+        (record.seq, state, position)
     }
 
     /// The output format the engine renders.

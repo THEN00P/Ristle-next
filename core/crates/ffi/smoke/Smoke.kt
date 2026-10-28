@@ -3,6 +3,7 @@
 // platform's side: callbacks arrive off the calling thread, errors arrive
 // typed, and a CancelToken ends an async call.
 
+import java.nio.file.Files
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
@@ -31,7 +32,12 @@ fun ensure(condition: Boolean, message: () -> String) {
 }
 
 fun main() {
-    RistleCore(CoreConfig(dataDir = "data", cacheDir = "cache"), NoSecrets()).use { core ->
+    val dir = Files.createTempDirectory("ristle-smoke")
+    val config = CoreConfig(
+        dataDir = dir.resolve("data").toString(),
+        cacheDir = dir.resolve("cache").toString(),
+    )
+    RistleCore(config, NoSecrets()).use { core ->
         val recorder = Recorder()
         core.subscribe(recorder).use { subscription ->
             val thread = recorder.threads.poll(5, TimeUnit.SECONDS)

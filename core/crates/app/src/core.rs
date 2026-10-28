@@ -1,8 +1,13 @@
 //! [`Core`], the composition root, and every command a UI can send.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use ristle_queue::{Advance, EntryId};
+use ristle_storage::{Storage, StoragePaths};
 use tokio::runtime::{Builder, Handle, Runtime};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::error::Error;
 use crate::model::items::{ItemRef, TrackView};
@@ -16,8 +21,10 @@ use crate::model::session::{
     CoreConfig, CoreSnapshot, MediaCommand, Placement, PlaySource, RepeatMode, StartAt,
 };
 use crate::model::sign_in::{SignInAnswer, SignInStep};
-use crate::observe::{Observer, Observers, Subscription};
+use crate::observe::{Observer, Subscription};
 use crate::platform::Platform;
+use crate::services::Services;
+use crate::session::Session;
 
 /// Name of every runtime worker thread. Observers are called on these.
 pub const CORE_THREAD_NAME: &str = "ristle-core";
@@ -34,24 +41,34 @@ const WORKER_THREADS: usize = 2;
 /// executor, but are meant to be spawned on [`runtime`](Self::runtime).
 /// Dropping one of their futures cancels it.
 pub struct Core {
-    shared: Arc<Shared>,
+    #[allow(dead_code, reason = "first readers: Plugin secrets (M7b)")]
+    config: CoreConfig,
+    #[allow(dead_code, reason = "first readers: Plugin secrets (M7b)")]
+    platform: Arc<dyn Platform>,
+    session: Arc<Session>,
+    /// Synchronous commands, run one after another in the order they came.
+    commands: UnboundedSender<Command>,
     runtime_handle: Handle,
     // Only `None` while dropping.
     runtime: Option<Runtime>,
 }
 
-struct Shared {
-    observers: Arc<Observers>,
-    #[allow(dead_code, reason = "first callers: Plugin secrets (M7b)")]
-    config: CoreConfig,
-    #[allow(dead_code, reason = "first callers: Plugin secrets (M7b)")]
-    platform: Arc<dyn Platform>,
-}
+type Command = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 impl Core {
-    /// Starts the core: its runtime now, storage and Plugins as their
-    /// milestones land.
+    /// Starts the core: its runtime and storage, with the saved Playback
+    /// Session restored paused. Blocks on disk, so platforms call it off
+    /// their main thread.
     pub fn new(config: CoreConfig, platform: Arc<dyn Platform>) -> Result<Self, Error> {
+        Self::with_services(config, platform, Services::default())
+    }
+
+    /// [`Core::new`] with a given clock and seed source, for tests.
+    pub fn with_services(
+        config: CoreConfig,
+        platform: Arc<dyn Platform>,
+        services: Services,
+    ) -> Result<Self, Error> {
         for (name, dir) in [
             ("data_dir", &config.data_dir),
             ("cache_dir", &config.cache_dir),
@@ -70,12 +87,26 @@ impl Core {
             .map_err(|error| Error::Internal {
                 reason: format!("cannot start the core runtime: {error}"),
             })?;
+        let storage = Storage::open(
+            &StoragePaths::new(&config.data_dir, &config.cache_dir),
+            Arc::clone(&services.clock),
+        )
+        .map_err(|error| Error::Storage {
+            reason: error.to_string(),
+        })?;
+        let session = Arc::new(Session::restore(Arc::new(storage), services.seeds));
+
+        let (commands, mut queued) = unbounded_channel::<Command>();
+        runtime.spawn(async move {
+            while let Some(command) = queued.recv().await {
+                command.await;
+            }
+        });
         Ok(Self {
-            shared: Arc::new(Shared {
-                observers: Arc::new(Observers::new(CoreSnapshot::empty())),
-                config,
-                platform,
-            }),
+            config,
+            platform,
+            session,
+            commands,
             runtime_handle: runtime.handle().clone(),
             runtime: Some(runtime),
         })
@@ -90,14 +121,39 @@ impl Core {
     /// Subscribes an observer. It receives the current snapshot first, then
     /// every change, on core threads.
     pub fn subscribe(&self, observer: Arc<dyn Observer>) -> Subscription {
-        self.shared
-            .observers
+        self.session
+            .observers()
             .subscribe(observer, &self.runtime_handle)
     }
 
     /// The current snapshot.
     pub fn snapshot(&self) -> CoreSnapshot {
-        self.shared.observers.snapshot()
+        self.session.observers().snapshot()
+    }
+
+    /// The Playback Session, for commands that carry resolved Tracks (Party
+    /// commands, tests) and for `apply_once`.
+    pub fn session(&self) -> &Arc<Session> {
+        &self.session
+    }
+
+    /// Queues a synchronous command. It runs after every command queued
+    /// before it; a failure is logged, since the caller has moved on.
+    fn command<F, Fut>(&self, name: &'static str, run: F) -> Result<(), Error>
+    where
+        F: FnOnce(Arc<Session>) -> Fut,
+        Fut: Future<Output = Result<(), Error>> + Send + 'static,
+    {
+        let future = run(Arc::clone(&self.session));
+        self.commands
+            .send(Box::pin(async move {
+                if let Err(error) = future.await {
+                    tracing::warn!(command = name, %error, "command failed");
+                }
+            }))
+            .map_err(|_| Error::Internal {
+                reason: "the core is shutting down".to_owned(),
+            })
     }
 
     // Transport and queue. Each returns at once; effects arrive through
@@ -115,12 +171,17 @@ impl Core {
 
     /// Moves to the next Track.
     pub fn next(&self) -> Result<(), Error> {
-        Err(Error::not_ready("next"))
+        self.command("next", |session| async move {
+            session.advance(Advance::Skip).await.map(drop)
+        })
     }
 
     /// Restarts the Track, or moves to the previous one near its start.
     pub fn previous(&self) -> Result<(), Error> {
-        Err(Error::not_ready("previous"))
+        self.command(
+            "previous",
+            |session| async move { session.previous().await },
+        )
     }
 
     /// Moves the playhead.
@@ -129,14 +190,18 @@ impl Core {
     }
 
     /// Sets repeat.
-    pub fn set_repeat(&self, _mode: RepeatMode) -> Result<(), Error> {
-        Err(Error::not_ready("set_repeat"))
+    pub fn set_repeat(&self, mode: RepeatMode) -> Result<(), Error> {
+        self.command("set_repeat", move |session| async move {
+            session.set_repeat(mode).await
+        })
     }
 
     /// Shuffles the continuation, keeping the current Track, or restores
     /// its order.
-    pub fn set_shuffle(&self, _enabled: bool) -> Result<(), Error> {
-        Err(Error::not_ready("set_shuffle"))
+    pub fn set_shuffle(&self, enabled: bool) -> Result<(), Error> {
+        self.command("set_shuffle", move |session| async move {
+            session.set_shuffle(enabled).await
+        })
     }
 
     /// Sets the output volume, 0.0 to 1.0.
@@ -151,28 +216,41 @@ impl Core {
     }
 
     /// Removes a queue entry. `undo_removal` puts it back.
-    pub fn remove_entry(&self, _entry: u64) -> Result<(), Error> {
-        Err(Error::not_ready("remove_entry"))
+    pub fn remove_entry(&self, entry: u64) -> Result<(), Error> {
+        self.command("remove_entry", move |session| async move {
+            session.remove(EntryId(entry)).await.map(drop)
+        })
     }
 
     /// Undoes the latest `remove_entry`.
     pub fn undo_removal(&self) -> Result<(), Error> {
-        Err(Error::not_ready("undo_removal"))
+        self.command("undo_removal", |session| async move {
+            session.undo_removal().await.map(drop)
+        })
     }
 
     /// Moves a Queued Request to a position among the requests.
-    pub fn move_request(&self, _entry: u64, _to: u32) -> Result<(), Error> {
-        Err(Error::not_ready("move_request"))
+    pub fn move_request(&self, entry: u64, to: u32) -> Result<(), Error> {
+        self.command("move_request", move |session| async move {
+            session
+                .move_request(EntryId(entry), to as usize)
+                .await
+                .map(drop)
+        })
     }
 
     /// Removes every upcoming entry and detaches the queue's source.
     pub fn clear_upcoming(&self) -> Result<(), Error> {
-        Err(Error::not_ready("clear_upcoming"))
+        self.command("clear_upcoming", |session| async move {
+            session.clear_upcoming().await.map(drop)
+        })
     }
 
     /// Plays a queue entry now.
-    pub fn jump_to(&self, _entry: u64) -> Result<(), Error> {
-        Err(Error::not_ready("jump_to"))
+    pub fn jump_to(&self, entry: u64) -> Result<(), Error> {
+        self.command("jump_to", move |session| async move {
+            session.jump_to(EntryId(entry)).await.map(drop)
+        })
     }
 
     /// Applies a command from a platform media session.
@@ -318,13 +396,13 @@ impl Core {
     }
 
     #[cfg(test)]
-    pub(crate) fn observers(&self) -> &Observers {
-        &self.shared.observers
+    pub(crate) fn observers(&self) -> &crate::observe::Observers {
+        self.session.observers()
     }
 
     #[cfg(test)]
-    pub(crate) fn observers_arc(&self) -> Arc<Observers> {
-        Arc::clone(&self.shared.observers)
+    pub(crate) fn observers_arc(&self) -> Arc<crate::observe::Observers> {
+        Arc::clone(self.session.observers())
     }
 }
 

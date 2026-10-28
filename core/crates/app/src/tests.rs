@@ -23,15 +23,39 @@ impl Platform for NoPlatform {
     }
 }
 
-fn core() -> Core {
-    Core::new(
+/// A core over a temporary directory, which lives as long as the core.
+struct TestCore {
+    core: Option<Core>,
+    _dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for TestCore {
+    type Target = Core;
+    fn deref(&self) -> &Core {
+        self.core.as_ref().unwrap()
+    }
+}
+
+impl TestCore {
+    fn take(&mut self) -> Core {
+        self.core.take().unwrap()
+    }
+}
+
+fn core() -> TestCore {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::new(
         CoreConfig {
-            data_dir: "data".into(),
-            cache_dir: "cache".into(),
+            data_dir: dir.path().join("data").to_string_lossy().into_owned(),
+            cache_dir: dir.path().join("cache").to_string_lossy().into_owned(),
         },
         Arc::new(NoPlatform),
     )
-    .unwrap()
+    .unwrap();
+    TestCore {
+        core: Some(core),
+        _dir: dir,
+    }
 }
 
 #[derive(Debug)]
@@ -186,10 +210,10 @@ fn the_core_can_be_dropped_on_a_core_thread() {
         core: Mutex::new(None),
         dropped: Mutex::new(sender),
     });
-    let core = core();
-    let observers = core.observers_arc();
-    let subscription = core.subscribe(Arc::clone(&observer) as Arc<dyn Observer>);
-    *observer.core.lock().unwrap() = Some(core);
+    let mut test = core();
+    let observers = test.observers_arc();
+    let subscription = test.subscribe(Arc::clone(&observer) as Arc<dyn Observer>);
+    *observer.core.lock().unwrap() = Some(test.take());
 
     observers.publish_snapshot(|_| {});
 

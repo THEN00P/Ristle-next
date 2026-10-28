@@ -18,9 +18,15 @@ ristle-media.workspace = true
 ristle-audio.workspace = true
 ristle-protocol.workspace = true
 ristle-party.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
+
+[dev-dependencies]
+ristle-domain = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

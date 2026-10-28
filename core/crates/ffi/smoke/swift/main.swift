@@ -40,7 +40,15 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
-let core = try RistleCore(config: CoreConfig(dataDir: "data", cacheDir: "cache"), platform: NoSecrets())
+let dir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ristle-smoke-\(ProcessInfo.processInfo.processIdentifier)")
+let core = try RistleCore(
+    config: CoreConfig(
+        dataDir: dir.appendingPathComponent("data").path,
+        cacheDir: dir.appendingPathComponent("cache").path
+    ),
+    platform: NoSecrets()
+)
 
 let recorder = Recorder()
 let subscription = core.subscribe(observer: recorder)

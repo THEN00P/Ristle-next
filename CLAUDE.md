@@ -162,6 +162,10 @@ before relying on it, and update it when you learn something new.
     its commits off `main`.
   - Run `rm -rf core/target` in the idle worktrees of threads that will
     continue.
+  - If `git worktree remove` fails with "Filename too long" (Gradle builds
+    in spikes), delete the directory with
+    `cmd /c rmdir /s /q "\?\C:\...\<worktree>"` and then run
+    `git worktree prune`.
   - Never touch the worktrees of running threads.
   - Check `df -h /c` before starting threads.
 - **When GitHub Actions starts no jobs** (annotation: "recent account payments

@@ -164,7 +164,7 @@ before relying on it, and update it when you learn something new.
     continue.
   - If `git worktree remove` fails with "Filename too long" (Gradle builds
     in spikes), delete the directory with
-    `cmd /c rmdir /s /q "\?\C:\...\<worktree>"` and then run
+    `cmd /c rmdir /s /q "\\?\C:\...\<worktree>"` and then run
     `git worktree prune`.
   - Never touch the worktrees of running threads.
   - Check `df -h /c` before starting threads.

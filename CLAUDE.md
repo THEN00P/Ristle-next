@@ -152,6 +152,18 @@ before relying on it, and update it when you learn something new.
   Branches that merge cleanly can still conflict in meaning. A's follow-ups
   added a field to `QueueState` that storage didn't persist, so only the
   merged state failed to compile. Always build the merged state.
+- **Disk space (coordinator).** Every T3 worktree builds its own
+  `core/target`, which takes 1–13 GB each. A full disk aborted a workstream
+  mid-run on 2026-10-28. The worktrees are under
+  `~/.t3/worktrees/Ristle-next/`.
+  - Once a worktree's branch is merged and it has no uncommitted changes,
+    remove it with `git worktree remove`; it can be cloned back. Compare its
+    HEAD with the merged PR's `headRefOid`, because a squash merge leaves
+    its commits off `main`.
+  - Run `rm -rf core/target` in the idle worktrees of threads that will
+    continue.
+  - Never touch the worktrees of running threads.
+  - Check `df -h /c` before starting threads.
 - **When GitHub Actions starts no jobs** (annotation: "recent account payments
   have failed or your spending limit needs to be increased", every job
   failing in 2 s with zero steps): the private repo's minutes are used up.

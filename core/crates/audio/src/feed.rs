@@ -67,6 +67,9 @@ pub(crate) struct Feed {
     pub(crate) slots: [FeedSlot; 2],
     next_seq: u64,
     pub(crate) shutdown: bool,
+    /// The highest heard position `state()` has reported, in frames, and
+    /// the record it belongs to.
+    pub(crate) heard_floor: (u64, u64),
 }
 
 pub(crate) struct FeedSlot {
@@ -188,6 +191,7 @@ impl Feed {
             slots: [FeedSlot::new(), FeedSlot::new()],
             next_seq: 1,
             shutdown: false,
+            heard_floor: (0, 0),
         }
     }
 

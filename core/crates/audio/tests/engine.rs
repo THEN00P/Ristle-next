@@ -899,3 +899,64 @@ fn pausing_before_the_end_is_heard_keeps_play_able_to_finish_it() {
     rig.engine.play().unwrap();
     assert!(!rig.output.is_running());
 }
+
+#[test]
+fn the_position_never_moves_back_when_the_latency_estimate_grows() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::counter(0.0, 5000, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(10);
+    rig.engine.play().unwrap();
+    rig.output.render(50);
+    assert_eq!(rig.engine.state().position_ms, 40);
+
+    // AAudio corrects its estimate upward: 30 frames instead of 10.
+    rig.output.set_latency(30);
+    assert_eq!(rig.engine.state().position_ms, 40);
+    // 65 frames rendered, 30 in flight: 35 heard, held at 40.
+    rig.output.render(15);
+    assert_eq!(rig.engine.state().position_ms, 40);
+    // 75 rendered: 45 heard, past the floor.
+    rig.output.render(10);
+    assert_eq!(rig.engine.state().position_ms, 45);
+
+    // A seek starts over from its target, which may be earlier.
+    rig.engine.seek(10).unwrap();
+    assert_eq!(rig.engine.state().position_ms, 10);
+}
+
+#[test]
+fn ended_is_reported_only_once_the_end_is_heard() {
+    let rig = rig(1000, 2, 1000);
+    rig.engine.set_current(
+        T1,
+        Box::new(FakeStream::constant(0.5, 10, format(1000, 2))),
+        0,
+    );
+    assert!(rig.engine.wait_until_buffered(WAIT));
+    rig.output.set_latency(20);
+    rig.engine.play().unwrap();
+
+    // Rendered to its end, not yet heard: still playing, not ended, and
+    // not buffering either.
+    rig.output.render(15);
+    let state = rig.engine.state();
+    assert!(
+        state.playing && !state.ended && !state.buffering,
+        "{state:?}"
+    );
+
+    rig.output.render(20);
+    assert!(
+        rig.events
+            .wait_for(|e| *e == EngineEvent::Ended { track: T1 })
+    );
+    assert!(until(|| {
+        let state = rig.engine.state();
+        state.ended && !state.playing
+    }));
+}

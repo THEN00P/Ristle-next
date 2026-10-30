@@ -126,10 +126,6 @@ impl Observers {
 
     /// Changes the snapshot, raises its revision and queues it for every
     /// subscriber. Returns the new revision.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "first caller: the session (M7a)")
-    )]
     pub(crate) fn publish_snapshot(&self, change: impl FnOnce(&mut CoreSnapshot)) -> u64 {
         let mut registry = self.lock();
         change(&mut registry.snapshot);
@@ -148,7 +144,6 @@ impl Observers {
     }
 
     /// Queues a library change for every subscriber.
-    #[allow(dead_code, reason = "first caller: Ristle Playlists (M7a)")]
     pub(crate) fn publish_library_change(&self, change: LibraryChange) {
         let change = Arc::new(change);
         self.lock()

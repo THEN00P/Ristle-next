@@ -5,6 +5,7 @@ use ristle_domain::{Track, TrackRef};
 use ristle_queue::{CanonicalQueue, QueueEntry};
 use ristle_storage::repo::Intent;
 
+use super::sequence::Active;
 use crate::model::items::{
     ArtworkImage, Attribute, AttributeValue, Availability, ItemId, MediaDate, Named, TrackView,
 };
@@ -152,6 +153,7 @@ pub(crate) fn fill_snapshot(
     shuffled: bool,
     intent: Intent,
     position_ms: u64,
+    active: Option<&Active>,
 ) {
     let current = queue.current();
     snapshot.transport = Transport {
@@ -166,6 +168,11 @@ pub(crate) fn fill_snapshot(
         volume: snapshot.transport.volume,
     };
     snapshot.queue = queue_window(queue);
+    if let Some(active) = active {
+        snapshot.queue.source = Some(active.source());
+        // The whole continuation, not only what is materialized.
+        snapshot.queue.upcoming_total = Some(active.remaining());
+    }
     snapshot.repeat = repeat_mode(queue.repeat());
     snapshot.shuffle = shuffled;
 }

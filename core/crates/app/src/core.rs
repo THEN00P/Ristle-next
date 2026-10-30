@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ristle_domain::PlaylistId;
 use ristle_queue::{Advance, EntryId};
 use ristle_storage::{Storage, StoragePaths};
 use tokio::runtime::{Builder, Handle, Runtime};
@@ -100,6 +101,7 @@ impl Core {
         let session = Arc::new(Session::restore(
             Arc::new(storage),
             services.seeds,
+            services.clock,
             runtime.handle().clone(),
         ));
 
@@ -315,23 +317,57 @@ impl Core {
 
     /// Every Ristle Playlist, most recently changed first.
     pub fn ristle_playlists(&self) -> Result<Vec<PlaylistSummary>, Error> {
-        Err(Error::not_ready("ristle_playlists"))
+        let playlists = self
+            .session
+            .storage()
+            .read_blocking(|tx| tx.playlists().list())
+            .map_err(|error| Error::Storage {
+                reason: error.to_string(),
+            })?;
+        Ok(playlists
+            .into_iter()
+            .map(|playlist| PlaylistSummary {
+                id: playlist.id.as_str().to_owned(),
+                title: playlist.title,
+                track_count: playlist.track_count,
+                updated_at_ms: playlist.updated_ms,
+            })
+            .collect())
     }
 
     /// Creates an empty Ristle Playlist.
-    pub fn create_playlist(&self, _title: String) -> Result<PlaylistSummary, Error> {
-        Err(Error::not_ready("create_playlist"))
+    pub fn create_playlist(&self, title: String) -> Result<PlaylistSummary, Error> {
+        let playlist = self.session.new_playlist(title);
+        let summary = PlaylistSummary {
+            id: playlist.id.as_str().to_owned(),
+            title: playlist.title.clone(),
+            track_count: 0,
+            updated_at_ms: playlist.updated_ms,
+        };
+        self.command("create_playlist", move |session| async move {
+            session.save_playlist(playlist).await
+        })?;
+        Ok(summary)
     }
 
     /// Renames a Ristle Playlist.
-    pub fn rename_playlist(&self, _playlist: String, _title: String) -> Result<(), Error> {
-        Err(Error::not_ready("rename_playlist"))
+    pub fn rename_playlist(&self, playlist: String, title: String) -> Result<(), Error> {
+        self.command("rename_playlist", move |session| async move {
+            session
+                .rename_playlist(&PlaylistId::new(playlist), title)
+                .await
+        })
     }
 
     /// Deletes a Ristle Playlist. If it is playing, the queue keeps its
     /// entries and detaches from it.
-    pub fn delete_playlist(&self, _playlist: String) -> Result<(), Error> {
-        Err(Error::not_ready("delete_playlist"))
+    pub fn delete_playlist(&self, playlist: String) -> Result<(), Error> {
+        self.command("delete_playlist", move |session| async move {
+            session
+                .delete_playlist(&PlaylistId::new(playlist))
+                .await
+                .map(drop)
+        })
     }
 
     /// Appends the Tracks of items to a playlist (Playlist Add).
@@ -346,7 +382,17 @@ impl Core {
 
     /// Recently Played, latest first.
     pub fn recently_played(&self) -> Result<Vec<TrackView>, Error> {
-        Err(Error::not_ready("recently_played"))
+        let entries = self
+            .session
+            .storage()
+            .read_blocking(|tx| tx.recently_played().list())
+            .map_err(|error| Error::Storage {
+                reason: error.to_string(),
+            })?;
+        Ok(entries
+            .iter()
+            .map(|entry| crate::session::view::track_view(&entry.track))
+            .collect())
     }
 
     // Plugins, Provider Connections and sign-in.

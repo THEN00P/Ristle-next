@@ -134,8 +134,8 @@ fn token() -> Arc<CancelToken> {
     CancelToken::new()
 }
 
-/// Queue commands are accepted and return at once; their effects reach
-/// observers (covered in `ristle-app`'s session tests).
+/// Queue and playlist commands are accepted and return at once; their
+/// effects reach observers (covered in `ristle-app`'s tests).
 #[test]
 fn queue_commands_are_accepted() {
     let (_dir, core) = core();
@@ -149,8 +149,30 @@ fn queue_commands_are_accepted() {
         core.move_request(1, 0),
         core.clear_upcoming(),
         core.jump_to(1),
+        core.rename_playlist("p".into(), "t".into()),
+        core.delete_playlist("p".into()),
     ];
     assert!(results.iter().all(Result::is_ok), "{results:?}");
+}
+
+/// Ristle Playlists and Recently Played read through the facade.
+#[test]
+fn playlists_and_recently_played_read_through_the_facade() {
+    let (_dir, core) = core();
+    assert_eq!(core.recently_played().unwrap(), []);
+    let created = core.create_playlist("Morning".into()).unwrap();
+    assert_eq!(created.title, "Morning");
+    assert_eq!(created.track_count, 0);
+    // The create is a queued command; the listing sees it once it ran.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while core.ristle_playlists().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the playlist never appeared"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(core.ristle_playlists().unwrap(), [created]);
 }
 
 /// Every method that still returns `NotReady`. Remove a line when its
@@ -200,16 +222,6 @@ fn methods_not_implemented_yet_say_so() {
             "set_liked",
             block_on(core.set_liked(ItemRef::Track { item: item() }, true)),
         ),
-        ("ristle_playlists", core.ristle_playlists().map(drop)),
-        (
-            "create_playlist",
-            core.create_playlist("t".into()).map(drop),
-        ),
-        (
-            "rename_playlist",
-            core.rename_playlist("p".into(), "t".into()),
-        ),
-        ("delete_playlist", core.delete_playlist("p".into())),
         (
             "playlist_add",
             block_on(core.playlist_add(
@@ -220,7 +232,6 @@ fn methods_not_implemented_yet_say_so() {
             ))
             .map(drop),
         ),
-        ("recently_played", core.recently_played().map(drop)),
         ("plugins", core.plugins().map(drop)),
         (
             "review_package",

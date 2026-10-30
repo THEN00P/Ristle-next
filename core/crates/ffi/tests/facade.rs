@@ -31,15 +31,18 @@ impl PlatformHost for NoSecrets {
     }
 }
 
-fn core() -> Arc<RistleCore> {
-    RistleCore::new(
+/// A core over a temporary directory, which must outlive it.
+fn core() -> (tempfile::TempDir, Arc<RistleCore>) {
+    let dir = tempfile::tempdir().unwrap();
+    let core = RistleCore::new(
         CoreConfig {
-            data_dir: "data".into(),
-            cache_dir: "cache".into(),
+            data_dir: dir.path().join("data").to_string_lossy().into_owned(),
+            cache_dir: dir.path().join("cache").to_string_lossy().into_owned(),
         },
         Arc::new(NoSecrets),
     )
-    .unwrap()
+    .unwrap();
+    (dir, core)
 }
 
 /// Polls a facade future the way a platform does: from its own thread,
@@ -69,7 +72,7 @@ impl CoreObserver for ThreadRecorder {
 
 #[test]
 fn a_callback_from_a_synchronous_command_arrives_on_a_core_thread() {
-    let core = core();
+    let (_dir, core) = core();
     let (sender, calls) = channel();
 
     let _subscription = core.subscribe(Arc::new(ThreadRecorder(Mutex::new(sender))));
@@ -82,7 +85,7 @@ fn a_callback_from_a_synchronous_command_arrives_on_a_core_thread() {
 
 #[test]
 fn a_cancelled_subscription_receives_nothing() {
-    let core = core();
+    let (_dir, core) = core();
     let (sender, calls) = channel();
     let subscription = core.subscribe(Arc::new(ThreadRecorder(Mutex::new(sender))));
     calls.recv_timeout(WAIT).unwrap();
@@ -95,7 +98,7 @@ fn a_cancelled_subscription_receives_nothing() {
 
 #[test]
 fn a_cancelled_token_ends_an_async_call_with_cancelled() {
-    let core = core();
+    let (_dir, core) = core();
     let token = CancelToken::new();
     assert!(!token.is_cancelled());
     token.cancel();
@@ -131,29 +134,39 @@ fn token() -> Arc<CancelToken> {
     CancelToken::new()
 }
 
+/// Queue commands are accepted and return at once; their effects reach
+/// observers (covered in `ristle-app`'s session tests).
+#[test]
+fn queue_commands_are_accepted() {
+    let (_dir, core) = core();
+    let results = [
+        core.next(),
+        core.previous(),
+        core.set_repeat(RepeatMode::Queue),
+        core.set_shuffle(true),
+        core.remove_entry(1),
+        core.undo_removal(),
+        core.move_request(1, 0),
+        core.clear_upcoming(),
+        core.jump_to(1),
+    ];
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+}
+
 /// Every method that still returns `NotReady`. Remove a line when its
 /// milestone lands; phase 2 ends with this list empty (M9).
 #[test]
 fn methods_not_implemented_yet_say_so() {
-    let core = core();
+    let (_dir, core) = core();
     let results: Vec<(&str, Result<(), CoreError>)> = vec![
         ("play", core.play()),
         ("pause", core.pause()),
-        ("next", core.next()),
-        ("previous", core.previous()),
         ("seek", core.seek(1_000)),
-        ("set_repeat", core.set_repeat(RepeatMode::Queue)),
-        ("set_shuffle", core.set_shuffle(true)),
         ("set_volume", core.set_volume(0.5)),
         (
             "add_to_queue",
             core.add_to_queue(vec![ItemRef::Track { item: item() }], Placement::Last),
         ),
-        ("remove_entry", core.remove_entry(1)),
-        ("undo_removal", core.undo_removal()),
-        ("move_request", core.move_request(1, 0)),
-        ("clear_upcoming", core.clear_upcoming()),
-        ("jump_to", core.jump_to(1)),
         (
             "handle_media_command",
             core.handle_media_command(MediaCommand::PlayPause),

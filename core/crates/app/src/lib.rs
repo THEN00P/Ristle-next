@@ -31,6 +31,8 @@ mod error;
 pub mod model;
 mod observe;
 mod platform;
+mod services;
+pub mod session;
 
 pub use crate::core::{CORE_THREAD_NAME, Core};
 pub use crate::error::{Error, ProviderErrorKind};
@@ -43,6 +45,8 @@ pub use crate::model::session::*;
 pub use crate::model::sign_in::*;
 pub use crate::observe::{Observer, Subscription};
 pub use crate::platform::{Platform, PlatformError};
+pub use crate::services::{SeedSource, Services, SystemSeeds};
+pub use crate::session::{Edit, Receipt, Session};
 
 #[cfg(test)]
 mod tests;

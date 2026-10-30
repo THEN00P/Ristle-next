@@ -1888,6 +1888,7 @@ dependencies = [
 name = "ristle-app"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "ristle-audio",
  "ristle-domain",
  "ristle-media",
@@ -1897,6 +1898,7 @@ dependencies = [
  "ristle-protocol",
  "ristle-queue",
  "ristle-storage",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -1933,6 +1935,7 @@ version = "0.1.0"
 dependencies = [
  "ristle-app",
  "ristle-domain",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "uniffi",

@@ -350,3 +350,14 @@ from the actor), then `connection.setting` and the remaining export wrappers.
 The export wrappers go through `call()` and barely notice the change. The
 exit tests (Pulley conformance, tamper and takeover, the spike deletions) are
 independent of all this.
+
+## 6. Decision (2026-10-30)
+
+The user accepted **option C**: a lifecycle actor per connection, with leases
+as the only way to reach host state. It lands as two stacked PRs:
+
+1. epochs and leases, including the four gaps in §3;
+2. the actor and the transition harness.
+
+The rest of M5 follows in the order given in §5. Option D (epoch-keyed
+persistent state) stays a later step with workstreams B and F.

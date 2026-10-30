@@ -6,8 +6,11 @@
 // clippy.toml exempts `#[test]` functions only; the helpers are test code.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 use ristle_app::session::PREVIOUS_RESTARTS_AFTER_MS;
@@ -402,16 +405,17 @@ async fn playback_command_receipt_survives_restart_and_prevents_repeated_mutatio
 
     let reopened = database.open();
     let session = reopened.session();
-    let mut called = false;
+    let called = Arc::new(AtomicBool::new(false));
+    let calls = Arc::clone(&called);
     let repeated = session
-        .apply_once(receipt("room", "1", "applied"), |_| {
-            called = true;
+        .apply_once(receipt("room", "1", "applied"), move |_| {
+            calls.store(true, Ordering::SeqCst);
             Ok(())
         })
         .await
         .unwrap();
     assert_eq!(repeated, None);
-    assert!(!called);
+    assert!(!called.load(Ordering::SeqCst));
     assert_eq!(
         session.receipt("room", "1").await.unwrap().as_deref(),
         Some("applied")
@@ -704,4 +708,56 @@ async fn synchronous_commands_apply_in_order() {
         last = snapshots.recv_timeout(WAIT).unwrap();
     }
     assert_eq!(listed(&last)[0], "second");
+}
+
+/// A caller that goes away while its save runs, such as a cancelled
+/// platform call, does not stop the mutation: memory, the published
+/// snapshot and the database all end up with it.
+#[tokio::test]
+async fn a_dropped_mutation_still_reaches_memory_and_observers() {
+    let database = Database::new();
+    {
+        let core = database.open();
+        let session = core.session();
+        session
+            .start_tracks(vec![local("current")], 0)
+            .await
+            .unwrap();
+        let (_subscription, snapshots) = record(&core);
+
+        // Polled exactly once, so the mutation is under way, then dropped.
+        let mut mutation = Box::pin(session.add_to_queue(local("request"), None));
+        let first = std::future::poll_fn(|cx| Poll::Ready(mutation.as_mut().poll(cx))).await;
+        assert!(
+            first.is_pending(),
+            "the save finished within the first poll"
+        );
+        drop(mutation);
+
+        let snapshot = snapshots.recv_timeout(WAIT).unwrap();
+        assert_eq!(listed(&snapshot), ["current", "request"]);
+        assert_eq!(requests(&session.queue().await), ["request"]);
+    }
+    let reopened = database.open();
+    assert_eq!(requests(&reopened.session().queue().await), ["request"]);
+}
+
+/// Opening the core where it cannot write fails with a storage error, also
+/// when the caller is inside a runtime (a runtime dropped there panics).
+#[tokio::test]
+async fn an_unwritable_data_directory_is_a_storage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the data directory should be.
+    let blocked = dir.path().join("data");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+
+    let result = Core::new(
+        CoreConfig {
+            data_dir: blocked.to_string_lossy().into_owned(),
+            cache_dir: dir.path().join("cache").to_string_lossy().into_owned(),
+        },
+        Arc::new(NoPlatform),
+    );
+
+    assert!(matches!(result, Err(Error::Storage { .. })), "{result:?}");
 }

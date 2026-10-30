@@ -79,6 +79,16 @@ impl Core {
                 });
             }
         }
+        // Storage opens first: nothing after the runtime is built can fail,
+        // so a failing start never drops a runtime, which panics when the
+        // caller is itself inside one.
+        let storage = Storage::open(
+            &StoragePaths::new(&config.data_dir, &config.cache_dir),
+            Arc::clone(&services.clock),
+        )
+        .map_err(|error| Error::Storage {
+            reason: error.to_string(),
+        })?;
         let runtime = Builder::new_multi_thread()
             .worker_threads(WORKER_THREADS)
             .thread_name(CORE_THREAD_NAME)
@@ -87,14 +97,11 @@ impl Core {
             .map_err(|error| Error::Internal {
                 reason: format!("cannot start the core runtime: {error}"),
             })?;
-        let storage = Storage::open(
-            &StoragePaths::new(&config.data_dir, &config.cache_dir),
-            Arc::clone(&services.clock),
-        )
-        .map_err(|error| Error::Storage {
-            reason: error.to_string(),
-        })?;
-        let session = Arc::new(Session::restore(Arc::new(storage), services.seeds));
+        let session = Arc::new(Session::restore(
+            Arc::new(storage),
+            services.seeds,
+            runtime.handle().clone(),
+        ));
 
         let (commands, mut queued) = unbounded_channel::<Command>();
         runtime.spawn(async move {

@@ -9,6 +9,12 @@
 //! leaves memory, the database and the receipts as they were. Mutations run
 //! one at a time.
 //!
+//! Each mutation runs as its own task on the core runtime, and its caller
+//! only waits for the result. A caller that is dropped, such as a cancelled
+//! platform call, therefore cannot stop a mutation between its save and
+//! the swap in memory: once the save is submitted, memory and the snapshot
+//! follow it.
+//!
 //! A cold start restores the saved session paused (CONTEXT.md, Playback
 //! Session).
 
@@ -22,6 +28,7 @@ use ristle_queue::{
 };
 use ristle_storage::Storage;
 use ristle_storage::repo::{Intent, PlaybackSession};
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 use crate::error::Error;
@@ -127,89 +134,9 @@ fn rejected(rejection: Rejection) -> Error {
     }
 }
 
-/// The Playback Session.
-pub struct Session {
-    state: Mutex<State>,
-    storage: Arc<Storage>,
-    observers: Arc<Observers>,
-    seeds: Arc<dyn SeedSource>,
-}
-
-impl std::fmt::Debug for Session {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session").finish_non_exhaustive()
-    }
-}
-
-impl Session {
-    /// Restores the saved session, paused. A session that cannot be read
-    /// starts empty; the reason is logged. Blocks on storage, so it runs
-    /// before the runtime takes commands.
-    pub(crate) fn restore(storage: Arc<Storage>, seeds: Arc<dyn SeedSource>) -> Self {
-        let saved = storage
-            .read_blocking(|tx| tx.session().load_for_cold_start())
-            .map_err(|error| tracing::error!(%error, "the saved Playback Session cannot be read"))
-            .ok()
-            .flatten();
-        let mut state = State {
-            queue: CanonicalQueue::new(),
-            shuffled: false,
-            sequence: None,
-            position_ms: 0,
-            intent: Intent::Paused,
-            removed: None,
-        };
-        if let Some(saved) = saved {
-            let shuffled = saved.session.queue.shuffle.is_some();
-            match CanonicalQueue::restore(saved.session.queue) {
-                Ok(queue) => {
-                    state.queue = queue;
-                    state.shuffled = shuffled;
-                    state.sequence = saved.session.sequence;
-                    state.position_ms = saved.session.position_ms;
-                    // `load_for_cold_start` always restores paused.
-                    state.intent = saved.session.intent;
-                }
-                Err(error) => {
-                    tracing::error!(%error, "the saved Canonical Queue is corrupt; starting empty");
-                }
-            }
-        }
-        let mut snapshot = CoreSnapshot::empty();
-        view::fill_snapshot(
-            &mut snapshot,
-            &state.queue,
-            state.shuffled,
-            state.intent,
-            state.position_ms,
-        );
-        Self {
-            state: Mutex::new(state),
-            storage,
-            observers: Arc::new(Observers::new(snapshot)),
-            seeds,
-        }
-    }
-
-    pub(crate) fn observers(&self) -> &Arc<Observers> {
-        &self.observers
-    }
-
-    /// Runs one mutation; see the module documentation.
-    async fn mutate<T>(
-        &self,
-        change: impl FnOnce(&mut Edit) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        // Without a receipt there is nothing to skip.
-        self.mutate_once(None, change)
-            .await?
-            .ok_or_else(|| Error::Internal {
-                reason: "a mutation without a receipt was skipped".to_owned(),
-            })
-    }
-
-    /// Runs one mutation, unless `receipt` was recorded before (`None`).
-    async fn mutate_once<T>(
+impl Inner {
+    /// One mutation, start to end; see the module documentation.
+    async fn commit<T>(
         &self,
         receipt: Option<Receipt>,
         change: impl FnOnce(&mut Edit) -> Result<T, Error>,
@@ -218,7 +145,9 @@ impl Session {
         // Checked under the session lock, so no other mutation can record
         // the same receipt between the check and the save.
         if let Some(receipt) = &receipt
-            && self.receipt(&receipt.scope, &receipt.key).await?.is_some()
+            && read_receipt(&self.storage, &receipt.scope, &receipt.key)
+                .await?
+                .is_some()
         {
             return Ok(None);
         }
@@ -278,34 +207,152 @@ impl Session {
         });
         Ok(Some(value))
     }
+}
+
+async fn read_receipt(storage: &Storage, scope: &str, key: &str) -> Result<Option<String>, Error> {
+    let (scope, key) = (scope.to_owned(), key.to_owned());
+    storage
+        .read(move |tx| tx.receipts().get(&scope, &key))
+        .await
+        .map_err(storage_error)
+}
+
+/// The Playback Session.
+pub struct Session {
+    inner: Arc<Inner>,
+    /// Where mutations run (see the module documentation).
+    runtime: Handle,
+}
+
+struct Inner {
+    state: Mutex<State>,
+    storage: Arc<Storage>,
+    observers: Arc<Observers>,
+    seeds: Arc<dyn SeedSource>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session").finish_non_exhaustive()
+    }
+}
+
+impl Session {
+    /// Restores the saved session, paused. A session that cannot be read
+    /// starts empty; the reason is logged. Blocks on storage, so it runs
+    /// before the runtime takes commands.
+    pub(crate) fn restore(
+        storage: Arc<Storage>,
+        seeds: Arc<dyn SeedSource>,
+        runtime: Handle,
+    ) -> Self {
+        let saved = storage
+            .read_blocking(|tx| tx.session().load_for_cold_start())
+            .map_err(|error| tracing::error!(%error, "the saved Playback Session cannot be read"))
+            .ok()
+            .flatten();
+        let mut state = State {
+            queue: CanonicalQueue::new(),
+            shuffled: false,
+            sequence: None,
+            position_ms: 0,
+            intent: Intent::Paused,
+            removed: None,
+        };
+        if let Some(saved) = saved {
+            let shuffled = saved.session.queue.shuffle.is_some();
+            match CanonicalQueue::restore(saved.session.queue) {
+                Ok(queue) => {
+                    state.queue = queue;
+                    state.shuffled = shuffled;
+                    state.sequence = saved.session.sequence;
+                    state.position_ms = saved.session.position_ms;
+                    // `load_for_cold_start` always restores paused.
+                    state.intent = saved.session.intent;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "the saved Canonical Queue is corrupt; starting empty");
+                }
+            }
+        }
+        let mut snapshot = CoreSnapshot::empty();
+        view::fill_snapshot(
+            &mut snapshot,
+            &state.queue,
+            state.shuffled,
+            state.intent,
+            state.position_ms,
+        );
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(state),
+                storage,
+                observers: Arc::new(Observers::new(snapshot)),
+                seeds,
+            }),
+            runtime,
+        }
+    }
+
+    pub(crate) fn observers(&self) -> &Arc<Observers> {
+        &self.inner.observers
+    }
+
+    /// Runs one mutation; see the module documentation.
+    async fn mutate<T: Send + 'static>(
+        &self,
+        change: impl FnOnce(&mut Edit) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        // Without a receipt there is nothing to skip.
+        self.mutate_once(None, change)
+            .await?
+            .ok_or_else(|| Error::Internal {
+                reason: "a mutation without a receipt was skipped".to_owned(),
+            })
+    }
+
+    /// Runs one mutation as its own task, unless `receipt` was recorded
+    /// before (`None`). Dropping the returned future does not stop it.
+    async fn mutate_once<T: Send + 'static>(
+        &self,
+        receipt: Option<Receipt>,
+        change: impl FnOnce(&mut Edit) -> Result<T, Error> + Send + 'static,
+    ) -> Result<Option<T>, Error> {
+        let inner = Arc::clone(&self.inner);
+        self.runtime
+            .spawn(async move { inner.commit(receipt, change).await })
+            .await
+            // A panicking mutation changed nothing: it never got to the
+            // swap. Its error must not unwind into the caller.
+            .map_err(|error| Error::Internal {
+                reason: format!("a session mutation did not finish: {error}"),
+            })?
+    }
 
     /// Applies a command at most once: if `receipt`'s scope and key were
     /// recorded before, nothing happens and `None` is returned. Otherwise
     /// the mutation and the receipt are saved together, so a command is
     /// never applied without its receipt or recorded without its effect
     /// (legacy `PlaybackCommandReceiptSurvivesRestart...`).
-    pub async fn apply_once<T>(
+    pub async fn apply_once<T: Send + 'static>(
         &self,
         receipt: Receipt,
-        change: impl FnOnce(&mut Edit) -> Result<T, Error>,
+        change: impl FnOnce(&mut Edit) -> Result<T, Error> + Send + 'static,
     ) -> Result<Option<T>, Error> {
         self.mutate_once(Some(receipt), change).await
     }
 
     /// The outcome recorded for a command, if any.
     pub async fn receipt(&self, scope: &str, key: &str) -> Result<Option<String>, Error> {
-        let (scope, key) = (scope.to_owned(), key.to_owned());
-        self.storage
-            .read(move |tx| tx.receipts().get(&scope, &key))
-            .await
-            .map_err(storage_error)
+        read_receipt(&self.inner.storage, scope, key).await
     }
 
     /// Forgets every receipt of a scope, such as a Party that ended.
     /// Returns how many there were.
     pub async fn clear_receipts(&self, scope: &str) -> Result<u64, Error> {
         let scope = scope.to_owned();
-        self.storage
+        self.inner
+            .storage
             .write(move |tx| tx.receipts().clear_scope(&scope))
             .await
             .map_err(storage_error)
@@ -314,7 +361,8 @@ impl Session {
     /// A setting's value.
     pub async fn setting(&self, key: &str) -> Result<Option<String>, Error> {
         let key = key.to_owned();
-        self.storage
+        self.inner
+            .storage
             .read(move |tx| tx.settings().get(&key))
             .await
             .map_err(storage_error)
@@ -323,7 +371,8 @@ impl Session {
     /// Writes a setting outside any mutation.
     pub async fn put_setting(&self, key: &str, value: &str) -> Result<(), Error> {
         let (key, value) = (key.to_owned(), value.to_owned());
-        self.storage
+        self.inner
+            .storage
             .write(move |tx| tx.settings().put(&key, &value))
             .await
             .map_err(storage_error)
@@ -331,12 +380,12 @@ impl Session {
 
     /// The Canonical Queue as it is now.
     pub async fn queue(&self) -> QueueState {
-        self.state.lock().await.queue.snapshot()
+        self.inner.state.lock().await.queue.snapshot()
     }
 
     /// Where the current Track stands, and whether it should play.
     pub async fn transport(&self) -> (Intent, u64) {
-        let state = self.state.lock().await;
+        let state = self.inner.state.lock().await;
         (state.intent, state.position_ms)
     }
 
@@ -463,7 +512,7 @@ impl Session {
     /// Shuffles the upcoming collection with a new seed, or restores its
     /// order. Turning on shuffle when it is on keeps the order.
     pub async fn set_shuffle(&self, enabled: bool) -> Result<(), Error> {
-        let seed = self.seeds.next_seed();
+        let seed = self.inner.seeds.next_seed();
         self.mutate(move |edit| {
             match (enabled, edit.shuffled) {
                 (true, false) => edit.queue.shuffle_upcoming(seed),
@@ -497,7 +546,7 @@ impl Session {
     /// The entry Next (`Skip`) or the end of the Track (`TrackEnded`) would
     /// play, without changing the session.
     pub async fn peek_next(&self, how: Advance) -> Option<QueueEntry> {
-        let mut queue = self.state.lock().await.queue.clone();
+        let mut queue = self.inner.state.lock().await.queue.clone();
         queue
             .advance(how)
             .then(|| queue.current().cloned())
@@ -506,7 +555,7 @@ impl Session {
 
     /// The entry going back would play, without changing the session.
     pub async fn peek_previous(&self) -> Option<QueueEntry> {
-        let mut queue = self.state.lock().await.queue.clone();
+        let mut queue = self.inner.state.lock().await.queue.clone();
         queue.go_back().then(|| queue.current().cloned()).flatten()
     }
 }
